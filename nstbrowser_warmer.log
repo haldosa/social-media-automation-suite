@@ -1,0 +1,771 @@
+2026-02-25 23:47:12,905  INFO      ============================================================
+2026-02-25 23:47:12,906  INFO      NstBrowser Account Warmer -- 2026-02-25 23:47
+2026-02-25 23:47:12,906  INFO      Profiles to warm: 2
+2026-02-25 23:47:12,907  INFO      Shuffled order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-25 23:47:12,907  INFO      ------------------------------------------------------------
+2026-02-25 23:47:12,907  INFO      [1/2] Starting warm-up for profile: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-25 23:47:52,309  INFO      ============================================================
+2026-02-25 23:47:52,310  INFO      NstBrowser Account Warmer -- 2026-02-25 23:47
+2026-02-25 23:47:52,310  INFO      Profiles to warm: 2
+2026-02-25 23:47:52,311  INFO      Shuffled order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-25 23:47:52,311  INFO      ------------------------------------------------------------
+2026-02-25 23:47:52,311  INFO      [1/2] Starting warm-up for profile: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-25 23:54:59,119  INFO      ============================================================
+2026-02-25 23:54:59,119  INFO      NstBrowser Account Warmer -- 2026-02-25 23:54
+2026-02-25 23:54:59,119  INFO      Profiles to warm: 2
+2026-02-25 23:54:59,119  INFO      Shuffled order: ['47dc0595-fbf8-4006-9b4e-1b3b055fb57d', '251894f1-0abc-4e5b-831c-1d3d594de9aa']
+2026-02-25 23:54:59,119  INFO      ------------------------------------------------------------
+2026-02-25 23:54:59,119  INFO      [1/2] Starting warm-up for profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-25 23:58:22,553  INFO      ============================================================
+2026-02-25 23:58:22,554  INFO      NstBrowser Account Warmer -- 2026-02-25 23:58
+2026-02-25 23:58:22,555  INFO      Profiles to warm: 2
+2026-02-25 23:58:22,555  INFO      Shuffled order: ['47dc0595-fbf8-4006-9b4e-1b3b055fb57d', '251894f1-0abc-4e5b-831c-1d3d594de9aa']
+2026-02-25 23:58:22,557  INFO      ------------------------------------------------------------
+2026-02-25 23:58:22,557  INFO      [1/2] Starting warm-up for profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-25 23:59:07,260  INFO      ============================================================
+2026-02-25 23:59:07,261  INFO      NstBrowser Account Warmer -- 2026-02-25 23:59
+2026-02-25 23:59:07,261  INFO      Profiles to warm: 2
+2026-02-25 23:59:07,261  INFO      Shuffled order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-25 23:59:07,261  INFO      ------------------------------------------------------------
+2026-02-25 23:59:07,262  INFO      [1/2] Starting warm-up for profile: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 00:01:22,775  INFO      ============================================================
+2026-02-26 00:01:22,776  INFO      NstBrowser Account Warmer -- 2026-02-26 00:01
+2026-02-26 00:01:22,776  INFO      Profiles to warm: 2
+2026-02-26 00:01:22,777  INFO      Shuffled order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 00:01:22,777  INFO      ------------------------------------------------------------
+2026-02-26 00:01:22,777  INFO      [1/2] Starting warm-up for profile: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 00:02:32,798  INFO      ============================================================
+2026-02-26 00:02:32,798  INFO      NstBrowser Account Warmer -- 2026-02-26 00:02
+2026-02-26 00:02:32,798  INFO      Profiles to warm: 2
+2026-02-26 00:02:32,799  INFO      Shuffled order: ['47dc0595-fbf8-4006-9b4e-1b3b055fb57d', '251894f1-0abc-4e5b-831c-1d3d594de9aa']
+2026-02-26 00:02:32,799  INFO      ------------------------------------------------------------
+2026-02-26 00:02:32,799  INFO      [1/2] Starting warm-up for profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 00:05:41,362  INFO      ============================================================
+2026-02-26 00:05:41,362  INFO      NstBrowser Account Warmer -- 2026-02-26 00:05
+2026-02-26 00:05:41,362  INFO      Profiles to warm: 2
+2026-02-26 00:05:41,362  INFO      Shuffled order: ['47dc0595-fbf8-4006-9b4e-1b3b055fb57d', '251894f1-0abc-4e5b-831c-1d3d594de9aa']
+2026-02-26 00:05:41,362  INFO      ------------------------------------------------------------
+2026-02-26 00:05:41,362  INFO      [1/2] Starting warm-up for profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 00:09:32,542  INFO      ============================================================
+2026-02-26 00:09:32,543  INFO      NstBrowser Account Warmer -- 2026-02-26 00:09
+2026-02-26 00:09:32,543  INFO      Profiles to warm: 10
+2026-02-26 00:09:32,543  INFO      Shuffled order: ['profile_id_01', 'profile_id_02', 'profile_id_07', 'profile_id_06', 'profile_id_04', 'profile_id_09', 'profile_id_03', 'profile_id_08', 'profile_id_05', 'profile_id_10']
+2026-02-26 00:09:32,544  INFO      ------------------------------------------------------------
+2026-02-26 00:09:32,544  INFO      [1/10] Starting warm-up for profile: profile_id_01
+2026-02-26 00:14:04,786  INFO      ============================================================
+2026-02-26 00:14:04,787  INFO      NstBrowser Account Warmer (API v2) -- 2026-02-26 00:14
+2026-02-26 00:14:04,787  INFO      Total profiles: 2
+2026-02-26 00:14:05,008  INFO      Execution order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 00:14:05,009  INFO      ------------------------------------------------------------
+2026-02-26 00:14:05,009  INFO      [1/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 00:19:14,881  INFO      ============================================================
+2026-02-26 00:19:14,882  INFO      NstBrowser Account Warmer (API v2) -- 2026-02-26 00:19
+2026-02-26 00:19:14,882  INFO      Total profiles: 2
+2026-02-26 00:19:15,077  INFO      Execution order: ['47dc0595-fbf8-4006-9b4e-1b3b055fb57d', '251894f1-0abc-4e5b-831c-1d3d594de9aa']
+2026-02-26 00:19:15,077  INFO      ------------------------------------------------------------
+2026-02-26 00:19:15,077  INFO      [1/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 00:19:15,225  ERROR     start_profile HTTP 400 for 47dc0595-fbf8-4006-9b4e-1b3b055fb57d -- body: {"data":null,"err":true,"msg":"unauthorized","code":1004}
+2026-02-26 00:27:19,956  INFO      ============================================================
+2026-02-26 00:27:19,956  INFO      NstBrowser Account Warmer (API v2) -- 2026-02-26 00:27
+2026-02-26 00:27:19,956  INFO      Total profiles: 2
+2026-02-26 00:27:20,418  INFO      Execution order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 00:27:20,419  INFO      ------------------------------------------------------------
+2026-02-26 00:27:20,419  INFO      [1/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 00:27:22,411  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=54980  |  ws=ws://127.0.0.1:54980/devtools/browser/446b2f47-495d-49a2-aaee-2fbb77e8e237
+2026-02-26 00:27:22,421  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:54980
+2026-02-26 00:27:43,925  ERROR     Error on profile 251894f1-0abc-4e5b-831c-1d3d594de9aa: Message: invalid argument: cannot parse capability: goog:chromeOptions
+from invalid argument: unrecognized chrome option: excludeSwitches
+Stacktrace:
+	GetHandleVerifier [0x00007FF7AFBF38A5+3004357]
+	(No symbol) [0x00007FF7AF889970]
+	(No symbol) [0x00007FF7AF73582A]
+	(No symbol) [0x00007FF7AF75F448]
+	(No symbol) [0x00007FF7AF760F58]
+	(No symbol) [0x00007FF7AF75B5CD]
+	(No symbol) [0x00007FF7AF7B4F7F]
+	(No symbol) [0x00007FF7AF7B47CE]
+	(No symbol) [0x00007FF7AF7B65B3]
+	(No symbol) [0x00007FF7AF7B6480]
+	(No symbol) [0x00007FF7AF7AB983]
+	(No symbol) [0x00007FF7AF777628]
+	(No symbol) [0x00007FF7AF778791]
+	GetHandleVerifier [0x00007FF7AFC1A00D+3161901]
+	GetHandleVerifier [0x00007FF7AFC6E060+3506048]
+	GetHandleVerifier [0x00007FF7AFC6400D+3465005]
+	GetHandleVerifier [0x00007FF7AF9E0EEB+830987]
+	(No symbol) [0x00007FF7AF89467F]
+	(No symbol) [0x00007FF7AF8909D4]
+	(No symbol) [0x00007FF7AF890B6D]
+	(No symbol) [0x00007FF7AF880149]
+	BaseThreadInitThunk [0x00007FF91F0EE8D7+23]
+	RtlUserThreadStart [0x00007FF920F2C40C+44]
+
+2026-02-26 00:27:44,943  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 00:27:44,945  INFO      Buffer: 0.0 min before next profile...
+2026-02-26 00:27:44,949  INFO      ------------------------------------------------------------
+2026-02-26 00:27:44,950  INFO      [2/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 00:27:47,131  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=49156  |  ws=ws://127.0.0.1:49156/devtools/browser/820c98f6-3b02-4259-b0e0-e1b0b7e726f2
+2026-02-26 00:27:47,133  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:49156
+2026-02-26 00:27:50,078  ERROR     Error on profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d: Message: invalid argument: cannot parse capability: goog:chromeOptions
+from invalid argument: unrecognized chrome option: excludeSwitches
+Stacktrace:
+	GetHandleVerifier [0x00007FF7AFBF38A5+3004357]
+	(No symbol) [0x00007FF7AF889970]
+	(No symbol) [0x00007FF7AF73582A]
+	(No symbol) [0x00007FF7AF75F448]
+	(No symbol) [0x00007FF7AF760F58]
+	(No symbol) [0x00007FF7AF75B5CD]
+	(No symbol) [0x00007FF7AF7B4F7F]
+	(No symbol) [0x00007FF7AF7B47CE]
+	(No symbol) [0x00007FF7AF7B65B3]
+	(No symbol) [0x00007FF7AF7B6480]
+	(No symbol) [0x00007FF7AF7AB983]
+	(No symbol) [0x00007FF7AF777628]
+	(No symbol) [0x00007FF7AF778791]
+	GetHandleVerifier [0x00007FF7AFC1A00D+3161901]
+	GetHandleVerifier [0x00007FF7AFC6E060+3506048]
+	GetHandleVerifier [0x00007FF7AFC6400D+3465005]
+	GetHandleVerifier [0x00007FF7AF9E0EEB+830987]
+	(No symbol) [0x00007FF7AF89467F]
+	(No symbol) [0x00007FF7AF8909D4]
+	(No symbol) [0x00007FF7AF890B6D]
+	(No symbol) [0x00007FF7AF880149]
+	BaseThreadInitThunk [0x00007FF91F0EE8D7+23]
+	RtlUserThreadStart [0x00007FF920F2C40C+44]
+
+2026-02-26 00:27:51,112  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d closed cleanly.
+2026-02-26 00:27:51,113  INFO      ============================================================
+2026-02-26 00:27:51,114  INFO      All profiles warmed. Done.
+2026-02-26 00:30:42,529  INFO      ============================================================
+2026-02-26 00:30:42,529  INFO      NstBrowser Account Warmer (API v2) -- 2026-02-26 00:30
+2026-02-26 00:30:42,529  INFO      Total profiles: 2
+2026-02-26 00:30:43,112  INFO      Execution order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 00:30:43,112  INFO      ------------------------------------------------------------
+2026-02-26 00:30:43,112  INFO      [1/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 00:30:44,567  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=31801  |  ws=ws://127.0.0.1:31801/devtools/browser/c6196dd8-b82a-4fc5-93f8-98dc5f67c1d4
+2026-02-26 00:30:44,583  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:31801
+2026-02-26 00:30:47,433  ERROR     Error on profile 251894f1-0abc-4e5b-831c-1d3d594de9aa: Message: session not created: cannot connect to chrome at 127.0.0.1:31801
+from session not created: This version of ChromeDriver only supports Chrome version 130
+Current browser version is 140.0.7339.35; For documentation on this error, please visit: https://www.selenium.dev/documentation/webdriver/troubleshooting/errors#sessionnotcreatedexception
+Stacktrace:
+	GetHandleVerifier [0x00007FF7AFBF38A5+3004357]
+	(No symbol) [0x00007FF7AF889970]
+	(No symbol) [0x00007FF7AF73582A]
+	(No symbol) [0x00007FF7AF7743F7]
+	(No symbol) [0x00007FF7AF7734C5]
+	(No symbol) [0x00007FF7AF7685C5]
+	(No symbol) [0x00007FF7AF7B6E01]
+	(No symbol) [0x00007FF7AF7B6480]
+	(No symbol) [0x00007FF7AF7AB983]
+	(No symbol) [0x00007FF7AF777628]
+	(No symbol) [0x00007FF7AF778791]
+	GetHandleVerifier [0x00007FF7AFC1A00D+3161901]
+	GetHandleVerifier [0x00007FF7AFC6E060+3506048]
+	GetHandleVerifier [0x00007FF7AFC6400D+3465005]
+	GetHandleVerifier [0x00007FF7AF9E0EEB+830987]
+	(No symbol) [0x00007FF7AF89467F]
+	(No symbol) [0x00007FF7AF8909D4]
+	(No symbol) [0x00007FF7AF890B6D]
+	(No symbol) [0x00007FF7AF880149]
+	BaseThreadInitThunk [0x00007FF91F0EE8D7+23]
+	RtlUserThreadStart [0x00007FF920F2C40C+44]
+
+2026-02-26 00:30:48,441  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 00:30:48,442  INFO      Buffer: 0.0 min before next profile...
+2026-02-26 00:30:48,442  INFO      ------------------------------------------------------------
+2026-02-26 00:30:48,443  INFO      [2/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 00:30:49,765  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=31654  |  ws=ws://127.0.0.1:31654/devtools/browser/ac58457b-3e2a-4cb8-b5ff-8ec6ef9025f4
+2026-02-26 00:30:49,772  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:31654
+2026-02-26 00:30:52,628  ERROR     Error on profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d: Message: session not created: cannot connect to chrome at 127.0.0.1:31654
+from session not created: This version of ChromeDriver only supports Chrome version 130
+Current browser version is 143.0.7499.40; For documentation on this error, please visit: https://www.selenium.dev/documentation/webdriver/troubleshooting/errors#sessionnotcreatedexception
+Stacktrace:
+	GetHandleVerifier [0x00007FF7AFBF38A5+3004357]
+	(No symbol) [0x00007FF7AF889970]
+	(No symbol) [0x00007FF7AF73582A]
+	(No symbol) [0x00007FF7AF7743F7]
+	(No symbol) [0x00007FF7AF7734C5]
+	(No symbol) [0x00007FF7AF7685C5]
+	(No symbol) [0x00007FF7AF7B6E01]
+	(No symbol) [0x00007FF7AF7B6480]
+	(No symbol) [0x00007FF7AF7AB983]
+	(No symbol) [0x00007FF7AF777628]
+	(No symbol) [0x00007FF7AF778791]
+	GetHandleVerifier [0x00007FF7AFC1A00D+3161901]
+	GetHandleVerifier [0x00007FF7AFC6E060+3506048]
+	GetHandleVerifier [0x00007FF7AFC6400D+3465005]
+	GetHandleVerifier [0x00007FF7AF9E0EEB+830987]
+	(No symbol) [0x00007FF7AF89467F]
+	(No symbol) [0x00007FF7AF8909D4]
+	(No symbol) [0x00007FF7AF890B6D]
+	(No symbol) [0x00007FF7AF880149]
+	BaseThreadInitThunk [0x00007FF91F0EE8D7+23]
+	RtlUserThreadStart [0x00007FF920F2C40C+44]
+
+2026-02-26 00:30:53,637  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d closed cleanly.
+2026-02-26 00:30:53,638  INFO      ============================================================
+2026-02-26 00:30:53,638  INFO      All profiles warmed. Done.
+2026-02-26 00:31:25,472  INFO      ============================================================
+2026-02-26 00:31:25,473  INFO      NstBrowser Account Warmer (API v2) -- 2026-02-26 00:31
+2026-02-26 00:31:25,473  INFO      Total profiles: 2
+2026-02-26 00:31:25,488  INFO      Execution order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 00:31:25,488  INFO      ------------------------------------------------------------
+2026-02-26 00:31:25,488  INFO      [1/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 00:31:26,767  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=28150  |  ws=ws://127.0.0.1:28150/devtools/browser/d2031f13-3997-4bc7-98a7-c809647cad87
+2026-02-26 00:31:26,771  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:28150
+2026-02-26 00:31:29,562  ERROR     Error on profile 251894f1-0abc-4e5b-831c-1d3d594de9aa: Message: session not created: cannot connect to chrome at 127.0.0.1:28150
+from session not created: This version of ChromeDriver only supports Chrome version 130
+Current browser version is 140.0.7339.35; For documentation on this error, please visit: https://www.selenium.dev/documentation/webdriver/troubleshooting/errors#sessionnotcreatedexception
+Stacktrace:
+	GetHandleVerifier [0x00007FF7AFBF38A5+3004357]
+	(No symbol) [0x00007FF7AF889970]
+	(No symbol) [0x00007FF7AF73582A]
+	(No symbol) [0x00007FF7AF7743F7]
+	(No symbol) [0x00007FF7AF7734C5]
+	(No symbol) [0x00007FF7AF7685C5]
+	(No symbol) [0x00007FF7AF7B6E01]
+	(No symbol) [0x00007FF7AF7B6480]
+	(No symbol) [0x00007FF7AF7AB983]
+	(No symbol) [0x00007FF7AF777628]
+	(No symbol) [0x00007FF7AF778791]
+	GetHandleVerifier [0x00007FF7AFC1A00D+3161901]
+	GetHandleVerifier [0x00007FF7AFC6E060+3506048]
+	GetHandleVerifier [0x00007FF7AFC6400D+3465005]
+	GetHandleVerifier [0x00007FF7AF9E0EEB+830987]
+	(No symbol) [0x00007FF7AF89467F]
+	(No symbol) [0x00007FF7AF8909D4]
+	(No symbol) [0x00007FF7AF890B6D]
+	(No symbol) [0x00007FF7AF880149]
+	BaseThreadInitThunk [0x00007FF91F0EE8D7+23]
+	RtlUserThreadStart [0x00007FF920F2C40C+44]
+
+2026-02-26 00:31:30,571  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 00:31:30,572  INFO      Buffer: 1.0 min before next profile...
+2026-02-26 00:36:08,732  INFO      ============================================================
+2026-02-26 00:36:08,732  INFO      NstBrowser Account Warmer (API v2) -- 2026-02-26 00:36
+2026-02-26 00:36:08,732  INFO      Total profiles: 2
+2026-02-26 00:36:08,963  INFO      Execution order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 00:36:08,964  INFO      ------------------------------------------------------------
+2026-02-26 00:36:08,964  INFO      [1/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 00:36:10,242  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=59887  |  ws=ws://127.0.0.1:59887/devtools/browser/a1e0d9ee-2aec-4393-9e12-b7189b14e204
+2026-02-26 00:36:10,247  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:59887
+2026-02-26 00:36:10,276  INFO      Detected Orbita browser major version: 140
+2026-02-26 00:36:10,381  INFO      ====== WebDriver manager ======
+2026-02-26 00:36:13,115  INFO      There is no [win64] chromedriver "140" for browser google-chrome "130.0.6723" in cache
+2026-02-26 00:36:13,388  INFO      WebDriver version 140.0.7339.207 selected
+2026-02-26 00:36:13,398  INFO      Modern chrome version https://storage.googleapis.com/chrome-for-testing-public/140.0.7339.207/win32/chromedriver-win32.zip
+2026-02-26 00:36:13,399  INFO      About to download new driver from https://storage.googleapis.com/chrome-for-testing-public/140.0.7339.207/win32/chromedriver-win32.zip
+2026-02-26 00:36:13,668  INFO      Driver downloading response is 200
+2026-02-26 00:36:38,908  INFO      Driver has been saved in cache [C:\Users\User\.wdm\drivers\chromedriver\win64\140]
+2026-02-26 00:36:38,909  INFO      webdriver-manager downloaded chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 00:36:38,910  INFO      Using chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 00:36:41,135  INFO      Selenium attached successfully.
+2026-02-26 00:36:41,135  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 00:36:50,128  INFO      Pre-flight: https://www.nytimes.com  (5s)
+2026-02-26 00:37:20,159  ERROR     Error on profile 251894f1-0abc-4e5b-831c-1d3d594de9aa: Message: timeout: Timed out receiving message from renderer: 29.804
+  (Session info: chrome=140.0.7339.35)
+Stacktrace:
+	GetHandleVerifier [0x0xf1c333+65459]
+	GetHandleVerifier [0x0xf1c374+65524]
+	(No symbol) [0x0xd3d973]
+	(No symbol) [0x0xd2e184]
+	(No symbol) [0x0xd2deba]
+	(No symbol) [0x0xd2bdc0]
+	(No symbol) [0x0xd2c8a7]
+	(No symbol) [0x0xd394fe]
+	(No symbol) [0x0xd4aec5]
+	(No symbol) [0x0xd50a56]
+	(No symbol) [0x0xd2cf26]
+	(No symbol) [0x0xd4ab6e]
+	(No symbol) [0x0xdcb8e8]
+	(No symbol) [0x0xda9bf6]
+	(No symbol) [0x0xd7b38e]
+	(No symbol) [0x0xd7c274]
+	GetHandleVerifier [0x0x119eda3+2697763]
+	GetHandleVerifier [0x0x1199ec7+2677575]
+	GetHandleVerifier [0x0xf44194+228884]
+	GetHandleVerifier [0x0xf349f8+165496]
+	GetHandleVerifier [0x0xf3b18d+192013]
+	GetHandleVerifier [0x0xf247d8+99416]
+	GetHandleVerifier [0x0xf24972+99826]
+	GetHandleVerifier [0x0xf0ebea+10346]
+	BaseThreadInitThunk [0x0x74cc5d49+25]
+	RtlInitializeExceptionChain [0x0x7799d83b+107]
+	RtlGetAppContainerNamedObjectPath [0x0x7799d7c1+561]
+
+2026-02-26 00:37:20,399  INFO      Screenshot saved: screenshots\error_251894f1-0abc-4e5b-831c-1d3d594de9aa_20260226_003720.png
+2026-02-26 00:37:23,677  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 00:37:23,678  INFO      Buffer: 0.0 min before next profile...
+2026-02-26 00:37:23,679  INFO      ------------------------------------------------------------
+2026-02-26 00:37:23,680  INFO      [2/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 00:37:25,625  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=47989  |  ws=ws://127.0.0.1:47989/devtools/browser/0ac8d727-91c7-4113-bb3e-9d859b50c7d5
+2026-02-26 00:37:25,630  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:47989
+2026-02-26 00:37:25,638  INFO      Detected Orbita browser major version: 143
+2026-02-26 00:37:25,642  INFO      ====== WebDriver manager ======
+2026-02-26 00:37:28,822  INFO      There is no [win64] chromedriver "143" for browser google-chrome "130.0.6723" in cache
+2026-02-26 00:37:29,110  INFO      WebDriver version 143.0.7499.192 selected
+2026-02-26 00:37:29,137  INFO      Modern chrome version https://storage.googleapis.com/chrome-for-testing-public/143.0.7499.192/win32/chromedriver-win32.zip
+2026-02-26 00:37:29,138  INFO      About to download new driver from https://storage.googleapis.com/chrome-for-testing-public/143.0.7499.192/win32/chromedriver-win32.zip
+2026-02-26 00:37:29,240  INFO      Driver downloading response is 200
+2026-02-26 00:38:06,626  INFO      Driver has been saved in cache [C:\Users\User\.wdm\drivers\chromedriver\win64\143]
+2026-02-26 00:38:06,626  INFO      webdriver-manager downloaded chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 00:38:06,626  INFO      Using chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 00:38:08,989  INFO      Selenium attached successfully.
+2026-02-26 00:38:08,993  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 00:38:20,138  INFO      Pre-flight: https://www.nytimes.com  (5s)
+2026-02-26 00:38:50,161  ERROR     Error on profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d: Message: timeout: Timed out receiving message from renderer: 29.710
+  (Session info: chrome=143.0.7499.40)
+Stacktrace:
+Symbols not available. Dumping unresolved backtrace:
+	0xf71213
+	0xf71254
+	0xd5e6dd
+	0xd4ed49
+	0xd4ea85
+	0xd4c94f
+	0xd4d456
+	0xd5a09b
+	0xd6be5e
+	0xd71976
+	0xd4dad2
+	0xd6bbd5
+	0xdede45
+	0xdcb2e6
+	0xd9d321
+	0xd9e1d4
+	0x11c5254
+	0x11c080b
+	0x11dd0ea
+	0xf8b118
+	0xf9311d
+	0xf79518
+	0xf796d9
+	0xf63a68
+	0x74cc5d49
+	0x7799d83b
+	0x7799d7c1
+
+2026-02-26 00:38:50,715  INFO      Screenshot saved: screenshots\error_47dc0595-fbf8-4006-9b4e-1b3b055fb57d_20260226_003850.png
+2026-02-26 00:38:54,441  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d closed cleanly.
+2026-02-26 00:38:54,445  INFO      ============================================================
+2026-02-26 00:38:54,464  INFO      All profiles warmed. Done.
+2026-02-26 00:39:50,622  INFO      ============================================================
+2026-02-26 00:39:50,622  INFO      NstBrowser Account Warmer (API v2) -- 2026-02-26 00:39
+2026-02-26 00:39:50,623  INFO      Total profiles: 2
+2026-02-26 00:39:50,645  INFO      Execution order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 00:39:50,646  INFO      ------------------------------------------------------------
+2026-02-26 00:39:50,646  INFO      [1/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 00:39:52,367  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=46254  |  ws=ws://127.0.0.1:46254/devtools/browser/f54493a2-f9b6-441c-ae73-0b9f4fbfad1a
+2026-02-26 00:39:52,375  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:46254
+2026-02-26 00:39:52,391  INFO      Detected Orbita browser major version: 140
+2026-02-26 00:39:52,482  INFO      ====== WebDriver manager ======
+2026-02-26 00:39:56,055  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 00:39:56,055  INFO      webdriver-manager downloaded chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 00:39:56,055  INFO      Using chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 00:39:56,667  INFO      Selenium attached successfully.
+2026-02-26 00:39:56,667  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 00:40:10,164  INFO      Navigating to https://www.threads.com
+2026-02-26 00:40:36,179  ERROR     Error on profile 251894f1-0abc-4e5b-831c-1d3d594de9aa: CAPTCHA detected — aborting profile.
+2026-02-26 00:40:36,435  INFO      Screenshot saved: screenshots\error_251894f1-0abc-4e5b-831c-1d3d594de9aa_20260226_004036.png
+2026-02-26 00:40:39,989  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 00:40:39,990  INFO      Buffer: 0.0 min before next profile...
+2026-02-26 00:40:39,991  INFO      ------------------------------------------------------------
+2026-02-26 00:40:39,991  INFO      [2/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 00:40:42,817  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=21858  |  ws=ws://127.0.0.1:21858/devtools/browser/3fe2934b-fb31-4fbd-bcc9-58a49d355dc4
+2026-02-26 00:40:42,826  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:21858
+2026-02-26 00:40:42,851  INFO      Detected Orbita browser major version: 143
+2026-02-26 00:40:42,894  INFO      ====== WebDriver manager ======
+2026-02-26 00:40:46,096  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 00:40:46,101  INFO      webdriver-manager downloaded chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 00:40:46,101  INFO      Using chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 00:40:46,685  INFO      Selenium attached successfully.
+2026-02-26 00:40:46,685  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 00:40:57,187  INFO      Navigating to https://www.threads.com
+2026-02-26 00:41:03,438  ERROR     Error on profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d: CAPTCHA detected — aborting profile.
+2026-02-26 00:41:03,707  INFO      Screenshot saved: screenshots\error_47dc0595-fbf8-4006-9b4e-1b3b055fb57d_20260226_004103.png
+2026-02-26 00:41:06,853  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d closed cleanly.
+2026-02-26 00:41:06,855  INFO      ============================================================
+2026-02-26 00:41:06,857  INFO      All profiles warmed. Done.
+2026-02-26 00:50:02,604  INFO      ============================================================
+2026-02-26 00:50:02,604  INFO      NstBrowser Account Warmer (API v2) -- 2026-02-26 00:50
+2026-02-26 00:50:02,605  INFO      Total profiles: 2
+2026-02-26 00:50:03,785  INFO      Execution order: ['47dc0595-fbf8-4006-9b4e-1b3b055fb57d', '251894f1-0abc-4e5b-831c-1d3d594de9aa']
+2026-02-26 00:50:03,786  INFO      ------------------------------------------------------------
+2026-02-26 00:50:03,786  INFO      [1/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 00:50:06,368  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=42104  |  ws=ws://127.0.0.1:42104/devtools/browser/2ed50d78-1bab-4045-8e63-7229a7cf4efd
+2026-02-26 00:50:06,373  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:42104
+2026-02-26 00:50:06,406  INFO      Detected Orbita browser major version: 143
+2026-02-26 00:50:06,544  INFO      ====== WebDriver manager ======
+2026-02-26 00:50:09,458  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 00:50:09,459  INFO      webdriver-manager downloaded chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 00:50:09,460  INFO      Using chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 00:50:10,053  INFO      Selenium attached successfully.
+2026-02-26 00:50:10,056  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 00:50:19,011  INFO      Pre-flight: https://www.nytimes.com  (5s)
+2026-02-26 00:51:14,982  INFO      ============================================================
+2026-02-26 00:51:14,983  INFO      NstBrowser Account Warmer (API v2) -- 2026-02-26 00:51
+2026-02-26 00:51:14,983  INFO      Total profiles: 2
+2026-02-26 00:51:16,084  INFO      Execution order: ['47dc0595-fbf8-4006-9b4e-1b3b055fb57d', '251894f1-0abc-4e5b-831c-1d3d594de9aa']
+2026-02-26 00:51:16,085  INFO      ------------------------------------------------------------
+2026-02-26 00:51:16,086  INFO      [1/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 00:51:17,915  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=40329  |  ws=ws://127.0.0.1:40329/devtools/browser/c2e6380d-989f-4fe9-932b-240ba1946995
+2026-02-26 00:51:17,923  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:40329
+2026-02-26 00:51:17,931  INFO      Detected Orbita browser major version: 143
+2026-02-26 00:51:18,043  INFO      ====== WebDriver manager ======
+2026-02-26 00:51:21,096  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 00:51:21,096  INFO      webdriver-manager downloaded chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 00:51:21,098  INFO      Using chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 00:51:21,688  INFO      Selenium attached successfully.
+2026-02-26 00:51:21,691  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 00:51:30,838  INFO      Navigating to https://www.threads.com
+2026-02-26 00:51:37,906  INFO      CAPTCHA screenshot saved: screenshots\captcha_47dc0595-fbf8-4006-9b4e-1b3b055fb57d_20260226_005137.png
+2026-02-26 00:51:37,906  WARNING   ============================================================
+2026-02-26 00:51:37,907  WARNING   CAPTCHA / LOGIN WALL detected on profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 00:51:37,907  WARNING   Please solve it manually in the open browser window.
+2026-02-26 00:51:37,907  WARNING   The script will continue automatically once it clears.
+2026-02-26 00:51:37,908  WARNING   Waiting up to 120 seconds...
+2026-02-26 00:51:37,908  WARNING   ============================================================
+2026-02-26 00:52:02,782  WARNING   Retrying (Retry(total=2, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ConnectionResetError(10054, 'An existing connection was forcibly closed by the remote host', None, 10054, None)': /session/f1b10f4ae8661cb42a648e603c508855
+2026-02-26 00:52:06,830  WARNING   Retrying (Retry(total=1, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NewConnectionError("HTTPConnection(host='localhost', port=51797): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it")': /session/f1b10f4ae8661cb42a648e603c508855
+2026-02-26 00:52:10,894  WARNING   Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NewConnectionError("HTTPConnection(host='localhost', port=51797): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it")': /session/f1b10f4ae8661cb42a648e603c508855
+2026-02-26 00:52:15,950  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d closed cleanly.
+2026-02-26 00:54:34,533  INFO      ============================================================
+2026-02-26 00:54:34,534  INFO      NstBrowser Account Warmer (API v2) -- 2026-02-26 00:54
+2026-02-26 00:54:34,535  INFO      Total profiles: 2
+2026-02-26 00:54:35,142  INFO      Execution order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 00:54:35,143  INFO      ------------------------------------------------------------
+2026-02-26 00:54:35,143  INFO      [1/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 00:54:37,227  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=22490  |  ws=ws://127.0.0.1:22490/devtools/browser/a86e354b-11f0-4550-853c-16c0a00bee83
+2026-02-26 00:54:37,243  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:22490
+2026-02-26 00:54:37,251  INFO      Detected Orbita browser major version: 140
+2026-02-26 00:54:37,440  INFO      ====== WebDriver manager ======
+2026-02-26 00:54:40,349  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 00:54:40,351  INFO      webdriver-manager downloaded chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 00:54:40,351  INFO      Using chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 00:54:40,955  INFO      Selenium attached successfully.
+2026-02-26 00:54:40,955  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 00:54:50,416  INFO      Navigating to https://www.threads.com
+2026-02-26 00:54:58,248  INFO      Session: 1.0 min  |  profile: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 00:56:15,305  WARNING   Retrying (Retry(total=2, connect=None, read=None, redirect=None, status=None)) after connection broken by 'ConnectionResetError(10054, 'An existing connection was forcibly closed by the remote host', None, 10054, None)': /session/54b368df7a228c92be1aa6aeaa7e1c01
+2026-02-26 00:56:19,357  WARNING   Retrying (Retry(total=1, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NewConnectionError("HTTPConnection(host='localhost', port=59571): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it")': /session/54b368df7a228c92be1aa6aeaa7e1c01
+2026-02-26 00:56:23,429  WARNING   Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NewConnectionError("HTTPConnection(host='localhost', port=59571): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it")': /session/54b368df7a228c92be1aa6aeaa7e1c01
+2026-02-26 00:56:29,901  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 01:05:11,058  INFO      ============================================================
+2026-02-26 01:05:11,058  INFO      NstBrowser Account Warmer (API v2) -- 2026-02-26 01:05
+2026-02-26 01:05:11,058  INFO      Total profiles: 2
+2026-02-26 01:05:11,631  INFO      Execution order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 01:05:11,631  INFO      ------------------------------------------------------------
+2026-02-26 01:05:11,632  INFO      [1/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 01:05:13,094  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=58269  |  ws=ws://127.0.0.1:58269/devtools/browser/c60b8706-8562-4ea2-ace3-a4890d17cef8
+2026-02-26 01:05:13,110  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:58269
+2026-02-26 01:05:13,120  INFO      Detected Orbita browser major version: 140
+2026-02-26 01:05:13,243  INFO      ====== WebDriver manager ======
+2026-02-26 01:05:15,339  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 01:05:15,341  INFO      webdriver-manager downloaded chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 01:05:15,341  INFO      Using chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 01:05:15,914  INFO      Selenium attached successfully.
+2026-02-26 01:05:15,914  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 01:05:47,698  ERROR     Error on profile 251894f1-0abc-4e5b-831c-1d3d594de9aa: Message: script timeout
+  (Session info: chrome=140.0.7339.35)
+Stacktrace:
+	GetHandleVerifier [0x0xf1c333+65459]
+	GetHandleVerifier [0x0xf1c374+65524]
+	(No symbol) [0x0xd3d7c0]
+	(No symbol) [0x0xdccb02]
+	(No symbol) [0x0xda9dfc]
+	(No symbol) [0x0xdcb606]
+	(No symbol) [0x0xda9bf6]
+	(No symbol) [0x0xd7b38e]
+	(No symbol) [0x0xd7c274]
+	GetHandleVerifier [0x0x119eda3+2697763]
+	GetHandleVerifier [0x0x1199ec7+2677575]
+	GetHandleVerifier [0x0xf44194+228884]
+	GetHandleVerifier [0x0xf349f8+165496]
+	GetHandleVerifier [0x0xf3b18d+192013]
+	GetHandleVerifier [0x0xf247d8+99416]
+	GetHandleVerifier [0x0xf24972+99826]
+	GetHandleVerifier [0x0xf0ebea+10346]
+	BaseThreadInitThunk [0x0x74cc5d49+25]
+	RtlInitializeExceptionChain [0x0x7799d83b+107]
+	RtlGetAppContainerNamedObjectPath [0x0x7799d7c1+561]
+
+2026-02-26 01:05:47,818  INFO      Screenshot saved: screenshots\error_251894f1-0abc-4e5b-831c-1d3d594de9aa_20260226_010547.png
+2026-02-26 01:05:50,883  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 01:05:50,884  INFO      Buffer: 0.0 min before next profile...
+2026-02-26 01:05:50,885  INFO      ------------------------------------------------------------
+2026-02-26 01:05:50,885  INFO      [2/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 01:05:52,432  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=43485  |  ws=ws://127.0.0.1:43485/devtools/browser/b0327fd3-6ae1-446d-89c7-64538d55cfa1
+2026-02-26 01:05:52,449  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:43485
+2026-02-26 01:05:52,468  INFO      Detected Orbita browser major version: 143
+2026-02-26 01:05:52,476  INFO      ====== WebDriver manager ======
+2026-02-26 01:05:54,719  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 01:05:54,720  INFO      webdriver-manager downloaded chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 01:05:54,720  INFO      Using chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 01:05:55,274  INFO      Selenium attached successfully.
+2026-02-26 01:05:55,276  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 01:06:23,374  INFO      Navigating to https://www.threads.com
+2026-02-26 01:06:23,376  ERROR     Error on profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d: Message: no such window: target window already closed
+from unknown error: web view not found
+  (Session info: chrome=143.0.7499.40)
+Stacktrace:
+Symbols not available. Dumping unresolved backtrace:
+	0xf71213
+	0xf71254
+	0xd5e6dd
+	0xd3ca8d
+	0xdd1ffb
+	0xded44c
+	0xdcb2e6
+	0xd9d321
+	0xd9e1d4
+	0x11c5254
+	0x11c080b
+	0x11dd0ea
+	0xf8b118
+	0xf9311d
+	0xf79518
+	0xf796d9
+	0xf63a68
+	0x74cc5d49
+	0x7799d83b
+	0x7799d7c1
+
+2026-02-26 01:06:23,378  WARNING   Screenshot failed: Message: no such window: target window already closed
+from unknown error: web view not found
+  (Session info: chrome=143.0.7499.40)
+Stacktrace:
+Symbols not available. Dumping unresolved backtrace:
+	0xf71213
+	0xf71254
+	0xd5e6dd
+	0xd3ca8d
+	0xdd1ffb
+	0xded44c
+	0xdcb2e6
+	0xd9d321
+	0xd9e1d4
+	0x11c5254
+	0x11c080b
+	0x11dd0ea
+	0xf8b118
+	0xf9311d
+	0xf79518
+	0xf796d9
+	0xf63a68
+	0x74cc5d49
+	0x7799d83b
+	0x7799d7c1
+
+2026-02-26 01:06:25,706  WARNING   Unexpected close response for 47dc0595-fbf8-4006-9b4e-1b3b055fb57d: {'data': None, 'err': True, 'msg': 'browser instance not found, please try again', 'code': 400}
+2026-02-26 01:06:25,707  INFO      ============================================================
+2026-02-26 01:06:25,707  INFO      All profiles warmed. Done.
+2026-02-26 01:11:06,128  INFO      ============================================================
+2026-02-26 01:11:06,128  INFO      NstBrowser Warmer (API v2) -- 2026-02-26 01:11
+2026-02-26 01:11:06,129  INFO      Target: https://www.threads.com  |  Profiles: 2
+2026-02-26 01:11:06,692  INFO      Execution order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 01:11:06,693  INFO      ------------------------------------------------------------
+2026-02-26 01:11:06,693  INFO      [1/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 01:11:08,007  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=42861  |  ws=ws://127.0.0.1:42861/devtools/browser/df256815-e3c4-4cdf-b314-427591b94b9f
+2026-02-26 01:11:08,033  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:42861
+2026-02-26 01:11:08,065  INFO      Detected Orbita major version: 140
+2026-02-26 01:11:08,190  INFO      ====== WebDriver manager ======
+2026-02-26 01:11:10,425  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 01:11:10,426  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 01:11:10,994  INFO      Selenium attached successfully.
+2026-02-26 01:11:10,994  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 01:11:18,617  INFO      Navigating to https://www.threads.com
+2026-02-26 01:11:23,671  INFO      Session: 1.0 min  |  profile: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 01:12:45,053  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 01:18:46,239  INFO      ============================================================
+2026-02-26 01:18:46,239  INFO      NstBrowser Warmer (API v2) -- 2026-02-26 01:18
+2026-02-26 01:18:46,240  INFO      Target: https://www.threads.com  |  Profiles: 2
+2026-02-26 01:18:46,591  INFO      Execution order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 01:18:46,592  INFO      ------------------------------------------------------------
+2026-02-26 01:18:46,592  INFO      [1/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 01:18:47,942  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=54901  |  ws=ws://127.0.0.1:54901/devtools/browser/e9bafd17-ca43-4173-91f8-13cf7febeb11
+2026-02-26 01:18:47,949  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:54901
+2026-02-26 01:18:47,965  INFO      Detected Orbita major version: 140
+2026-02-26 01:18:48,058  INFO      ====== WebDriver manager ======
+2026-02-26 01:18:50,198  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 01:18:50,199  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 01:18:50,772  INFO      Selenium attached successfully.
+2026-02-26 01:18:50,772  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 01:19:00,305  INFO      Navigating to https://www.threads.com
+2026-02-26 01:19:07,344  INFO      Session: 1.0 min  |  profile: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 01:20:27,565  INFO      Session complete. Total actions: 1
+2026-02-26 01:20:31,208  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 01:20:31,210  INFO      Buffer: 0.0 min before next profile...
+2026-02-26 01:20:31,210  INFO      ------------------------------------------------------------
+2026-02-26 01:20:31,211  INFO      [2/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 01:20:32,849  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=53420  |  ws=ws://127.0.0.1:53420/devtools/browser/755f88c2-af23-4073-b59f-ccc89189b67e
+2026-02-26 01:20:32,858  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:53420
+2026-02-26 01:20:32,877  INFO      Detected Orbita major version: 143
+2026-02-26 01:20:32,884  INFO      ====== WebDriver manager ======
+2026-02-26 01:20:34,991  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 01:20:34,991  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 01:20:35,556  INFO      Selenium attached successfully.
+2026-02-26 01:20:35,559  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 01:20:43,614  INFO      Navigating to https://www.threads.com
+2026-02-26 01:20:50,093  INFO      Session: 1.0 min  |  profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 01:22:44,521  INFO      Session complete. Total actions: 2
+2026-02-26 01:22:48,182  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d closed cleanly.
+2026-02-26 01:22:48,183  INFO      ============================================================
+2026-02-26 01:22:48,184  INFO      All profiles warmed. Done.
+2026-02-26 01:24:18,952  INFO      ============================================================
+2026-02-26 01:24:18,952  INFO      NstBrowser Warmer (API v2) -- 2026-02-26 01:24
+2026-02-26 01:24:18,952  INFO      Target: https://www.threads.com  |  Profiles: 2
+2026-02-26 01:24:19,866  INFO      Execution order: ['47dc0595-fbf8-4006-9b4e-1b3b055fb57d', '251894f1-0abc-4e5b-831c-1d3d594de9aa']
+2026-02-26 01:24:19,866  INFO      ------------------------------------------------------------
+2026-02-26 01:24:19,866  INFO      [1/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 01:24:21,182  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=25185  |  ws=ws://127.0.0.1:25185/devtools/browser/9d869abf-888d-4ac4-aa3d-9c56812062d4
+2026-02-26 01:24:21,193  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:25185
+2026-02-26 01:24:21,208  INFO      Detected Orbita major version: 143
+2026-02-26 01:24:21,294  INFO      ====== WebDriver manager ======
+2026-02-26 01:24:23,432  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 01:24:23,432  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 01:24:23,995  INFO      Selenium attached successfully.
+2026-02-26 01:24:23,995  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 01:24:30,984  INFO      Navigating to https://www.threads.com
+2026-02-26 01:24:39,143  INFO      Session: 1.0 min  |  profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 01:25:45,116  INFO      Session complete. Total actions: 1
+2026-02-26 01:25:48,531  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d closed cleanly.
+2026-02-26 01:25:48,532  INFO      Buffer: 0.0 min before next profile...
+2026-02-26 01:25:48,533  INFO      ------------------------------------------------------------
+2026-02-26 01:25:48,533  INFO      [2/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 01:25:50,311  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=53822  |  ws=ws://127.0.0.1:53822/devtools/browser/92947966-da6a-459e-a576-e61b0aa4ccd3
+2026-02-26 01:25:50,323  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:53822
+2026-02-26 01:25:50,334  INFO      Detected Orbita major version: 140
+2026-02-26 01:25:50,344  INFO      ====== WebDriver manager ======
+2026-02-26 01:25:52,625  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 01:25:52,625  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 01:25:53,209  INFO      Selenium attached successfully.
+2026-02-26 01:25:53,209  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 01:26:00,655  INFO      Navigating to https://www.threads.com
+2026-02-26 01:26:00,906  ERROR     Error on profile 251894f1-0abc-4e5b-831c-1d3d594de9aa: Message: no such window: target window already closed
+from unknown error: web view not found
+  (Session info: chrome=140.0.7339.35)
+Stacktrace:
+	GetHandleVerifier [0x0xf1c333+65459]
+	GetHandleVerifier [0x0xf1c374+65524]
+	(No symbol) [0x0xd3d973]
+	(No symbol) [0x0xd1c19d]
+	(No symbol) [0x0xdb059e]
+	(No symbol) [0x0xdcaef9]
+	(No symbol) [0x0xda9bf6]
+	(No symbol) [0x0xd7b38e]
+	(No symbol) [0x0xd7c274]
+	GetHandleVerifier [0x0x119eda3+2697763]
+	GetHandleVerifier [0x0x1199ec7+2677575]
+	GetHandleVerifier [0x0xf44194+228884]
+	GetHandleVerifier [0x0xf349f8+165496]
+	GetHandleVerifier [0x0xf3b18d+192013]
+	GetHandleVerifier [0x0xf247d8+99416]
+	GetHandleVerifier [0x0xf24972+99826]
+	GetHandleVerifier [0x0xf0ebea+10346]
+	BaseThreadInitThunk [0x0x74cc5d49+25]
+	RtlInitializeExceptionChain [0x0x7799d83b+107]
+	RtlGetAppContainerNamedObjectPath [0x0x7799d7c1+561]
+
+2026-02-26 01:26:00,922  WARNING   Screenshot failed: Message: no such window: target window already closed
+from unknown error: web view not found
+  (Session info: chrome=140.0.7339.35)
+Stacktrace:
+	GetHandleVerifier [0x0xf1c333+65459]
+	GetHandleVerifier [0x0xf1c374+65524]
+	(No symbol) [0x0xd3d973]
+	(No symbol) [0x0xd1c19d]
+	(No symbol) [0x0xdb059e]
+	(No symbol) [0x0xdcaef9]
+	(No symbol) [0x0xda9bf6]
+	(No symbol) [0x0xd7b38e]
+	(No symbol) [0x0xd7c274]
+	GetHandleVerifier [0x0x119eda3+2697763]
+	GetHandleVerifier [0x0x1199ec7+2677575]
+	GetHandleVerifier [0x0xf44194+228884]
+	GetHandleVerifier [0x0xf349f8+165496]
+	GetHandleVerifier [0x0xf3b18d+192013]
+	GetHandleVerifier [0x0xf247d8+99416]
+	GetHandleVerifier [0x0xf24972+99826]
+	GetHandleVerifier [0x0xf0ebea+10346]
+	BaseThreadInitThunk [0x0x74cc5d49+25]
+	RtlInitializeExceptionChain [0x0x7799d83b+107]
+	RtlGetAppContainerNamedObjectPath [0x0x7799d7c1+561]
+
+2026-02-26 01:26:02,953  WARNING   Unexpected close response for 251894f1-0abc-4e5b-831c-1d3d594de9aa: {'data': None, 'err': True, 'msg': 'browser instance not found, please try again', 'code': 400}
+2026-02-26 01:26:02,954  INFO      ============================================================
+2026-02-26 01:26:02,954  INFO      All profiles warmed. Done.
+2026-02-26 01:38:05,851  INFO      ============================================================
+2026-02-26 01:38:05,851  INFO      NstBrowser Warmer (API v2) -- 2026-02-26 01:38
+2026-02-26 01:38:05,852  INFO      Target: https://www.threads.com  |  Profiles: 2
+2026-02-26 01:38:06,067  INFO      Execution order: ['47dc0595-fbf8-4006-9b4e-1b3b055fb57d', '251894f1-0abc-4e5b-831c-1d3d594de9aa']
+2026-02-26 01:38:06,067  INFO      ------------------------------------------------------------
+2026-02-26 01:38:06,067  INFO      [1/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 01:38:07,224  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=50513  |  ws=ws://127.0.0.1:50513/devtools/browser/c649afd1-7297-4d64-ac92-1f74823f9a2f
+2026-02-26 01:38:07,234  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:50513
+2026-02-26 01:38:07,249  INFO      Detected Orbita major version: 143
+2026-02-26 01:38:07,344  INFO      ====== WebDriver manager ======
+2026-02-26 01:38:09,622  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 01:38:09,624  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 01:38:10,190  INFO      Selenium attached successfully.
+2026-02-26 01:38:10,192  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 01:38:16,614  INFO      Navigating to https://www.threads.com
+2026-02-26 01:38:22,467  INFO      Session: 1.0 min  |  profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 01:38:22,635  INFO      Active: scanning for like buttons on https://www.threads.com/
+2026-02-26 01:38:27,405  INFO      XPath fallback: 2 unliked like button(s)
+2026-02-26 01:38:32,142  INFO      Like delivered successfully
+2026-02-26 01:38:38,983  INFO      Like delivered successfully
+2026-02-26 01:38:43,859  INFO      Active action complete. Likes delivered: 2
+2026-02-26 01:39:44,259  INFO      Session complete. Total actions: 2
+2026-02-26 01:39:47,504  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d closed cleanly.
+2026-02-26 01:39:47,506  INFO      Buffer: 0.0 min before next profile...
+2026-02-26 01:39:47,506  INFO      ------------------------------------------------------------
+2026-02-26 01:39:47,506  INFO      [2/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 01:39:49,694  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=39563  |  ws=ws://127.0.0.1:39563/devtools/browser/bfea4605-c48c-4644-be63-5f29b810f17c
+2026-02-26 01:39:49,712  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:39563
+2026-02-26 01:39:49,719  INFO      Detected Orbita major version: 140
+2026-02-26 01:39:49,730  INFO      ====== WebDriver manager ======
+2026-02-26 01:39:51,932  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 01:39:51,933  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 01:39:52,499  INFO      Selenium attached successfully.
+2026-02-26 01:39:52,499  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 01:40:03,398  INFO      Navigating to https://www.threads.com
+2026-02-26 01:40:07,969  INFO      Session: 1.0 min  |  profile: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 01:41:55,906  INFO      Session complete. Total actions: 2
+2026-02-26 01:41:59,072  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 01:41:59,074  INFO      ============================================================
+2026-02-26 01:41:59,074  INFO      All profiles warmed. Done.
+2026-02-26 01:53:01,982  INFO      ============================================================
+2026-02-26 01:53:01,982  INFO      NstBrowser Warmer (API v2) -- 2026-02-26 01:53
+2026-02-26 01:53:01,982  INFO      Target: https://www.threads.net  |  Profiles: 2
+2026-02-26 01:53:02,208  INFO      Execution order: ['47dc0595-fbf8-4006-9b4e-1b3b055fb57d', '251894f1-0abc-4e5b-831c-1d3d594de9aa']
+2026-02-26 01:53:02,209  INFO      ------------------------------------------------------------
+2026-02-26 01:53:02,209  INFO      [1/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 01:53:03,324  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=45833  |  ws=ws://127.0.0.1:45833/devtools/browser/cdde996f-069b-497c-a4f6-49e1334ac4d2
+2026-02-26 01:53:03,362  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:45833
+2026-02-26 01:53:03,373  INFO      Detected Orbita major version: 143
+2026-02-26 01:53:03,466  INFO      ====== WebDriver manager ======
+2026-02-26 01:53:05,791  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 01:53:05,791  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 01:53:06,355  INFO      Selenium attached successfully.
+2026-02-26 01:53:06,357  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 01:53:17,322  INFO      Navigating to https://www.threads.net
+2026-02-26 01:53:21,943  INFO      Session: 1.0 min  |  profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 01:54:30,065  INFO      Session complete. Total actions: 1
+2026-02-26 01:54:33,315  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d closed cleanly.
+2026-02-26 01:54:33,317  INFO      Buffer: 0.0 min before next profile...
+2026-02-26 01:54:33,317  INFO      ------------------------------------------------------------
+2026-02-26 01:54:33,317  INFO      [2/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 01:54:34,678  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=28241  |  ws=ws://127.0.0.1:28241/devtools/browser/32a936d7-b347-454d-829e-623aa6b83b01
+2026-02-26 01:54:34,690  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:28241
+2026-02-26 01:54:34,702  INFO      Detected Orbita major version: 140
+2026-02-26 01:54:34,710  INFO      ====== WebDriver manager ======
+2026-02-26 01:54:36,867  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 01:54:36,868  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 01:54:37,438  INFO      Selenium attached successfully.
+2026-02-26 01:54:37,440  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 01:54:44,936  INFO      Navigating to https://www.threads.net
+2026-02-26 01:54:53,086  INFO      Session: 1.0 min  |  profile: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 01:57:05,847  INFO      Session complete. Total actions: 2
+2026-02-26 01:57:09,083  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 01:57:09,084  INFO      ============================================================
+2026-02-26 01:57:09,084  INFO      All profiles warmed. Done.
