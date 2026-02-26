@@ -683,8 +683,8 @@ def check_login_status(driver) -> bool:
         )
         if articles:
             return True
-        # Fallback: URL is on threads.net root/explore
-        if "threads.net" in url:
+        # Fallback: URL is on threads.net or threads.com (redirect target)
+        if "threads.net" in url or "threads.com" in url:
             return True
     except WebDriverException:
         pass
@@ -803,9 +803,11 @@ def active_action(driver) -> None:
     - Variable like count: 0 (skip, 15%), 1 (50%), 2 (25%), 3 (10%).
     """
     current_url = driver.current_url
-    if "threads.net" not in current_url:
+    # Accept both threads.net and threads.com — the browser redirects .net → .com
+    on_threads = "threads.net" in current_url or "threads.com" in current_url
+    if not on_threads:
         log.info(
-            "Active: not on threads.net (%s) — passive scroll instead",
+            "Active: not on threads.net/com (%s) — passive scroll instead",
             current_url[:60],
         )
         stochastic_scroll(driver, total_seconds=random.uniform(15, 30))
