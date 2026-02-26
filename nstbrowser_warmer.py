@@ -46,7 +46,8 @@ PROFILE_IDS = [
 
 TARGET_SOCIAL_URL   = "https://www.threads.net"       # change to your target
 PREFLIGHT_SITES     = ["https://www.wikipedia.org",]
-PREFLIGHT_DWELL_SEC = 5     # seconds on each pre-flight site
+PREFLIGHT_DWELL_MIN = 5      # minimum seconds on each pre-flight site (testing)
+PREFLIGHT_DWELL_MAX = 5      # maximum seconds on each pre-flight site (increase for prod)
 SESSION_MIN_MIN     = 1     # minimum session length (minutes)
 SESSION_MAX_MIN     = 1     # maximum session length (minutes)
 BUFFER_MIN_MIN      = 0     # minimum buffer between profiles (minutes)
@@ -205,26 +206,12 @@ def connect_selenium(ws_debugger_url: str) -> webdriver.Chrome:
         options=options,
     )
 
-    # Patch navigator.webdriver — also override getOwnPropertyDescriptor so
-    # detection scripts that inspect the descriptor find nothing suspicious.
-    # Do NOT inject Accept-Language: NstBrowser profiles carry their own locale;
-    # double-setting that header creates a mismatch that can be fingerprinted.
-    _WD_PATCH = """
-Object.defineProperty(navigator, 'webdriver', {
-    get: () => undefined,
-    configurable: true,
-    enumerable: true,
-});
-const _orig_gpd = Object.getOwnPropertyDescriptor.bind(Object);
-Object.getOwnPropertyDescriptor = function(obj, prop) {
-    if (obj === navigator && prop === 'webdriver') return undefined;
-    return _orig_gpd(obj, prop);
-};
-"""
-    driver.execute_cdp_cmd(
-        "Page.addScriptToEvaluateOnNewDocument",
-        {"source": _WD_PATCH},
-    )
+    # NstBrowser's Orbita engine handles navigator.webdriver and fingerprint
+    # spoofing at a lower level than CDP scripts.  Injecting our own
+    # Page.addScriptToEvaluateOnNewDocument patch creates a detectable
+    # inconsistency (the characteristic getOwnPropertyDescriptor side-effects
+    # that Meta's bot detection explicitly checks for), so we omit it entirely
+    # and trust the profile's built-in fingerprint configuration.
     driver.execute_cdp_cmd("Network.enable", {})
 
     log.info("Selenium attached successfully.")
@@ -355,11 +342,13 @@ def smooth_scroll_chunk(driver, distance_px: int,
 
 def stochastic_scroll(driver, total_seconds: float) -> None:
     """
-    Scroll the page for total_seconds with natural human variance:
-      - Downward chunks of 280-650 px, rendered step-by-step
-      - Reading pauses of 1.8-4.5 s between chunks
-      - 8 % chance of a long 5-9 s pause (reading an interesting post)
-      - 22 % chance of a small 80-160 px upward drift (re-reading)
+    Scroll the page for total_seconds with natural human variance.
+
+    Reading pause tiers (per chunk):
+      3%  distraction  8–15 s  (phone buzz, looking away)
+     15%  long read    4.5–9 s  (interesting post)
+     17%  quick skim   0.3–1.2 s (nothing to see, keep scrolling)
+     65%  normal read  1.5–4 s
     """
     deadline = time.time() + total_seconds
     while time.time() < deadline:
@@ -371,11 +360,16 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
         # brief pause after scroll lands (hand leaving wheel)
         time.sleep(random.uniform(0.15, 0.45))
 
-        # reading pause
-        if random.random() < 0.08:
-            time.sleep(random.uniform(5.0, 9.0))   # long read
+        # 4-tier reading pause
+        tier = random.random()
+        if tier < 0.03:
+            time.sleep(random.uniform(8.0, 15.0))   # distraction
+        elif tier < 0.18:
+            time.sleep(random.uniform(4.5, 9.0))    # long read
+        elif tier < 0.35:
+            time.sleep(random.uniform(0.3, 1.2))    # quick skim
         else:
-            time.sleep(random.uniform(1.8, 4.5))   # normal read
+            time.sleep(random.uniform(1.5, 4.0))    # normal read
 
         # occasional upward drift — small (re-reading) or large (going back to a post)
         if random.random() < 0.22:
@@ -398,16 +392,17 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
 
 def run_preflight(driver) -> None:
     """
-    Browse Wikipedia for PREFLIGHT_DWELL_SEC seconds to seed a natural
+    Browse pre-flight sites for a randomly drawn dwell time to seed a natural
     browsing history before navigating to Threads.
     """
     for site in PREFLIGHT_SITES:
-        log.info("Pre-flight: %s  (%ds)", site, PREFLIGHT_DWELL_SEC)
+        dwell = random.uniform(PREFLIGHT_DWELL_MIN, PREFLIGHT_DWELL_MAX)
+        log.info("Pre-flight: %s  (%.0fs)", site, dwell)
         driver.get(site)
         WebDriverWait(driver, 20).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
-        stochastic_scroll(driver, total_seconds=PREFLIGHT_DWELL_SEC)
+        stochastic_scroll(driver, total_seconds=dwell)
 
 
 # ================================================================== #
@@ -452,13 +447,32 @@ def _hover_random_element(driver) -> None:
                 except Exception:
                     continue
             if visible:
-                # Sample from the full visible pool, not just the top 15.
-                # Slightly bias toward mid-feed elements (less top-heavy pattern).
-                pool = visible
-                if len(pool) > 3:
-                    mid_s = len(pool) // 4
-                    mid_e = len(pool) - len(pool) // 4
-                    pool  = visible[mid_s:mid_e] if random.random() < 0.60 else visible
+                # Sort by vertical centre, split into thirds, weight bucket selection
+                # so the middle third (where a real user's eye rests) is most likely.
+                visible.sort(key=lambda e: e._id if hasattr(e, '_id') else 0)
+                try:
+                    visible.sort(
+                        key=lambda e: driver.execute_script(
+                            "return arguments[0].getBoundingClientRect().top;", e
+                        )
+                    )
+                except Exception:
+                    pass
+                n   = len(visible)
+                t1  = n // 3
+                t2  = t1 * 2
+                top_third    = visible[:t1]    if t1 > 0  else visible
+                mid_third    = visible[t1:t2]  if t2 > t1 else visible
+                bot_third    = visible[t2:]    if t2 < n  else visible
+                bucket_roll  = random.random()
+                if bucket_roll < 0.25:
+                    pool = top_third
+                elif bucket_roll < 0.75:
+                    pool = mid_third
+                else:
+                    pool = bot_third
+                if not pool:
+                    pool = visible
                 bezier_move(driver, random.choice(pool))
                 time.sleep(random.uniform(0.5, 2.5))
                 return

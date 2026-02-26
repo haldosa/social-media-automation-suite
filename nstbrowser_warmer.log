@@ -808,3 +808,46 @@ Stacktrace:
 2026-02-26 02:13:13,083  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d closed cleanly.
 2026-02-26 02:13:13,084  INFO      ============================================================
 2026-02-26 02:13:13,085  INFO      All profiles warmed. Done.
+2026-02-26 02:15:36,263  INFO      ============================================================
+2026-02-26 02:15:36,263  INFO      NstBrowser Warmer (API v2) -- 2026-02-26 02:15
+2026-02-26 02:15:36,264  INFO      Target: https://www.threads.net  |  Profiles: 2
+2026-02-26 02:15:36,408  INFO      Execution order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 02:15:36,409  INFO      ------------------------------------------------------------
+2026-02-26 02:15:36,409  INFO      [1/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 02:15:37,633  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=37183  |  ws=ws://127.0.0.1:37183/devtools/browser/db6fc24c-ff99-4581-a3d0-fb28390bd323
+2026-02-26 02:15:37,648  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:37183
+2026-02-26 02:15:37,672  INFO      Detected Orbita major version: 140
+2026-02-26 02:15:37,867  INFO      ====== WebDriver manager ======
+2026-02-26 02:15:40,238  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 02:15:40,238  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 02:15:40,813  INFO      Selenium attached successfully.
+2026-02-26 02:15:40,815  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 02:15:49,590  INFO      Navigating to https://www.threads.net
+2026-02-26 02:15:56,636  INFO      Session: 1.0 min  |  profile: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 02:15:56,636  INFO      Session active probability this run: 0.23
+2026-02-26 02:16:50,873  INFO      Forcing active action (session guarantee).
+2026-02-26 02:16:50,918  INFO      Active: scanning for like buttons on https://www.threads.com/
+2026-02-26 02:16:57,516  INFO      XPath fallback: 2 unliked like button(s)
+2026-02-26 02:17:17,207  INFO      Like delivered successfully
+2026-02-26 02:17:27,453  INFO      Like delivered successfully
+2026-02-26 02:17:32,115  INFO      Active action complete. Likes delivered: 2
+2026-02-26 02:17:33,929  INFO      Session complete. Total actions: 2
+2026-02-26 02:17:37,095  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 02:17:37,096  INFO      Buffer: 0.0 min before next profile...
+2026-02-26 02:17:37,097  INFO      ------------------------------------------------------------
+2026-02-26 02:17:37,097  INFO      [2/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 02:17:38,406  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=23181  |  ws=ws://127.0.0.1:23181/devtools/browser/910eac0a-54e7-4db5-99bd-446da5c7aba4
+2026-02-26 02:17:38,412  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:23181
+2026-02-26 02:17:38,427  INFO      Detected Orbita major version: 143
+2026-02-26 02:17:38,448  INFO      ====== WebDriver manager ======
+2026-02-26 02:17:40,713  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 02:17:40,714  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 02:17:41,273  INFO      Selenium attached successfully.
+2026-02-26 02:17:41,274  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 02:17:47,967  INFO      Navigating to https://www.threads.net
+2026-02-26 02:17:52,451  INFO      Session: 1.0 min  |  profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 02:17:52,451  INFO      Session active probability this run: 0.20
+2026-02-26 02:19:08,630  INFO      Session complete. Total actions: 1
+2026-02-26 02:19:11,862  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d closed cleanly.
+2026-02-26 02:19:11,863  INFO      ============================================================
+2026-02-26 02:19:11,863  INFO      All profiles warmed. Done.
