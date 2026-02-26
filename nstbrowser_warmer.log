@@ -1022,3 +1022,147 @@ Stacktrace:
 2026-02-26 02:43:28,712  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
 2026-02-26 02:43:28,713  INFO      ============================================================
 2026-02-26 02:43:28,714  INFO      All profiles warmed. Done.
+2026-02-26 02:53:53,490  INFO      ============================================================
+2026-02-26 02:53:53,490  INFO      NstBrowser Warmer (API v2) -- 2026-02-26 02:53
+2026-02-26 02:53:53,490  INFO      Target: https://www.threads.net  |  Profiles: 2
+2026-02-26 02:53:53,721  INFO      Execution order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 02:53:53,721  INFO      ------------------------------------------------------------
+2026-02-26 02:53:53,722  INFO      [1/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 02:53:54,935  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=55212  |  ws=ws://127.0.0.1:55212/devtools/browser/898de234-bc8b-4b63-8280-4fc924ce1eca
+2026-02-26 02:53:54,953  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:55212
+2026-02-26 02:53:54,969  INFO      Detected Orbita major version: 140
+2026-02-26 02:53:55,085  INFO      ====== WebDriver manager ======
+2026-02-26 02:53:57,394  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 02:53:57,395  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 02:53:57,967  INFO      Selenium attached successfully.
+2026-02-26 02:53:57,968  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 02:54:10,046  INFO      Navigating to https://www.threads.net
+2026-02-26 02:54:16,430  INFO      Session: 1.0 min  |  profile: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 02:54:16,430  INFO      Session active probability this run: 0.10
+2026-02-26 02:54:16,435  INFO      Active: scanning for like buttons on https://www.threads.com/
+2026-02-26 02:54:22,259  INFO      XPath fallback: 3 unliked like button(s)
+2026-02-26 02:54:26,074  INFO      Like delivered successfully
+2026-02-26 02:54:29,295  INFO      Active action complete. Likes delivered: 1
+2026-02-26 02:55:22,521  INFO      Session complete. Total actions: 2
+2026-02-26 02:55:25,780  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 02:55:25,781  INFO      Buffer: 0.0 min before next profile...
+2026-02-26 02:55:25,781  INFO      ------------------------------------------------------------
+2026-02-26 02:55:25,781  INFO      [2/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 02:55:27,545  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=58925  |  ws=ws://127.0.0.1:58925/devtools/browser/cfddfab2-003d-45b9-9aad-9770c2b30d4e
+2026-02-26 02:55:27,554  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:58925
+2026-02-26 02:55:27,583  INFO      Detected Orbita major version: 143
+2026-02-26 02:55:27,592  INFO      ====== WebDriver manager ======
+2026-02-26 02:55:29,897  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 02:55:29,897  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 02:55:30,456  INFO      Selenium attached successfully.
+2026-02-26 02:55:30,458  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 02:55:39,466  INFO      Navigating to https://www.threads.net
+2026-02-26 02:55:46,137  INFO      Session: 1.0 min  |  profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 02:55:46,138  INFO      Session active probability this run: 0.28
+2026-02-26 02:55:46,138  INFO      Forcing active action (session guarantee).
+2026-02-26 02:55:46,150  INFO      Active: scanning for like buttons on https://www.threads.com/
+2026-02-26 02:55:50,585  INFO      XPath fallback: 2 unliked like button(s)
+2026-02-26 02:55:55,573  INFO      Like delivered successfully
+2026-02-26 02:56:00,002  INFO      Active action complete. Likes delivered: 1
+2026-02-26 02:56:02,350  INFO      Active: scanning for like buttons on https://www.threads.com/
+2026-02-26 02:56:08,843  INFO      XPath fallback: 2 unliked like button(s)
+2026-02-26 02:56:30,449  INFO      Like delivered successfully
+2026-02-26 02:56:33,645  INFO      Active action complete. Likes delivered: 1
+2026-02-26 02:56:35,428  INFO      Viewing a random profile...
+2026-02-26 02:56:35,678  INFO      Visiting profile: https://www.threads.com/@2lil8i/post/DVMolKKDS_D
+2026-02-26 02:57:00,629  INFO      Session complete. Total actions: 3
+2026-02-26 02:57:10,326  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d closed cleanly.
+2026-02-26 02:57:10,327  INFO      ============================================================
+2026-02-26 02:57:10,328  INFO      All profiles warmed. Done.
+2026-02-26 03:06:00,703  INFO      ============================================================
+2026-02-26 03:06:00,704  INFO      NstBrowser Warmer (API v2) -- 2026-02-26 03:06
+2026-02-26 03:06:00,704  INFO      Target: https://www.threads.net  |  Profiles: 2
+2026-02-26 03:06:00,972  INFO      Execution order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 03:06:00,972  INFO      ------------------------------------------------------------
+2026-02-26 03:06:00,972  INFO      [1/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 03:06:02,128  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=27963  |  ws=ws://127.0.0.1:27963/devtools/browser/50dbdac4-15ca-468c-8638-df994ad18205
+2026-02-26 03:06:02,130  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:27963
+2026-02-26 03:06:02,152  INFO      Detected Orbita major version: 140
+2026-02-26 03:06:02,335  INFO      ====== WebDriver manager ======
+2026-02-26 03:06:04,618  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 03:06:04,619  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 03:06:05,196  INFO      Selenium attached successfully.
+2026-02-26 03:06:05,198  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 03:06:16,485  INFO      Navigating to https://www.threads.net
+2026-02-26 03:06:23,933  INFO      Session: 1.0 min  |  profile: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 03:06:23,933  INFO      Session active probability this run: 0.15
+2026-02-26 03:07:05,890  INFO      Forcing active action (session guarantee).
+2026-02-26 03:07:05,898  INFO      Active: scanning for like buttons on https://www.threads.com/
+2026-02-26 03:07:07,525  INFO      XPath fallback: 3 unliked like button(s)
+2026-02-26 03:07:14,633  INFO      Like delivered successfully
+2026-02-26 03:07:18,037  INFO      Active action complete. Likes delivered: 1
+2026-02-26 03:07:19,679  INFO      Checking notifications: https://www.threads.net/activity
+2026-02-26 03:07:43,463  INFO      Session complete. Total actions: 3
+2026-02-26 03:07:46,719  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 03:07:46,720  INFO      Buffer: 0.0 min before next profile...
+2026-02-26 03:07:46,720  INFO      ------------------------------------------------------------
+2026-02-26 03:07:46,721  INFO      [2/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 03:07:47,867  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=42363  |  ws=ws://127.0.0.1:42363/devtools/browser/e17d83ef-3c3f-4d03-bb5c-2a8ac50f9168
+2026-02-26 03:07:47,880  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:42363
+2026-02-26 03:07:47,906  INFO      Detected Orbita major version: 143
+2026-02-26 03:07:47,910  INFO      ====== WebDriver manager ======
+2026-02-26 03:07:50,158  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 03:07:50,158  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 03:07:50,704  INFO      Selenium attached successfully.
+2026-02-26 03:07:50,713  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 03:07:59,970  INFO      Navigating to https://www.threads.net
+2026-02-26 03:08:06,406  INFO      Session: 1.0 min  |  profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 03:08:06,407  INFO      Session active probability this run: 0.15
+2026-02-26 03:08:06,410  INFO      Forcing active action (session guarantee).
+2026-02-26 03:08:06,426  INFO      Active: scanning for like buttons on https://www.threads.com/
+2026-02-26 03:08:08,646  INFO      XPath fallback: 1 unliked like button(s)
+2026-02-26 03:08:15,265  INFO      Like delivered successfully
+2026-02-26 03:08:20,119  INFO      Active action complete. Likes delivered: 1
+2026-02-26 03:10:13,789  INFO      Session complete. Total actions: 3
+2026-02-26 03:10:21,254  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d closed cleanly.
+2026-02-26 03:10:21,255  INFO      ============================================================
+2026-02-26 03:10:21,256  INFO      All profiles warmed. Done.
+2026-02-26 03:22:14,671  INFO      ============================================================
+2026-02-26 03:22:14,671  INFO      NstBrowser Warmer (API v2) -- 2026-02-26 03:22
+2026-02-26 03:22:14,671  INFO      Target: https://www.threads.net  |  Profiles: 2
+2026-02-26 03:22:14,920  INFO      Execution order: ['47dc0595-fbf8-4006-9b4e-1b3b055fb57d', '251894f1-0abc-4e5b-831c-1d3d594de9aa']
+2026-02-26 03:22:14,921  INFO      ------------------------------------------------------------
+2026-02-26 03:22:14,921  INFO      [1/2] Starting: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 03:22:16,452  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d launched  |  port=39601  |  ws=ws://127.0.0.1:39601/devtools/browser/68d8b958-cc25-4bd8-8470-e4750d8b67d0
+2026-02-26 03:22:16,461  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:39601
+2026-02-26 03:22:16,485  INFO      Detected Orbita major version: 143
+2026-02-26 03:22:16,599  INFO      ====== WebDriver manager ======
+2026-02-26 03:22:18,955  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 03:22:18,956  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-26 03:22:19,499  INFO      Selenium attached successfully.
+2026-02-26 03:22:19,499  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 03:22:27,270  INFO      Navigating to https://www.threads.net
+2026-02-26 03:22:31,996  INFO      Session: 1.0 min  |  profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-26 03:22:31,997  INFO      Session active probability this run: 0.20
+2026-02-26 03:23:46,401  INFO      Session complete. Total actions: 1
+2026-02-26 03:23:49,667  INFO      Profile 47dc0595-fbf8-4006-9b4e-1b3b055fb57d closed cleanly.
+2026-02-26 03:23:49,669  INFO      Buffer: 0.0 min before next profile...
+2026-02-26 03:23:49,669  INFO      ------------------------------------------------------------
+2026-02-26 03:23:49,669  INFO      [2/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 03:23:50,815  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa launched  |  port=54773  |  ws=ws://127.0.0.1:54773/devtools/browser/9d560e0e-63a2-497c-93cf-4a831d6b17b2
+2026-02-26 03:23:50,860  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:54773
+2026-02-26 03:23:50,870  INFO      Detected Orbita major version: 140
+2026-02-26 03:23:50,877  INFO      ====== WebDriver manager ======
+2026-02-26 03:23:53,101  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-26 03:23:53,101  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\140\chromedriver-win32/chromedriver.exe
+2026-02-26 03:23:53,668  INFO      Selenium attached successfully.
+2026-02-26 03:23:53,668  INFO      Pre-flight: https://www.wikipedia.org  (5s)
+2026-02-26 03:24:03,494  INFO      Navigating to https://www.threads.net
+2026-02-26 03:24:11,721  INFO      Session: 1.0 min  |  profile: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 03:24:11,721  INFO      Session active probability this run: 0.21
+2026-02-26 03:25:13,154  INFO      Session complete. Total actions: 1
+2026-02-26 03:25:16,377  INFO      Profile 251894f1-0abc-4e5b-831c-1d3d594de9aa closed cleanly.
+2026-02-26 03:25:16,378  INFO      ============================================================
+2026-02-26 03:25:16,379  INFO      All profiles warmed. Done.
+2026-02-26 03:30:30,160  INFO      ============================================================
+2026-02-26 03:30:30,160  INFO      NstBrowser Warmer (API v2) -- 2026-02-26 03:30
+2026-02-26 03:30:30,160  INFO      Target: https://www.threads.net  |  Profiles: 2
+2026-02-26 03:30:30,389  INFO      Execution order: ['251894f1-0abc-4e5b-831c-1d3d594de9aa', '47dc0595-fbf8-4006-9b4e-1b3b055fb57d']
+2026-02-26 03:30:30,389  INFO      ------------------------------------------------------------
+2026-02-26 03:30:30,389  INFO      [1/2] Starting: 251894f1-0abc-4e5b-831c-1d3d594de9aa
+2026-02-26 03:30:30,530  ERROR     start_profile HTTP 400 — {"data":null,"err":true,"msg":"exceeded plan limits","code":6001}
