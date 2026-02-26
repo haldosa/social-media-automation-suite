@@ -54,6 +54,9 @@ BUFFER_MIN_MIN      = 0     # minimum buffer between profiles (minutes)
 BUFFER_MAX_MIN      = 0     # maximum buffer between profiles (minutes)
 SCREENSHOT_DIR      = "screenshots"
 LOG_FILE            = "nstbrowser_warmer.log"
+MOUSE_LOG_FILE      = "mouse_moves.log"  # dedicated cursor movement log
+MOUSE_TRACE         = True              # True = log every Bezier step (verbose)
+DEBUG_CURSOR_OVERLAY= True             # True = inject red dot overlay to visualise cursor movement
 # ------------------------------------------------------------------ #
 
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
@@ -71,6 +74,15 @@ if hasattr(_stream_h.stream, "reconfigure"):
         pass
 logging.basicConfig(level=logging.INFO, handlers=[_file_h, _stream_h])
 log = logging.getLogger(__name__)
+
+# Dedicated mouse-movement logger — writes to its own file at DEBUG level.
+# Arc summaries are always written; per-step positions only when MOUSE_TRACE=True.
+_mouse_fh = logging.FileHandler(MOUSE_LOG_FILE, encoding="utf-8")
+_mouse_fh.setFormatter(logging.Formatter("%(asctime)s  %(message)s"))
+_mlog = logging.getLogger("mouse")
+_mlog.setLevel(logging.DEBUG)
+_mlog.addHandler(_mouse_fh)
+_mlog.propagate = False  # keep mouse events out of the main log
 
 
 # ================================================================== #
@@ -243,6 +255,75 @@ def _bezier_point(p0, p1, p2, t):
 _cursor_pos: list = [0, 0]
 
 
+# ------------------------------------------------------------------ #
+#  DEBUG CURSOR OVERLAY
+# ------------------------------------------------------------------ #
+# Injects a visible red dot + coordinate label into the live browser page.
+# Responds to real DOM mousemove events fired by Selenium’s ActionChains,
+# so it follows every bezier step in real time.
+# Injected via execute_script after each page load — safe, no fingerprint risk.
+
+_CURSOR_OVERLAY_JS = """
+(function () {
+    var ID  = '__dbg_cursor_dot__';
+    var LID = '__dbg_cursor_lbl__';
+    // Remove stale instances from previous injection on same page
+    var old = document.getElementById(ID);  if (old) old.remove();
+    var olL = document.getElementById(LID); if (olL) olL.remove();
+
+    var dot = document.createElement('div');
+    dot.id  = ID;
+    dot.style.cssText = [
+        'position:fixed', 'top:0', 'left:0',
+        'width:14px', 'height:14px',
+        'background:rgba(255,40,40,0.88)',
+        'border:2px solid #fff',
+        'border-radius:50%',
+        'pointer-events:none',
+        'z-index:2147483647',
+        'transform:translate(-50%,-50%)',
+        'box-shadow:0 0 5px rgba(0,0,0,0.6)',
+    ].join(';');
+
+    var lbl = document.createElement('div');
+    lbl.id  = LID;
+    lbl.style.cssText = [
+        'position:fixed', 'top:0', 'left:0',
+        'background:rgba(0,0,0,0.72)',
+        'color:#0ff',
+        'font:bold 10px/1 monospace',
+        'padding:2px 5px',
+        'border-radius:3px',
+        'pointer-events:none',
+        'z-index:2147483647',
+        'white-space:nowrap',
+    ].join(';');
+
+    document.body.appendChild(dot);
+    document.body.appendChild(lbl);
+
+    document.addEventListener('mousemove', function (e) {
+        var x = e.clientX, y = e.clientY;
+        dot.style.left = x + 'px';
+        dot.style.top  = y + 'px';
+        lbl.style.left = (x + 14) + 'px';
+        lbl.style.top  = (y -  8) + 'px';
+        lbl.textContent = x + ', ' + y;
+    }, true);
+})();
+"""
+
+
+def inject_cursor_overlay(driver) -> None:
+    """Inject the visual cursor overlay into the current page if DEBUG_CURSOR_OVERLAY is set."""
+    if not DEBUG_CURSOR_OVERLAY:
+        return
+    try:
+        driver.execute_script(_CURSOR_OVERLAY_JS)
+    except WebDriverException as exc:
+        log.debug("Cursor overlay injection failed: %s", exc)
+
+
 def bezier_move(driver, target_element) -> None:
     """
     Move the mouse to target_element along a randomised quadratic Bezier curve.
@@ -272,12 +353,21 @@ def bezier_move(driver, target_element) -> None:
         step_sec = random.uniform(0.008, 0.018)  # 8-18 ms per step ≈ 55-125 fps
         prev     = (x0, y0)
 
+        # Arc summary — logged for every move regardless of MOUSE_TRACE
+        _mlog.debug(
+            "ARC  from=(%d,%d)  cp=(%d,%d)  to=(%d,%d)  steps=%d  ms/step=%.1f",
+            x0, y0, cp[0], cp[1], x1, y1, steps, step_sec * 1000,
+        )
+
         for i in range(1, steps + 1):
             t      = i / steps
             nx, ny = _bezier_point((x0, y0), cp, (x1, y1), t)
             dx, dy = nx - prev[0], ny - prev[1]
             if dx != 0 or dy != 0:
                 ActionChains(driver).move_by_offset(dx, dy).perform()
+                if MOUSE_TRACE:
+                    _mlog.debug("STEP  i=%02d  pos=(%d,%d)  delta=(%+d,%+d)",
+                                i, nx, ny, dx, dy)
                 time.sleep(step_sec)
             prev = (nx, ny)
 
@@ -285,6 +375,7 @@ def bezier_move(driver, target_element) -> None:
         ActionChains(driver).move_to_element(target_element).perform()
         # Update tracked position to element centre
         _cursor_pos[0], _cursor_pos[1] = x1, y1
+        _mlog.debug("SNAP  final=(%d,%d)", x1, y1)
 
     except WebDriverException:
         pass
@@ -402,6 +493,7 @@ def run_preflight(driver) -> None:
         WebDriverWait(driver, 20).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
+        inject_cursor_overlay(driver)
         stochastic_scroll(driver, total_seconds=dwell)
 
 
@@ -725,6 +817,7 @@ def check_notifications_action(driver) -> None:
         WebDriverWait(driver, 15).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
+        inject_cursor_overlay(driver)
         time.sleep(random.uniform(3.0, 8.0))
         stochastic_scroll(driver, total_seconds=random.uniform(5, 15))
         # Return to feed
@@ -732,6 +825,7 @@ def check_notifications_action(driver) -> None:
         WebDriverWait(driver, 15).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
+        inject_cursor_overlay(driver)
         time.sleep(random.uniform(1.5, 3.5))
     except (TimeoutException, WebDriverException) as exc:
         log.debug("Notification check failed: %s", exc)
@@ -760,6 +854,7 @@ def view_profile_action(driver) -> None:
         WebDriverWait(driver, 15).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
+        inject_cursor_overlay(driver)
         time.sleep(random.uniform(3.0, 8.0))
         stochastic_scroll(driver, total_seconds=random.uniform(8, 20))
         driver.back()
@@ -767,6 +862,7 @@ def view_profile_action(driver) -> None:
         WebDriverWait(driver, 15).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
+        inject_cursor_overlay(driver)
     except (TimeoutException, WebDriverException) as exc:
         log.debug("Profile view failed (%s) — returning to feed", exc)
         try:
@@ -801,8 +897,10 @@ def passive_action(driver) -> None:
         try:
             driver.back()
             time.sleep(random.uniform(1.0, 3.0))
+            inject_cursor_overlay(driver)
             driver.forward()
             time.sleep(random.uniform(0.5, 1.5))
+            inject_cursor_overlay(driver)
         except WebDriverException:
             pass
 
@@ -954,6 +1052,7 @@ def warm_profile(profile_id: str) -> None:
         WebDriverWait(driver, 30).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
+        inject_cursor_overlay(driver)
         time.sleep(random.uniform(3, 7))
 
         # 4b. Verify the profile is logged in before wasting a session
