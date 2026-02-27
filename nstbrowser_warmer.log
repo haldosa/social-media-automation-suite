@@ -1,25 +1,33 @@
-2026-02-27 15:31:45,583  INFO      ============================================================
-2026-02-27 15:31:45,583  INFO      NstBrowser Warmer (API v2) -- 2026-02-27 15:31
-2026-02-27 15:31:45,583  INFO      Attach-profile mode  |  profile=47dc0595-fbf8-4006-9b4e-1b3b055fb57d
-2026-02-27 15:31:45,932  INFO      Resolved debug address: 127.0.0.1:50186
-2026-02-27 15:31:45,933  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:50186
-2026-02-27 15:31:45,937  INFO      Detected Orbita major version: 143
-2026-02-27 15:31:46,064  INFO      ====== WebDriver manager ======
-2026-02-27 15:31:48,221  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe] found in cache
-2026-02-27 15:31:48,221  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
-2026-02-27 15:31:48,790  INFO      Selenium attached successfully.
-2026-02-27 15:31:48,790  INFO      Attached to already-open browser  |  address=127.0.0.1:50186  |  label=47dc0595-fbf8-4006-9b4e-1b3b055fb57d
-2026-02-27 15:31:48,790  INFO      Preflight skipped (--no-preflight).
-2026-02-27 15:31:48,790  INFO      Navigating to https://www.threads.net
-2026-02-27 15:31:55,575  INFO      Session: 2.0 min  |  profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
-2026-02-27 15:31:55,575  INFO      Session active probability this run: 0.17
-2026-02-27 15:33:18,673  INFO      Forcing active action (session guarantee).
-2026-02-27 15:33:18,696  INFO      Active: scanning for like buttons on https://www.threads.com/
-2026-02-27 15:33:22,899  INFO      XPath fallback: 2 unliked like button(s)
-2026-02-27 15:33:29,217  INFO      Like delivered successfully
-2026-02-27 15:33:36,285  INFO      Like delivered successfully
-2026-02-27 15:33:41,919  INFO      Active action complete. Likes delivered: 2
-2026-02-27 15:34:29,086  INFO      Session complete. Total actions: 3
-2026-02-27 15:34:29,086  INFO      Browser left open (pass --close to quit after session).
-2026-02-27 15:34:29,088  INFO      ============================================================
-2026-02-27 15:34:29,088  INFO      Done.
+2026-02-27 17:24:53,132  INFO      ============================================================
+2026-02-27 17:24:53,132  INFO      NstBrowser Warmer (API v2) -- 2026-02-27 17:24
+2026-02-27 17:24:53,133  INFO      Attach-profile mode  |  profile=47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-27 17:24:53,437  INFO      Resolved debug address: 127.0.0.1:50186
+2026-02-27 17:24:53,438  INFO      Connecting Selenium -> debuggerAddress: 127.0.0.1:50186
+2026-02-27 17:24:53,443  INFO      Detected Orbita major version: 143
+2026-02-27 17:24:53,495  INFO      ====== WebDriver manager ======
+2026-02-27 17:24:54,914  INFO      Driver [C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe] found in cache
+2026-02-27 17:24:54,914  INFO      webdriver-manager chromedriver: C:\Users\User\.wdm\drivers\chromedriver\win64\143\chromedriver-win32/chromedriver.exe
+2026-02-27 17:24:55,464  INFO      Selenium attached successfully.
+2026-02-27 17:24:55,504  INFO      Attached to already-open browser  |  address=127.0.0.1:50186  |  label=47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-27 17:24:55,505  INFO      Preflight skipped (--no-preflight).
+2026-02-27 17:24:55,505  INFO      Navigating to https://www.threads.net
+2026-02-27 17:25:03,018  INFO      Session: 2.0 min  |  profile: 47dc0595-fbf8-4006-9b4e-1b3b055fb57d
+2026-02-27 17:25:03,018  INFO      Session active probability this run: 0.29
+2026-02-27 17:25:03,039  INFO      Active: scanning for like buttons on https://www.threads.com/
+2026-02-27 17:25:07,329  INFO      XPath fallback: 2 unliked like button(s)
+2026-02-27 17:25:13,249  INFO      Like delivered successfully
+2026-02-27 17:25:21,453  INFO      Like delivered successfully
+2026-02-27 17:25:25,333  INFO      Active action complete. Likes delivered: 2
+2026-02-27 17:25:27,979  INFO      Active: scanning for like buttons on https://www.threads.com/
+2026-02-27 17:25:34,738  INFO      XPath fallback: 2 unliked like button(s)
+2026-02-27 17:25:40,355  INFO      Like delivered successfully
+2026-02-27 17:25:49,036  INFO      Like delivered successfully
+2026-02-27 17:25:53,325  INFO      Active action complete. Likes delivered: 2
+2026-02-27 17:25:54,456  INFO      Active: scanning for like buttons on https://www.threads.com/
+2026-02-27 17:25:59,661  INFO      XPath fallback: 2 unliked like button(s)
+2026-02-27 17:26:04,991  INFO      Like delivered successfully
+2026-02-27 17:26:09,569  INFO      Active action complete. Likes delivered: 1
+2026-02-27 17:27:29,334  INFO      Session complete. Total actions: 4
+2026-02-27 17:27:29,334  INFO      Browser left open (pass --close to quit after session).
+2026-02-27 17:27:29,334  INFO      ============================================================
+2026-02-27 17:27:29,335  INFO      Done.

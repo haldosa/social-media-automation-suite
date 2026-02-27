@@ -336,6 +336,57 @@ def inject_cursor_overlay(driver) -> None:
     except WebDriverException as exc:
         log.debug("Cursor overlay injection failed: %s", exc)
 
+def _human_click_offset(element_width: int, element_height: int) -> tuple:
+    """
+    Return a Gaussian (dx, dy) offset from the element's geometric centre.
+
+    Real humans do not click precisely on the centre of a button — they aim
+    within a scatter zone whose spread is proportional to the target's size.
+    Sigma is bounded to the range 5–10 px (human precision limits), so large
+    elements get the full ±10 px scatter and tiny elements get ±5 px minimum.
+    The offset is clamped so the click always lands within 80 % of the element
+    bounds, preventing accidental Selenium misses on very small icons.
+
+    DISABLED — currently not called.  Re-enable by uncommenting the call in
+    bezier_move() and removing the direct x1/y1 = rect centre assignment.
+    """
+    sigma_x = max(5.0, min(element_width  * 0.20, 10.0))
+    sigma_y = max(5.0, min(element_height * 0.20, 10.0))
+    dx = random.gauss(0, sigma_x)
+    dy = random.gauss(0, sigma_y)
+    dx = max(-element_width  * 0.4, min(dx,  element_width  * 0.4))
+    dy = max(-element_height * 0.4, min(dy,  element_height * 0.4))
+    return int(dx), int(dy)
+
+
+def _maybe_add_overshoot(
+    x0: int, y0: int, x1: int, y1: int,
+    element_w: int, element_h: int,
+) -> tuple:
+    """
+    For small targets (area < 4000 px²), 30 % chance of overshooting 4–10 px
+    past the intended aim point in the same direction, followed by a micro-arc
+    correction back.  Simulates the corrective sub-movements humans make when
+    homing onto small interactive elements (like buttons or icons).
+
+    Returns (overshoot_x, overshoot_y, did_overshoot).
+    When did_overshoot is False the caller uses (x1, y1) unchanged.
+
+    DISABLED — currently not called.  Re-enable by uncommenting the call in
+    bezier_move() and removing the direct arc_x/arc_y = x1, y1 assignment.
+    """
+    if element_w * element_h > 4000 or random.random() > 0.30:
+        return x1, y1, False
+    dist = math.hypot(x1 - x0, y1 - y0)
+    if dist < 1:
+        return x1, y1, False
+    ux = (x1 - x0) / dist
+    uy = (y1 - y0) / dist
+    overshoot_px = random.uniform(4, 10)
+    ox = int(x1 + ux * overshoot_px)
+    oy = int(y1 + uy * overshoot_px)
+    return ox, oy, True
+
 
 def bezier_move(driver, target_element) -> None:
     """
@@ -370,19 +421,51 @@ def bezier_move(driver, target_element) -> None:
         vh   = driver.execute_script("return window.innerHeight")
         rect = driver.execute_script(
             "var r=arguments[0].getBoundingClientRect();"
-            "return {x:r.left+r.width/2, y:r.top+r.height/2};",
+            "return {x:r.left+r.width/2, y:r.top+r.height/2,"
+            "        w:r.width, h:r.height};",
             target_element,
         )
-        x1, y1 = int(rect["x"]), int(rect["y"])
+        # Arc targets the element's geometric centre directly.
+        # --- Click-offset (disabled) -------------------------------------------
+        # To re-enable Gaussian aim scatter, replace the two lines below with:
+        #   off_dx, off_dy = _human_click_offset(int(rect["w"]), int(rect["h"]))
+        #   x1 = int(rect["x"]) + off_dx
+        #   y1 = int(rect["y"]) + off_dy
+        x1 = int(rect["x"])
+        y1 = int(rect["y"])
         # Start from last known position, clamped to current viewport
         x0 = max(0, min(_cursor_pos[0], int(vw)))
         y0 = max(0, min(_cursor_pos[1], int(vh)))
-        # Random control point creates a unique curved path each time
-        cp = (
-            random.randint(min(x0, x1), max(x0, x1) + 1),
-            random.randint(min(y0, y1), max(y0, y1) + 1),
-        )
-        steps   = random.randint(55, 90)                # 55-90 steps at ~60fps
+        # Proximity guard: if cursor is already within 10 px of the target,
+        # skip the arc entirely — a degenerate zero-travel arc produces
+        # in-place jitter that is an obvious bot signal.
+        if math.hypot(x1 - x0, y1 - y0) < 10:
+            ActionChains(driver).move_to_element(target_element).perform()
+            _cursor_pos[0], _cursor_pos[1] = x1, y1
+            _mlog.debug("SKIP  already near target  pos=(%d,%d)", x1, y1)
+            return
+        # --- Overshoot (disabled) ----------------------------------------------
+        # To re-enable: replace the line below with:
+        #   arc_x, arc_y, overshot = _maybe_add_overshoot(
+        #       x0, y0, x1, y1, int(rect["w"]), int(rect["h"])
+        #   )
+        arc_x, arc_y = x1, y1
+        # Control point — 25 % of arcs use an excursion point placed
+        # perpendicularly outside the start→target bounding box, producing
+        # a noticeable outward curve instead of an always-efficient arc.
+        if random.random() < 0.25:
+            mid_x = (x0 + arc_x) // 2
+            mid_y = (y0 + arc_y) // 2
+            perp_offset = random.randint(30, 80) * random.choice([-1, 1])
+            cp = (mid_x + perp_offset, mid_y + perp_offset)
+            cp = (max(0, min(cp[0], int(vw))), max(0, min(cp[1], int(vh))))
+        else:
+            cp = (
+                random.randint(min(x0, arc_x), max(x0, arc_x) + 1),
+                random.randint(min(y0, arc_y), max(y0, arc_y) + 1),
+            )
+        _arc_dist = math.hypot(arc_x - x0, arc_y - y0)
+        steps   = max(20, min(90, int(_arc_dist / 3.5)))   # ~3.5 px/step net; clamp 20-90
         step_ms = random.uniform(14.0, 18.0)            # base 14-18 ms per step
 
         # Pre-compute all points in Python with easing + micro-jitter.
@@ -397,13 +480,19 @@ def bezier_move(driver, target_element) -> None:
         for i in range(1, steps + 1):
             t_raw  = i / steps
             t      = _ease_in_out_sine(t_raw)           # S-curve position
-            nx, ny = _bezier_point((x0, y0), cp, (x1, y1), t)
-            '''
-            # Micro-jitter on every step except the final landing point
+            nx, ny = _bezier_point((x0, y0), cp, (arc_x, arc_y), t)
+
+            # Velocity-scaled tremor with Fitts's Law approach factor.
+            # Jitter SD is high at departure (hand lifting), minimal at peak speed
+            # mid-arc, then rises again in the final 20 % as the hand homes onto
+            # the target (fine corrective micro-movements near small elements).
             if i < steps:
-                nx = max(0, min(int(nx + random.gauss(0, 0.55)), int(vw) - 1))
-                ny = max(0, min(int(ny + random.gauss(0, 0.55)), int(vh) - 1))
-            '''
+                velocity  = math.sin(math.pi * t_raw)                       # bell 0→1→0
+                approach  = max(0.0, (t_raw - 0.80) / 0.20) if t_raw > 0.80 else 0.0
+                tremor_sd = 0.8 * (1.0 - velocity * 0.8) + approach * 0.8  # ~0.8 start, ~0.16 mid, ~1.3 final
+                nx = max(0, min(int(nx + random.gauss(0, tremor_sd * 1.0)), int(vw) - 1))
+                ny = max(0, min(int(ny + random.gauss(0, tremor_sd * 0.7)), int(vh) - 1))
+
             dx, dy = nx - prev[0], ny - prev[1]
             points.append([nx, ny, dx, dy])
             prev = (nx, ny)
@@ -414,15 +503,25 @@ def bezier_move(driver, target_element) -> None:
             d_ms  = step_ms * (1.5 - vel * 0.7) + random.gauss(0, 0.9)
             delays.append(max(8.0, d_ms))
 
+        # Pre-compute cumulative intended fire times (ms from arc dispatch).
+        # Used to annotate STEP log lines with realistic timing instead of
+        # Python computation timestamps, which are all near-simultaneous.
+        cum_ms = 0.0
+        step_times = []
+        for d in delays:
+            step_times.append(cum_ms)
+            cum_ms += d
+        total_arc_ms = cum_ms
+
         # Arc summary log
         _mlog.debug(
-            "ARC  from=(%d,%d)  cp=(%d,%d)  to=(%d,%d)  steps=%d  ms/step=%.1f",
-            x0, y0, cp[0], cp[1], x1, y1, steps, step_ms,
+            "ARC  from=(%d,%d)  cp=(%d,%d)  to=(%d,%d)  steps=%d  ms/step=%.1f  dur=%.0fms",
+            x0, y0, cp[0], cp[1], arc_x, arc_y, steps, step_ms, total_arc_ms,
         )
         if MOUSE_TRACE:
-            for i, (nx, ny, dx, dy) in enumerate(points, 1):
-                _mlog.debug("STEP  i=%02d  pos=(%d,%d)  delta=(%+d,%+d)",
-                            i, nx, ny, dx, dy)
+            for i, ((nx, ny, dx, dy), t_ms) in enumerate(zip(points, step_times), 1):
+                _mlog.debug("STEP  i=%02d  t=+%.0fms  pos=(%d,%d)  delta=(%+d,%+d)",
+                            i, t_ms, nx, ny, dx, dy)
 
         # Phase 1 — dispatch the entire path inside the browser via JS setTimeout
         # using per-step variable delays.  One execute_script call; JS fires
@@ -453,10 +552,21 @@ def bezier_move(driver, target_element) -> None:
         # Sleep for the total arc duration (sum of all variable per-step delays).
         time.sleep(sum(d / 1000.0 for d in delays) + 0.05)
 
+        # --- Overshoot correction (disabled) ----------------------------------
+        # To re-enable, restore the overshot flag from _maybe_add_overshoot and
+        # uncomment:
+        # if overshot:
+        #     _mlog.debug("OVERSHOOT  past=(%d,%d)  correct_to=(%d,%d)", arc_x, arc_y, x1, y1)
+        #     time.sleep(random.uniform(0.04, 0.10))
+        #     bezier_move_to_coords(driver, x1, y1)
+
         # Phase 2 — single ActionChains call to fire real hover/mouseenter events.
+        # This snaps to the element's true centre regardless of where the arc aimed,
+        # so record the actual snap position (rect centre) not the offset aim point.
         ActionChains(driver).move_to_element(target_element).perform()
-        _cursor_pos[0], _cursor_pos[1] = x1, y1
-        _mlog.debug("SNAP  final=(%d,%d)", x1, y1)
+        snap_x, snap_y = int(rect["x"]), int(rect["y"])
+        _cursor_pos[0], _cursor_pos[1] = snap_x, snap_y
+        _mlog.debug("SNAP  final=(%d,%d)", snap_x, snap_y)
 
     except WebDriverException:
         pass
@@ -517,7 +627,8 @@ def bezier_move_to_coords(driver, x1: int, y1: int) -> None:
             random.randint(min(x0, x1), max(x0, x1) + 1),
             random.randint(min(y0, y1), max(y0, y1) + 1),
         )
-        steps   = random.randint(40, 70)
+        _arc_dist = math.hypot(x1 - x0, y1 - y0)
+        steps   = max(20, min(70, int(_arc_dist / 3.5)))   # ~3.5 px/step net; clamp 20-70
         step_ms = random.uniform(14.0, 18.0)
         points = []
         delays = []
@@ -534,13 +645,23 @@ def bezier_move_to_coords(driver, x1: int, y1: int) -> None:
             vel  = math.sin(math.pi * t_raw)
             d_ms = step_ms * (1.5 - vel * 0.7) + random.gauss(0, 0.9)
             delays.append(max(8.0, d_ms))
+
+        # Pre-compute cumulative intended fire times for accurate STEP logging.
+        cum_ms = 0.0
+        step_times = []
+        for d in delays:
+            step_times.append(cum_ms)
+            cum_ms += d
+        total_arc_ms = cum_ms
+
         _mlog.debug(
-            "ARC  from=(%d,%d)  cp=(%d,%d)  to=(%d,%d)  steps=%d  ms/step=%.1f",
-            x0, y0, cp[0], cp[1], x1, y1, steps, step_ms,
+            "ARC  from=(%d,%d)  cp=(%d,%d)  to=(%d,%d)  steps=%d  ms/step=%.1f  dur=%.0fms",
+            x0, y0, cp[0], cp[1], x1, y1, steps, step_ms, total_arc_ms,
         )
         if MOUSE_TRACE:
-            for i, (nx, ny, dx, dy) in enumerate(points, 1):
-                _mlog.debug("STEP  i=%02d  pos=(%d,%d)  delta=(%+d,%+d)", i, nx, ny, dx, dy)
+            for i, ((nx, ny, dx, dy), t_ms) in enumerate(zip(points, step_times), 1):
+                _mlog.debug("STEP  i=%02d  t=+%.0fms  pos=(%d,%d)  delta=(%+d,%+d)",
+                            i, t_ms, nx, ny, dx, dy)
         driver.execute_script(
             """
             (function(pts, delays) {
@@ -1287,6 +1408,7 @@ def warm_profile(profile_id: str) -> None:
         # 2. Attach Selenium via CDP
         driver = connect_selenium(info["webSocketDebuggerUrl"])
         driver.set_page_load_timeout(30)
+        init_cursor_pos(driver)    # seed a random start position so the first park arc is never flat at y=0
 
         # 3. Pre-flight: Wikipedia only
         run_preflight(driver)
@@ -1369,6 +1491,7 @@ def warm_profile_attached(
     try:
         driver = connect_selenium(ws_url)
         driver.set_page_load_timeout(30)
+        init_cursor_pos(driver)    # seed a random start position so the first park arc is never flat at y=0
         log.info("Attached to already-open browser  |  address=%s  |  label=%s",
                  address, profile_id)
 
