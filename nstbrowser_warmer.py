@@ -444,27 +444,45 @@ def bezier_move(driver, target_element) -> None:
             _cursor_pos[0], _cursor_pos[1] = x1, y1
             _mlog.debug("SKIP  already near target  pos=(%d,%d)", x1, y1)
             return
+        # Off-viewport guard: getBoundingClientRect can return coordinates
+        # outside the visible viewport (e.g. element not yet scrolled into view).
+        # JS mousemove events with off-screen coordinates produce garbage paths;
+        # ActionChains.move_to_element() handles the scroll automatically.
+        if x1 < 0 or y1 < 0 or x1 > int(vw) or y1 > int(vh):
+            ActionChains(driver).move_to_element(target_element).perform()
+            _cursor_pos[0], _cursor_pos[1] = x1, y1
+            _mlog.debug("SKIP  target off-screen  vp=(%dx%d)  pos=(%d,%d)", int(vw), int(vh), x1, y1)
+            return
         # --- Overshoot (disabled) ----------------------------------------------
         # To re-enable: replace the line below with:
         #   arc_x, arc_y, overshot = _maybe_add_overshoot(
         #       x0, y0, x1, y1, int(rect["w"]), int(rect["h"])
         #   )
         arc_x, arc_y = x1, y1
-        # Control point — 25 % of arcs use an excursion point placed
-        # perpendicularly outside the start→target bounding box, producing
-        # a noticeable outward curve instead of an always-efficient arc.
-        if random.random() < 0.25:
-            mid_x = (x0 + arc_x) // 2
-            mid_y = (y0 + arc_y) // 2
-            perp_offset = random.randint(30, 80) * random.choice([-1, 1])
-            cp = (mid_x + perp_offset, mid_y + perp_offset)
-            cp = (max(0, min(cp[0], int(vw))), max(0, min(cp[1], int(vh))))
-        else:
-            cp = (
-                random.randint(min(x0, arc_x), max(x0, arc_x) + 1),
-                random.randint(min(y0, arc_y), max(y0, arc_y) + 1),
-            )
+        # Control point — always offset perpendicular to the travel vector so
+        # the curve has genuine curvature regardless of travel direction.
+        # A cp placed on the straight line (e.g. cp==start for vertical arcs)
+        # degenerates to a linear interpolation and produces frozen-then-teleport
+        # movement that is trivially detectable.
         _arc_dist = math.hypot(arc_x - x0, arc_y - y0)
+        _mid_x    = (x0 + arc_x) / 2.0
+        _mid_y    = (y0 + arc_y) / 2.0
+        # Unit vector perpendicular to travel direction (rotate 90°)
+        _perp_x   = -(arc_y - y0) / _arc_dist
+        _perp_y   =  (arc_x - x0) / _arc_dist
+        min_cp_offset = max(20, int(_arc_dist * 0.15))
+        if random.random() < 0.25:
+            # 25 % excursion: large lateral deviation for a visible curve
+            lateral = random.randint(30, 80) * random.choice([-1, 1])
+        else:
+            # Normal arc: small perpendicular wobble, always ≥ min_cp_offset
+            lateral = random.randint(min_cp_offset,
+                                     max(min_cp_offset + 10,
+                                         int(_arc_dist * 0.25))) * random.choice([-1, 1])
+        cp = (
+            max(0, min(int(_mid_x + _perp_x * lateral), int(vw))),
+            max(0, min(int(_mid_y + _perp_y * lateral), int(vh))),
+        )
         steps   = max(20, min(90, int(_arc_dist / 3.5)))   # ~3.5 px/step net; clamp 20-90
         step_ms = random.uniform(14.0, 18.0)            # base 14-18 ms per step
 
@@ -623,11 +641,20 @@ def bezier_move_to_coords(driver, x1: int, y1: int) -> None:
         y1 = max(0, min(y1, int(vh) - 1))
         if x0 == x1 and y0 == y1:
             return
-        cp = (
-            random.randint(min(x0, x1), max(x0, x1) + 1),
-            random.randint(min(y0, y1), max(y0, y1) + 1),
-        )
         _arc_dist = math.hypot(x1 - x0, y1 - y0)
+        _mid_x    = (x0 + x1) / 2.0
+        _mid_y    = (y0 + y1) / 2.0
+        # Unit vector perpendicular to travel direction (rotate 90°)
+        _perp_x   = -(y1 - y0) / _arc_dist
+        _perp_y   =  (x1 - x0) / _arc_dist
+        min_cp_offset = max(20, int(_arc_dist * 0.15))
+        lateral = random.randint(min_cp_offset,
+                                 max(min_cp_offset + 10,
+                                     int(_arc_dist * 0.25))) * random.choice([-1, 1])
+        cp = (
+            max(0, min(int(_mid_x + _perp_x * lateral), int(vw))),
+            max(0, min(int(_mid_y + _perp_y * lateral), int(vh))),
+        )
         steps   = max(20, min(70, int(_arc_dist / 3.5)))   # ~3.5 px/step net; clamp 20-70
         step_ms = random.uniform(14.0, 18.0)
         points = []
