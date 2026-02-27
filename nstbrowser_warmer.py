@@ -21,6 +21,8 @@ import math
 import os
 import glob as _glob
 import re
+import textwrap
+import argparse
 import requests
 from datetime import datetime
 from selenium import webdriver
@@ -48,8 +50,8 @@ TARGET_SOCIAL_URL   = "https://www.threads.net"       # change to your target
 PREFLIGHT_SITES     = ["https://www.wikipedia.org",]
 PREFLIGHT_DWELL_MIN = 5      # minimum seconds on each pre-flight site (testing)
 PREFLIGHT_DWELL_MAX = 5      # maximum seconds on each pre-flight site (increase for prod)
-SESSION_MIN_MIN     = 1     # minimum session length (minutes)
-SESSION_MAX_MIN     = 1     # maximum session length (minutes)
+SESSION_MIN_MIN     = 2     # minimum session length (minutes)
+SESSION_MAX_MIN     = 2     # maximum session length (minutes)
 BUFFER_MIN_MIN      = 0     # minimum buffer between profiles (minutes)
 BUFFER_MAX_MIN      = 0     # maximum buffer between profiles (minutes)
 SCREENSHOT_DIR      = "screenshots"
@@ -324,16 +326,15 @@ _CURSOR_OVERLAY_JS = """
 
 
 def inject_cursor_overlay(driver) -> None:
-    """Inject the visual cursor overlay and reset the cursor to a random
-    viewport position.  Called after every page load so the cursor never
-    rests at a hard-coded corner between navigations."""
-    if DEBUG_CURSOR_OVERLAY:
-        try:
-            driver.execute_script(_CURSOR_OVERLAY_JS)
-        except WebDriverException as exc:
-            log.debug("Cursor overlay injection failed: %s", exc)
-    # Always randomise starting position regardless of overlay setting.
-    init_cursor_pos(driver)
+    """Inject the visual cursor overlay into the current page.
+    Cursor placement is now managed by navigate_to / navigate_history;
+    this function only handles the visual debug dot."""
+    if not DEBUG_CURSOR_OVERLAY:
+        return
+    try:
+        driver.execute_script(_CURSOR_OVERLAY_JS)
+    except WebDriverException as exc:
+        log.debug("Cursor overlay injection failed: %s", exc)
 
 
 def bezier_move(driver, target_element) -> None:
@@ -491,6 +492,151 @@ def init_cursor_pos(driver) -> None:
         log.debug("init_cursor_pos failed: %s", exc)
 
 
+def bezier_move_to_coords(driver, x1: int, y1: int) -> None:
+    """
+    Animate the cursor from _cursor_pos to explicit viewport coordinates
+    (x1, y1) along a randomised quadratic Bezier S-curve at ~60 fps.
+
+    Unlike bezier_move(), no DOM element is required and no ActionChains
+    hover is fired — pure JS mousemove dispatch only.  Used for:
+      • parking the cursor at y=0 before any page navigation
+      • idle cursor wanders between scroll-rest reading pauses
+      • post-load cursor drift onto fresh content
+    """
+    global _cursor_pos
+    try:
+        vw = driver.execute_script("return window.innerWidth")
+        vh = driver.execute_script("return window.innerHeight")
+        x0 = max(0, min(_cursor_pos[0], int(vw) - 1))
+        y0 = max(0, min(_cursor_pos[1], int(vh) - 1))
+        x1 = max(0, min(x1, int(vw) - 1))
+        y1 = max(0, min(y1, int(vh) - 1))
+        if x0 == x1 and y0 == y1:
+            return
+        cp = (
+            random.randint(min(x0, x1), max(x0, x1) + 1),
+            random.randint(min(y0, y1), max(y0, y1) + 1),
+        )
+        steps   = random.randint(40, 70)
+        step_ms = random.uniform(14.0, 18.0)
+        points = []
+        delays = []
+        prev = (x0, y0)
+        for i in range(1, steps + 1):
+            t_raw = i / steps
+            t     = _ease_in_out_sine(t_raw)
+            nx, ny = _bezier_point((x0, y0), cp, (x1, y1), t)
+            if i == steps:
+                nx, ny = x1, y1          # land exactly on the target
+            dx, dy = nx - prev[0], ny - prev[1]
+            points.append([nx, ny, dx, dy])
+            prev = (nx, ny)
+            vel  = math.sin(math.pi * t_raw)
+            d_ms = step_ms * (1.5 - vel * 0.7) + random.gauss(0, 0.9)
+            delays.append(max(8.0, d_ms))
+        _mlog.debug(
+            "ARC  from=(%d,%d)  cp=(%d,%d)  to=(%d,%d)  steps=%d  ms/step=%.1f",
+            x0, y0, cp[0], cp[1], x1, y1, steps, step_ms,
+        )
+        if MOUSE_TRACE:
+            for i, (nx, ny, dx, dy) in enumerate(points, 1):
+                _mlog.debug("STEP  i=%02d  pos=(%d,%d)  delta=(%+d,%+d)", i, nx, ny, dx, dy)
+        driver.execute_script(
+            """
+            (function(pts, delays) {
+                var i = 0;
+                function tick() {
+                    if (i >= pts.length) return;
+                    var p = pts[i]; var d = delays[i]; i++;
+                    document.dispatchEvent(new MouseEvent('mousemove', {
+                        clientX: p[0], clientY: p[1],
+                        bubbles: true, cancelable: true, view: window
+                    }));
+                    setTimeout(tick, d);
+                }
+                tick();
+            })(arguments[0], arguments[1]);
+            """,
+            points, delays,
+        )
+        time.sleep(sum(d / 1000.0 for d in delays) + 0.05)
+        _cursor_pos[0], _cursor_pos[1] = x1, y1
+        _mlog.debug("SNAP  final=(%d,%d)", x1, y1)
+    except WebDriverException:
+        pass
+
+
+def _navigate_and_settle(driver, action) -> None:
+    """
+    Shared navigation kernel used by navigate_to() and navigate_history().
+
+    Steps:
+      1. Park the cursor at the browser address-bar row (y=0, random x) via a
+         smooth Bezier arc — simulating the user reaching for the URL bar.
+      2. Execute the navigation action (driver.get / back / forward).
+      3. Wait for DOMContentLoaded.
+      4. Inject the visual debug overlay without changing the cursor position.
+      5. Restore the cursor to its pre-navigation coordinate via a single
+         synthetic mousemove — it was 'already there' while the page loaded.
+      6. Brief settle pause (user's eye scans the freshly rendered page).
+      7. Drift the cursor to a random viewport position — where the eye
+         naturally lands on the first piece of new content.
+    """
+    global _cursor_pos
+    try:
+        vw = driver.execute_script("return window.innerWidth")
+    except Exception:
+        vw = 1280
+    # 1. Park
+    park_x = random.randint(int(vw * 0.25), int(vw * 0.75))
+    bezier_move_to_coords(driver, park_x, 0)
+    saved_x, saved_y = _cursor_pos[0], _cursor_pos[1]
+    # 2. Navigate
+    action()
+    try:
+        WebDriverWait(driver, 20).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
+    except TimeoutException:
+        pass
+    # 3. Overlay
+    inject_cursor_overlay(driver)
+    # 4. Restore cursor
+    try:
+        driver.execute_script(
+            "document.dispatchEvent(new MouseEvent('mousemove',{"
+            "clientX:arguments[0],clientY:arguments[1],"
+            "bubbles:true,cancelable:true,view:window}));",
+            saved_x, saved_y,
+        )
+        _cursor_pos[0], _cursor_pos[1] = saved_x, saved_y
+        _mlog.debug("RESTORE  pos=(%d,%d)", saved_x, saved_y)
+    except WebDriverException:
+        pass
+    # 5. Settle
+    time.sleep(random.uniform(0.4, 1.0))
+    # 6. Drift to random position
+    try:
+        vw2 = driver.execute_script("return window.innerWidth")
+        vh2 = driver.execute_script("return window.innerHeight")
+        rx = random.randint(int(vw2 * 0.10), int(vw2 * 0.90))
+        ry = random.randint(int(vh2 * 0.20), int(vh2 * 0.80))
+        bezier_move_to_coords(driver, rx, ry)
+    except Exception:
+        pass
+
+
+def navigate_to(driver, url: str) -> None:
+    """Navigate to url with human-like cursor park → restore → drift."""
+    _navigate_and_settle(driver, lambda: driver.get(url))
+
+
+def navigate_history(driver, direction: str = "back") -> None:
+    """Go back or forward in history with human-like cursor park → restore → drift."""
+    fn = driver.back if direction == "back" else driver.forward
+    _navigate_and_settle(driver, fn)
+
+
 # ------------------------------------------------------------------ #
 #  SMOOTH SCROLLING
 #
@@ -572,6 +718,19 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
         else:
             time.sleep(random.uniform(1.5, 4.0))    # normal read
 
+        # Cursor idle wander — between scroll rests the cursor drifts over the
+        # content the user is 'reading' rather than freezing in one place.
+        # Skipped ~35 % of the time (quick skims where the hand stays put).
+        if random.random() < 0.65 and time.time() < deadline:
+            try:
+                vw_s = driver.execute_script("return window.innerWidth")
+                vh_s = driver.execute_script("return window.innerHeight")
+                wx = random.randint(int(vw_s * 0.08), int(vw_s * 0.92))
+                wy = random.randint(int(vh_s * 0.10), int(vh_s * 0.90))
+                bezier_move_to_coords(driver, wx, wy)
+            except Exception:
+                pass
+
         # occasional upward drift — small (re-reading) or large (going back to a post)
         if random.random() < 0.22:
             # 20 % of drift events scroll back a large amount (really went too far)
@@ -599,11 +758,7 @@ def run_preflight(driver) -> None:
     for site in PREFLIGHT_SITES:
         dwell = random.uniform(PREFLIGHT_DWELL_MIN, PREFLIGHT_DWELL_MAX)
         log.info("Pre-flight: %s  (%.0fs)", site, dwell)
-        driver.get(site)
-        WebDriverWait(driver, 20).until(
-            lambda d: d.execute_script("return document.readyState") == "complete"
-        )
-        inject_cursor_overlay(driver)
+        navigate_to(driver, site)
         stochastic_scroll(driver, total_seconds=dwell)
 
 
@@ -923,20 +1078,12 @@ def check_notifications_action(driver) -> None:
     target = random.choice(notif_urls)
     log.info("Checking notifications: %s", target)
     try:
-        driver.get(target)
-        WebDriverWait(driver, 15).until(
-            lambda d: d.execute_script("return document.readyState") == "complete"
-        )
-        inject_cursor_overlay(driver)
-        time.sleep(random.uniform(3.0, 8.0))
+        navigate_to(driver, target)
+        time.sleep(random.uniform(2.0, 5.0))
         stochastic_scroll(driver, total_seconds=random.uniform(5, 15))
         # Return to feed
-        driver.get(TARGET_SOCIAL_URL)
-        WebDriverWait(driver, 15).until(
-            lambda d: d.execute_script("return document.readyState") == "complete"
-        )
-        inject_cursor_overlay(driver)
-        time.sleep(random.uniform(1.5, 3.5))
+        navigate_to(driver, TARGET_SOCIAL_URL)
+        time.sleep(random.uniform(1.0, 2.5))
     except (TimeoutException, WebDriverException) as exc:
         log.debug("Notification check failed: %s", exc)
 
@@ -960,23 +1107,14 @@ def view_profile_action(driver) -> None:
         if not profile_url:
             return
         log.info("Visiting profile: %s", profile_url[:60])
-        driver.get(profile_url)
-        WebDriverWait(driver, 15).until(
-            lambda d: d.execute_script("return document.readyState") == "complete"
-        )
-        inject_cursor_overlay(driver)
-        time.sleep(random.uniform(3.0, 8.0))
+        navigate_to(driver, profile_url)
+        time.sleep(random.uniform(2.0, 5.0))
         stochastic_scroll(driver, total_seconds=random.uniform(8, 20))
-        driver.back()
-        time.sleep(random.uniform(1.5, 3.5))
-        WebDriverWait(driver, 15).until(
-            lambda d: d.execute_script("return document.readyState") == "complete"
-        )
-        inject_cursor_overlay(driver)
+        navigate_history(driver, "back")
     except (TimeoutException, WebDriverException) as exc:
         log.debug("Profile view failed (%s) — returning to feed", exc)
         try:
-            driver.get(TARGET_SOCIAL_URL)
+            navigate_to(driver, TARGET_SOCIAL_URL)
         except Exception:
             pass
 
@@ -1005,12 +1143,9 @@ def passive_action(driver) -> None:
     # 8 % chance: brief back then forward (mis-tap or curiosity)
     if random.random() < 0.08:
         try:
-            driver.back()
-            time.sleep(random.uniform(1.0, 3.0))
-            inject_cursor_overlay(driver)
-            driver.forward()
+            navigate_history(driver, "back")
             time.sleep(random.uniform(0.5, 1.5))
-            inject_cursor_overlay(driver)
+            navigate_history(driver, "forward")
         except WebDriverException:
             pass
 
@@ -1158,12 +1293,8 @@ def warm_profile(profile_id: str) -> None:
 
         # 4. Navigate to Threads
         log.info("Navigating to %s", TARGET_SOCIAL_URL)
-        driver.get(TARGET_SOCIAL_URL)
-        WebDriverWait(driver, 30).until(
-            lambda d: d.execute_script("return document.readyState") == "complete"
-        )
-        inject_cursor_overlay(driver)
-        time.sleep(random.uniform(3, 7))
+        navigate_to(driver, TARGET_SOCIAL_URL)
+        time.sleep(random.uniform(2, 5))
 
         # 4b. Verify the profile is logged in before wasting a session
         if not check_login_status(driver):
@@ -1203,14 +1334,258 @@ def warm_profile(profile_id: str) -> None:
             stop_profile(profile_id)
 
 
+def warm_profile_attached(
+    debugger_address: str,
+    profile_id: str = "manual",
+    skip_preflight: bool = False,
+    close_after: bool = False,
+) -> None:
+    """
+    Run a warm-up session on a browser that is *already open* in NstBrowser.
+
+    No ``start_profile`` / ``stop_profile`` API call is made, so the daily
+    open quota is not consumed.
+
+    Parameters
+    ----------
+    debugger_address : str
+        CDP host:port, e.g. ``127.0.0.1:9222``.  Obtain it from:
+          - NstBrowser UI -> right-click running profile -> Remote Debug /
+            Copy Debug Address
+          - ``GET /api/v2/browsers`` -> ``port`` field  (use ``--attach-profile``
+            to resolve this automatically)
+    profile_id : str
+        Label for log messages and screenshot filenames only.
+    skip_preflight : bool
+        Skip the Wikipedia pre-flight (use when the profile already has a
+        warm browsing history from an earlier run).
+    close_after : bool
+        Quit the browser after the session.  Default: leave it open.
+    """
+    driver  = None
+    address = debugger_address.replace("ws://", "").split("/")[0]
+    ws_url  = f"ws://{address}"
+
+    try:
+        driver = connect_selenium(ws_url)
+        driver.set_page_load_timeout(30)
+        log.info("Attached to already-open browser  |  address=%s  |  label=%s",
+                 address, profile_id)
+
+        if skip_preflight:
+            log.info("Preflight skipped (--no-preflight).")
+        else:
+            run_preflight(driver)
+
+        log.info("Navigating to %s", TARGET_SOCIAL_URL)
+        navigate_to(driver, TARGET_SOCIAL_URL)
+        time.sleep(random.uniform(2, 5))
+
+        if not check_login_status(driver):
+            log.error("Profile '%s' appears logged out -- skipping session.",
+                      profile_id)
+            return
+
+        session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
+        log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
+        run_social_session(driver, session_sec)
+
+    except (TimeoutException, RuntimeError, WebDriverException) as exc:
+        log.error("Error on attached profile '%s': %s", profile_id, exc)
+        if driver:
+            ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(SCREENSHOT_DIR, f"error_{profile_id}_{ts}.png")
+            try:
+                driver.save_screenshot(path)
+                log.info("Screenshot saved: %s", path)
+            except Exception as ss_err:
+                log.warning("Screenshot failed: %s", ss_err)
+
+    finally:
+        if driver:
+            if close_after:
+                try:
+                    if random.random() < 0.40:
+                        time.sleep(random.uniform(2.0, 7.0))
+                    driver.quit()
+                except Exception:
+                    pass
+            else:
+                log.info("Browser left open (pass --close to quit after session).")
+
+
+def _resolve_attached_address(profile_id: str) -> str:
+    """
+    Query ``GET /api/v2/browsers`` to find the CDP debug address for a
+    profile that is currently open in NstBrowser.
+
+    Returns ``host:port`` string or raises ``RuntimeError``.
+    """
+    running = get_running_browsers()
+    if not running:
+        raise RuntimeError(
+            "No running browsers reported by GET /api/v2/browsers.\n"
+            "Make sure the profile is open in NstBrowser first."
+        )
+
+    for b in running:
+        pid = b.get("profileId") or b.get("profile_id") or b.get("id") or ""
+        if pid != profile_id:
+            continue
+
+        # Try the ws URL first (most reliable)
+        for ws_key in ("webSocketDebuggerUrl", "wsUrl", "ws", "wsDebugUrl"):
+            ws = b.get(ws_key, "")
+            if ws:
+                return ws.replace("ws://", "").split("/")[0]
+
+        # Fall back to bare port (try all known field names across API versions)
+        port = (
+            b.get("remoteDebuggingPort")
+            or b.get("port")
+            or b.get("debugPort")
+            or b.get("remote_debugging_port")
+        )
+        if port:
+            return f"127.0.0.1:{port}"
+
+        # Profile matched but no address extractable
+        raise RuntimeError(
+            f"Profile '{profile_id}' is running but no debug address could be "
+            "resolved from the API response.  "
+            "Pass --attach HOST:PORT directly."
+        )
+
+    ids = [b.get("profileId") or b.get("id", "?") for b in running]
+    raise RuntimeError(
+        f"Profile '{profile_id}' was not found in the running browsers list.\n"
+        f"Currently running: {ids}\n"
+        "Open the profile in NstBrowser before using --attach-profile."
+    )
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="nstbrowser_warmer",
+        description="NstBrowser Threads warm-up automation.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent("""
+        MODES
+        -----
+        Normal (no flags)
+          Opens every profile in PROFILE_IDS via the NstBrowser API, runs a
+          full warm-up session for each, then closes them (consumes daily opens).
+
+        --attach HOST:PORT            [saves daily opens]
+          Connects directly to an already-open NstBrowser profile via its CDP
+          debug address.  Get the address from NstBrowser UI:
+            right-click running profile -> Remote Debug / Copy Debug Address
+
+        --attach-profile PROFILE_ID   [saves daily opens]
+          Queries GET /api/v2/browsers to resolve the debug address of a
+          running profile automatically, then attaches to it.
+
+        EXAMPLES
+        --------
+          python nstbrowser_warmer.py
+          python nstbrowser_warmer.py --attach 127.0.0.1:9222
+          python nstbrowser_warmer.py --attach 127.0.0.1:9222 --no-preflight
+          python nstbrowser_warmer.py --attach 127.0.0.1:9222 --label myaccount
+          python nstbrowser_warmer.py --attach-profile 251894f1-0abc-4e5b-831c-1d3d594de9aa
+          python nstbrowser_warmer.py --attach-profile 251894f1-... --no-preflight --close
+        """),
+    )
+
+    attach_group = p.add_mutually_exclusive_group()
+    attach_group.add_argument(
+        "--attach",
+        metavar="HOST:PORT",
+        help=(
+            "CDP debug address of an already-open NstBrowser profile "
+            "(e.g. 127.0.0.1:9222).  Browser is NOT opened or closed by "
+            "this script."
+        ),
+    )
+    attach_group.add_argument(
+        "--attach-profile",
+        metavar="PROFILE_ID",
+        help=(
+            "UUID of a profile already open in NstBrowser.  The script "
+            "calls GET /api/v2/browsers to resolve the debug address "
+            "automatically."
+        ),
+    )
+    p.add_argument(
+        "--label",
+        metavar="NAME",
+        default=None,
+        help=(
+            "Human-readable label for log messages and screenshot filenames "
+            "when using attach mode (default: the profile UUID or HOST:PORT)."
+        ),
+    )
+    p.add_argument(
+        "--no-preflight",
+        action="store_true",
+        help=(
+            "Skip the Wikipedia pre-flight.  Useful when the profile already "
+            "has a warm browsing history from an earlier run."
+        ),
+    )
+    p.add_argument(
+        "--close",
+        action="store_true",
+        help=(
+            "Quit the browser after the session even in attach mode.  "
+            "Default: browser is left open when attaching."
+        ),
+    )
+    return p
+
+
 # ================================================================== #
 #  MAIN
 # ================================================================== #
 
 def main() -> None:
+    args = _build_parser().parse_args()
+
     log.info("=" * 60)
     log.info("NstBrowser Warmer (API v2) -- %s",
              datetime.now().strftime("%Y-%m-%d %H:%M"))
+
+    # ---------------------------------------------------------------- #
+    #  ATTACH MODE  — reuse already-open browser, no daily open consumed
+    # ---------------------------------------------------------------- #
+    if args.attach or args.attach_profile:
+        if args.attach_profile:
+            pid   = args.attach_profile
+            label = args.label or pid
+            log.info("Attach-profile mode  |  profile=%s", pid)
+            try:
+                address = _resolve_attached_address(pid)
+            except RuntimeError as exc:
+                log.error("%s", exc)
+                return
+            log.info("Resolved debug address: %s", address)
+        else:
+            address = args.attach
+            label   = args.label or address
+            log.info("Attach mode  |  address=%s", address)
+
+        warm_profile_attached(
+            debugger_address=address,
+            profile_id=label,
+            skip_preflight=args.no_preflight,
+            close_after=args.close,
+        )
+        log.info("=" * 60)
+        log.info("Done.")
+        return
+
+    # ---------------------------------------------------------------- #
+    #  NORMAL MODE  — open every profile via the API
+    # ---------------------------------------------------------------- #
     log.info("Target: %s  |  Profiles: %d", TARGET_SOCIAL_URL, len(PROFILE_IDS))
 
     running = get_running_browsers()
