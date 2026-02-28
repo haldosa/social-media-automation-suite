@@ -1,0 +1,4 @@
+./mouse_moves.log
+./nstbrowser_warmer.log
+*.log
+*.log.*

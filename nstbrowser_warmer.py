@@ -30,6 +30,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     TimeoutException,
     NoSuchElementException,
@@ -59,6 +60,18 @@ LOG_FILE            = "nstbrowser_warmer.log"
 MOUSE_LOG_FILE      = "mouse_moves.log"  # dedicated cursor movement log
 MOUSE_TRACE         = True              # True = log every Bezier step (verbose)
 DEBUG_CURSOR_OVERLAY= True             # True = inject red dot overlay to visualise cursor movement
+
+# ── Selector constants ─────────────────────────────────────────────────────── #
+# Profile link in post header — href="/@username"
+FEED_PROFILE_LINK  = 'a[href^="/@"][role="link"]'
+# Small + icon follow button (SVG aria-label="Follow")
+QUICK_FOLLOW_BTN   = 'div[role="button"]:has(svg[aria-label="Follow"])'
+# XPath for text-based Follow button (feed inline, profile page, cards)
+FOLLOW_BTN_XPATH   = '//div[@role="button" and .//div[normalize-space(text())="Follow"]]'
+# X button on suggested cards
+DISMISS_CARD_BTN   = 'div[role="button"]:has(svg[aria-label="Close"])'
+# ─────────────────────────────────────────────────────────────────────────────#
+
 # ------------------------------------------------------------------ #
 
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
@@ -265,6 +278,11 @@ def _ease_in_out_sine(t: float) -> float:
 # cursor realistically last rested.
 _cursor_pos: list = [0, 0]
 
+# Profiles interacted with (followed or visited) during this session.
+# Cleared at the start of each run_social_session call so the same person
+# is never followed / visited twice in one session.
+_session_followed: set = set()
+
 
 # ------------------------------------------------------------------ #
 #  DEBUG CURSOR OVERLAY
@@ -323,7 +341,6 @@ _CURSOR_OVERLAY_JS = """
     }, true);
 })();
 """
-
 
 def inject_cursor_overlay(driver) -> None:
     """Inject the visual cursor overlay into the current page.
@@ -425,14 +442,19 @@ def bezier_move(driver, target_element) -> None:
             "        w:r.width, h:r.height};",
             target_element,
         )
-        # Arc targets the element's geometric centre directly.
-        # --- Click-offset (disabled) -------------------------------------------
-        # To re-enable Gaussian aim scatter, replace the two lines below with:
-        #   off_dx, off_dy = _human_click_offset(int(rect["w"]), int(rect["h"]))
-        #   x1 = int(rect["x"]) + off_dx
-        #   y1 = int(rect["y"]) + off_dy
-        x1 = int(rect["x"])
+        # JS animation always ends at the element's true geometric centre so that
+        # the last synthetic mousemove and the ActionChains CDP event are at most
+        # a few pixels apart (jitter on final step).  Any click-scatter offset is
+        # applied ONLY to the ActionChains call via move_to_element_with_offset —
+        # never to the JS animation endpoint — so the DOM never sees a large jump
+        # between the last synthetic event and the real CDP hover event.
+        x1 = int(rect["x"])   # true centre — JS animation endpoint
         y1 = int(rect["y"])
+        # --- Click-offset (disabled) -------------------------------------------
+        # off_dx, off_dy carry scatter for ActionChains.move_to_element_with_offset.
+        # To re-enable Gaussian aim scatter uncomment the line below:
+        #   off_dx, off_dy = _human_click_offset(int(rect["w"]), int(rect["h"]))
+        off_dx, off_dy = 0, 0
         # Start from last known position, clamped to current viewport
         x0 = max(0, min(_cursor_pos[0], int(vw)))
         y0 = max(0, min(_cursor_pos[1], int(vh)))
@@ -479,6 +501,16 @@ def bezier_move(driver, target_element) -> None:
             lateral = random.randint(min_cp_offset,
                                      max(min_cp_offset + 10,
                                          int(_arc_dist * 0.25))) * random.choice([-1, 1])
+        # Ensure the perpendicular offset isn't eaten by the viewport clamp.
+        # If applying lateral in the chosen direction would push cp outside [0,vw]×[0,vh]
+        # (e.g. a horizontal arc at y=0 with negative lateral → clamped to y=0),
+        # flip the sign so the cp receives a genuine offset.
+        _cp_x_trial = int(_mid_x + _perp_x * lateral)
+        _cp_y_trial = int(_mid_y + _perp_y * lateral)
+        _cp_x_clamped = max(0, min(_cp_x_trial, int(vw)))
+        _cp_y_clamped = max(0, min(_cp_y_trial, int(vh)))
+        if abs(_cp_x_clamped - int(_mid_x)) + abs(_cp_y_clamped - int(_mid_y)) < min_cp_offset:
+            lateral = -lateral  # flip: the other side of the midpoint is in-bounds
         cp = (
             max(0, min(int(_mid_x + _perp_x * lateral), int(vw))),
             max(0, min(int(_mid_y + _perp_y * lateral), int(vh))),
@@ -578,11 +610,27 @@ def bezier_move(driver, target_element) -> None:
         #     time.sleep(random.uniform(0.04, 0.10))
         #     bezier_move_to_coords(driver, x1, y1)
 
+        # Diagnostic: warn if the last synthetic point is far from the snap target.
+        # A large gap means the DOM would see an unrealistic jump between the final
+        # JS mousemove and the ActionChains CDP event.
+        snap_x = int(rect["x"]) + off_dx
+        snap_y = int(rect["y"]) + off_dy
+        if points:
+            last_syn_x, last_syn_y = points[-1][0], points[-1][1]
+            snap_gap = math.hypot(snap_x - last_syn_x, snap_y - last_syn_y)
+            if snap_gap > 10:
+                _mlog.warning(
+                    "SNAP GAP  last_synthetic=(%d,%d)  snap_target=(%d,%d)  gap=%.1fpx",
+                    last_syn_x, last_syn_y, snap_x, snap_y, snap_gap,
+                )
+
         # Phase 2 — single ActionChains call to fire real hover/mouseenter events.
-        # This snaps to the element's true centre regardless of where the arc aimed,
-        # so record the actual snap position (rect centre) not the offset aim point.
-        ActionChains(driver).move_to_element(target_element).perform()
-        snap_x, snap_y = int(rect["x"]), int(rect["y"])
+        # Uses move_to_element_with_offset so click-scatter (off_dx, off_dy) is
+        # applied here only — the JS animation always ends at the true centre.
+        # off_dx/off_dy are (0, 0) while click-offset is disabled.
+        ActionChains(driver).move_to_element_with_offset(
+            target_element, off_dx, off_dy
+        ).perform()
         _cursor_pos[0], _cursor_pos[1] = snap_x, snap_y
         _mlog.debug("SNAP  final=(%d,%d)", snap_x, snap_y)
 
@@ -651,6 +699,13 @@ def bezier_move_to_coords(driver, x1: int, y1: int) -> None:
         lateral = random.randint(min_cp_offset,
                                  max(min_cp_offset + 10,
                                      int(_arc_dist * 0.25))) * random.choice([-1, 1])
+        # Flip sign if the chosen direction gets clamped to zero by viewport edge.
+        _cp_x_trial = int(_mid_x + _perp_x * lateral)
+        _cp_y_trial = int(_mid_y + _perp_y * lateral)
+        _cp_x_clamped = max(0, min(_cp_x_trial, int(vw)))
+        _cp_y_clamped = max(0, min(_cp_y_trial, int(vh)))
+        if abs(_cp_x_clamped - int(_mid_x)) + abs(_cp_y_clamped - int(_mid_y)) < min_cp_offset:
+            lateral = -lateral
         cp = (
             max(0, min(int(_mid_x + _perp_x * lateral), int(vw))),
             max(0, min(int(_mid_y + _perp_y * lateral), int(vh))),
@@ -811,7 +866,7 @@ def smooth_scroll_chunk(driver, distance_px: int,
     """
     total     = abs(distance_px)
     direction = 1 if distance_px >= 0 else -1
-    steps     = max(1, total // max(1, step_px))
+    steps     = int(max(1, total // max(1, step_px)))
     scrolled  = 0
 
     for i in range(steps):
@@ -1236,35 +1291,420 @@ def check_notifications_action(driver) -> None:
         log.debug("Notification check failed: %s", exc)
 
 
-def view_profile_action(driver) -> None:
-    """
-    Click a random @username link in the feed, browse that profile briefly,
-    then navigate back.  Simulates organic profile-discovery behaviour.
-    """
-    log.info("Viewing a random profile...")
+def _is_visually_visible(driver, el) -> bool:
+    """Return True if el has non-zero size and is not hidden by CSS."""
     try:
-        links = [
-            el for el in driver.find_elements(By.CSS_SELECTOR, "a[href*='/@']")
-            if el.is_displayed()
-        ]
-        if not links:
-            log.debug("No profile links visible — skipping profile view")
-            return
-        target = random.choice(links[:20])
+        return driver.execute_script(
+            "var s = window.getComputedStyle(arguments[0]);"
+            "return s.visibility !== 'hidden' && s.display !== 'none'"
+            " && arguments[0].getBoundingClientRect().width > 0;",
+            el,
+        )
+    except Exception:
+        return False
+
+
+def _get_own_profile_href(driver) -> str:
+    """
+    Return the href of the logged-in user's own nav-bar profile link,
+    or '' on failure.
+
+    The nav icon is the only a[href^="/@"] that wraps an
+    svg[aria-label="Profile"] — all post-author links use text/avatars.
+    Caching it before each candidate scan prevents the bot from navigating
+    to its own account.
+    """
+    try:
+        el = driver.find_element(
+            By.CSS_SELECTOR,
+            'a[href^="/@"][role="link"]:has(svg[aria-label="Profile"])',
+        )
+        return (el.get_attribute("href") or "").rstrip("/")
+    except Exception:
+        return ""
+
+def view_profile_from_feed(driver, force_follow: bool = False) -> bool:
+    """
+    Click a random post-author username link in the feed to visit their
+    profile, scroll it, optionally follow, then navigate back.
+
+    force_follow=True guarantees follow_from_profile_page() is called
+    (used by follow_mode).  Default is a 15 % probabilistic gate.
+    """
+    try:
+        own_href = _get_own_profile_href(driver)
+        candidates = []
+        for el in driver.find_elements(By.CSS_SELECTOR, FEED_PROFILE_LINK):
+            try:
+                if not el.is_displayed():
+                    continue
+                # Skip timestamp links (same selector but contain <time>)
+                if driver.execute_script(
+                    "return arguments[0].querySelector('time') !== null;", el
+                ):
+                    continue
+                href = el.get_attribute("href") or ""
+                if "/post/" in href or "/t/" in href:
+                    continue
+                if own_href and href.rstrip("/") == own_href:
+                    continue
+                if href.rstrip("/") in _session_followed:
+                    continue
+                candidates.append(el)
+            except Exception:
+                continue
+
+        if not candidates:
+            log.debug("No feed profile links found")
+            return False
+
+        target = random.choice(candidates[:15])
         profile_url = target.get_attribute("href")
         if not profile_url:
-            return
-        log.info("Visiting profile: %s", profile_url[:60])
-        navigate_to(driver, profile_url)
-        time.sleep(random.uniform(2.0, 5.0))
-        stochastic_scroll(driver, total_seconds=random.uniform(8, 20))
+            return False
+
+        # Re-validate — element may have scrolled off-screen since the candidate
+        # list was built (page could have loaded more content / user scroll).
+        _rect = driver.execute_script(
+            "var r=arguments[0].getBoundingClientRect();"
+            "return {y: r.top, h: r.height};",
+            target,
+        )
+        _vh = driver.execute_script("return window.innerHeight")
+        if _rect["h"] == 0 or _rect["y"] < 0 or _rect["y"] > _vh:
+            log.debug("Profile link scrolled off-screen since scan — skipping")
+            return False
+
+        # Scroll the link into the vertical centre before moving the cursor to it.
+        driver.execute_script(
+            "arguments[0].scrollIntoView({behavior:'smooth', block:'center'});",
+            target,
+        )
+        time.sleep(random.uniform(0.4, 0.8))
+
+        _session_followed.add(profile_url.rstrip("/"))
+        log.info("Viewing profile from feed: %s", profile_url[:60])
+        bezier_move(driver, target)
+        time.sleep(random.uniform(0.5, 1.5))
+        target.click()
+
+        WebDriverWait(driver, 10).until(lambda d: "/@" in d.current_url)
+        time.sleep(random.uniform(1.5, 3.0))
+        stochastic_scroll(driver, total_seconds=random.uniform(2, 4))
+
+        # Follow gate — forced (follow_mode) or probabilistic (normal mode)
+        if force_follow or random.random() < 0.15:
+            follow_from_profile_page(driver)
+
         navigate_history(driver, "back")
+        time.sleep(random.uniform(1.0, 2.5))
+        return True
+
     except (TimeoutException, WebDriverException) as exc:
-        log.debug("Profile view failed (%s) — returning to feed", exc)
+        log.debug("View profile from feed failed: %s", exc)
         try:
             navigate_to(driver, TARGET_SOCIAL_URL)
         except Exception:
             pass
+        return False
+
+def follow_from_feed(driver) -> bool:
+    """
+    Follow a user directly from the feed via the hover-card that Threads
+    renders when the cursor rests over a post-author username.
+
+    Flow:
+      1. Find a visible feed profile link and scroll it into view.
+      2. Bezier-arc to the username (hover only — no click).
+      3. Wait up to 2 s for a text-based Follow button to appear in the
+         hover card (it is absent before the hover fires).
+      4. Bezier-arc to that Follow button and click it.
+      5. Move the cursor back to a neutral mid-feed position so the hover
+         card dismisses naturally and scrolling can continue.
+    """
+    try:
+        # ── 1. Collect visible, non-timestamp feed profile links ──────────────
+        own_href = _get_own_profile_href(driver)
+        candidates = []
+        for el in driver.find_elements(By.CSS_SELECTOR, FEED_PROFILE_LINK):
+            try:
+                if not el.is_displayed():
+                    continue
+                if driver.execute_script(
+                    "return arguments[0].querySelector('time') !== null;", el
+                ):
+                    continue
+                href = el.get_attribute("href") or ""
+                if "/post/" in href or "/t/" in href:
+                    continue
+                if own_href and href.rstrip("/") == own_href:
+                    continue
+                if href.rstrip("/") in _session_followed:
+                    continue
+                # Avatar links contain <img>; username links contain only text.
+                # We want textual username links — avatar hover triggers the
+                # quick-follow SVG, not the text-based hover-card Follow button.
+                if driver.execute_script(
+                    "return arguments[0].querySelector('img') !== null;", el
+                ):
+                    continue
+                rect = driver.execute_script(
+                    "var r=arguments[0].getBoundingClientRect();"
+                    "return {y:r.top, h:r.height};",
+                    el,
+                )
+                vh_c = driver.execute_script("return window.innerHeight")
+                if rect["h"] == 0 or rect["y"] < 0 or rect["y"] > vh_c:
+                    continue
+                candidates.append(el)
+            except Exception:
+                continue
+
+        if not candidates:
+            log.debug("follow_from_feed: no visible feed profile links")
+            return False
+
+        username_el = random.choice(candidates[:10])
+
+        # ── 2. Scroll username into view, then hover (no click) ───────────────
+        driver.execute_script(
+            "arguments[0].scrollIntoView({behavior:'smooth', block:'center'});",
+            username_el,
+        )
+        time.sleep(random.uniform(0.4, 0.8))
+
+        # Snapshot of text-based Follow buttons already in DOM before hover
+        pre_follow_ids = set(
+            el.id for el in driver.find_elements(By.XPATH, FOLLOW_BTN_XPATH)
+        )
+
+        bezier_move(driver, username_el)          # hover — ActionChains fires mouseenter
+        log.info("follow_from_feed: hovering username to trigger hover card")
+
+        # ── 3. Wait for the hover card's Follow button to appear ──────────────
+        follow_btn = None
+        try:
+            def _new_follow_btn(d):
+                for el in d.find_elements(By.XPATH, FOLLOW_BTN_XPATH):
+                    if el.id not in pre_follow_ids and el.is_displayed():
+                        return el
+                return None
+
+            follow_btn = WebDriverWait(driver, 2).until(_new_follow_btn)
+        except TimeoutException:
+            log.debug("follow_from_feed: hover card Follow button did not appear")
+            # Drift cursor far from the hover card, then scroll to guarantee dismissal
+            try:
+                vw_e = driver.execute_script("return window.innerWidth")
+                vh_e = driver.execute_script("return window.innerHeight")
+                bezier_move_to_coords(
+                    driver,
+                    random.randint(int(vw_e * 0.20), int(vw_e * 0.80)),
+                    random.randint(int(vh_e * 0.45), int(vh_e * 0.75)),
+                )
+                time.sleep(random.uniform(0.2, 0.4))
+                # Small scroll to force any lingering hover card off the screen
+                smooth_scroll_chunk(driver, random.randint(60, 130), step_px=5, tick_ms=16)
+            except Exception:
+                pass
+            return False
+
+        # ── 4. Arc to the Follow button and click ─────────────────────────────
+        time.sleep(random.uniform(0.3, 0.7))      # eye settling on the card
+        bezier_move(driver, follow_btn)
+        time.sleep(random.uniform(0.3, 0.8))
+        follow_btn.click()
+        time.sleep(random.uniform(0.8, 1.5))
+        log.info("follow_from_feed: follow clicked via hover card")
+        _session_followed.add((username_el.get_attribute("href") or "").rstrip("/"))
+
+        # ── 5. Drift cursor to mid-feed + scroll to guarantee card dismissal ──
+        try:
+            vw_e = driver.execute_script("return window.innerWidth")
+            vh_e = driver.execute_script("return window.innerHeight")
+            bezier_move_to_coords(
+                driver,
+                random.randint(int(vw_e * 0.20), int(vw_e * 0.80)),
+                random.randint(int(vh_e * 0.45), int(vh_e * 0.75)),
+            )
+            time.sleep(random.uniform(0.2, 0.4))
+            # Scroll down slightly — moves the hovered username off-screen so
+            # the hover card closes even if cursor proximity keeps it open.
+            smooth_scroll_chunk(driver, random.randint(80, 160), step_px=5, tick_ms=16)
+        except Exception:
+            pass
+
+        return True
+
+    except (NoSuchElementException, WebDriverException) as exc:
+        log.debug("follow_from_feed failed: %s", exc)
+        return False
+
+def follow_from_profile_page(driver) -> bool:
+    """
+    Click the Follow button on a loaded profile page.
+    Only call this when already on a profile URL (/@username).
+
+    Flow:
+      1. Smooth scroll to top (follow button lives in the profile header).
+      2. Drift cursor to the header region before committing to the button.
+      3. Deliberate deciding pause.
+      4. Bezier arc to follow button + click.
+      5. Post-follow drift toward the mid-feed so navigate_history() has a
+         realistic arc length when it parks the cursor at y=0.
+    """
+    try:
+        if "/@" not in driver.current_url:
+            log.debug("Not on a profile page — skipping follow")
+            return False
+
+        # 1. Smooth scroll to top — the follow button is in the profile header.
+        #    Use smooth_scroll_chunk in small upward steps so it looks like a
+        #    human scrolling back up after reading, rather than instant jump.
+        try:
+            current_scroll = driver.execute_script("return window.scrollY")
+            if current_scroll > 50:
+                # Scroll up in one smooth chunk
+                smooth_scroll_chunk(driver, -current_scroll, step_px=8, tick_ms=14)
+                time.sleep(random.uniform(0.4, 0.9))
+        except WebDriverException:
+            pass
+
+        # 2. Wait for the follow button to appear in the now-visible header.
+        btn = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, FOLLOW_BTN_XPATH))
+        )
+        if not _is_visually_visible(driver, btn):
+            return False
+
+        # Scroll it into view cleanly (handles any residual offset)
+        driver.execute_script(
+            "arguments[0].scrollIntoView({behavior:'smooth', block:'center'});",
+            btn,
+        )
+        time.sleep(random.uniform(0.3, 0.6))
+
+        # 3. Drift cursor into the header area before aiming at the button —
+        #    simulates the eye landing on the profile header after scrolling up.
+        try:
+            vw_f = driver.execute_script("return window.innerWidth")
+            vh_f = driver.execute_script("return window.innerHeight")
+            pre_x = random.randint(int(vw_f * 0.10), int(vw_f * 0.60))
+            pre_y = random.randint(int(vh_f * 0.10), int(vh_f * 0.30))
+            bezier_move_to_coords(driver, pre_x, pre_y)
+        except WebDriverException:
+            pass
+
+        # 4. Deliberate deciding pause + bezier arc to button + click.
+        time.sleep(random.uniform(2.0, 5.0))
+        bezier_move(driver, btn)
+        time.sleep(random.uniform(0.3, 0.8))
+        btn.click()
+        time.sleep(random.uniform(0.8, 1.5))
+
+        try:
+            WebDriverWait(driver, 5).until(
+                lambda d: len(d.find_elements(
+                    By.XPATH,
+                    '//div[@role="button" and (.//div[normalize-space(text())="Following"]'
+                    ' or .//div[normalize-space(text())="Requested"])]',
+                )) > 0
+            )
+            log.info("Follow confirmed on profile page")
+        except TimeoutException:
+            log.debug("Follow state change not confirmed — may still have worked")
+
+        # 5. Post-follow drift toward mid-feed so the upcoming navigate_history()
+        #    park arc has a realistic length rather than a near-zero hop from y≈0.
+        try:
+            vw_f = driver.execute_script("return window.innerWidth")
+            vh_f = driver.execute_script("return window.innerHeight")
+            drift_x = random.randint(int(vw_f * 0.20), int(vw_f * 0.80))
+            drift_y = random.randint(int(vh_f * 0.40), int(vh_f * 0.70))
+            bezier_move_to_coords(driver, drift_x, drift_y)
+        except WebDriverException:
+            pass
+
+        return True
+
+    except (TimeoutException, NoSuchElementException, WebDriverException) as exc:
+        log.debug("Follow from profile failed: %s", exc)
+        return False
+
+def interact_with_suggested_section(driver) -> None:
+    """
+    Scroll the 'Suggested for you' card section, hover a few profiles,
+    and occasionally follow one.
+    """
+    try:
+        suggested = driver.find_elements(
+            By.XPATH, '//span[normalize-space(text())="Suggested for you"]'
+        )
+        if not suggested:
+            log.debug("No 'Suggested for you' section found")
+            return
+
+        log.info("Interacting with Suggested for you section")
+        driver.execute_script(
+            "arguments[0].scrollIntoView({behavior:'smooth', block:'center'});",
+            suggested[0],
+        )
+        time.sleep(random.uniform(1.0, 2.5))
+
+        follow_btns = [
+            el for el in driver.find_elements(By.XPATH, FOLLOW_BTN_XPATH)
+            if el.is_displayed() and _is_visually_visible(driver, el)
+        ]
+        if not follow_btns:
+            log.debug("No follow buttons in suggested section")
+            return
+
+        # Hover 1–3 cards without following (browsing behaviour)
+        n_hover = min(random.randint(1, 3), len(follow_btns))
+        for btn in random.sample(follow_btns, n_hover):
+            bezier_move(driver, btn)
+            time.sleep(random.uniform(0.8, 2.5))
+
+        # 25 % chance: follow one
+        if random.random() < 0.25:
+            target = random.choice(follow_btns)
+            bezier_move(driver, target)
+            time.sleep(random.uniform(0.5, 1.2))
+            target.click()
+            time.sleep(random.uniform(0.8, 1.5))
+            log.info("Followed from Suggested for you section")
+
+        # 15 % chance: dismiss a card
+        if random.random() < 0.15:
+            dismiss_btns = [
+                el for el in driver.find_elements(By.CSS_SELECTOR, DISMISS_CARD_BTN)
+                if el.is_displayed()
+            ]
+            if dismiss_btns:
+                btn = random.choice(dismiss_btns)
+                bezier_move(driver, btn)
+                time.sleep(random.uniform(0.3, 0.7))
+                btn.click()
+                log.debug("Dismissed a suggested card")
+
+    except (NoSuchElementException, WebDriverException) as exc:
+        log.debug("Suggested section interaction failed: %s", exc)
+
+def return_to_top_action(driver) -> None:
+    """Click the Threads logo to scroll back to the top of the feed."""
+    try:
+        logo = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, 'a[href="/"][aria-label], a[href="https://www.threads.net/"]')
+            )
+        )
+        bezier_move(driver, logo)
+        time.sleep(random.uniform(0.3, 0.8))
+        logo.click()
+        time.sleep(random.uniform(1.0, 2.5))
+        log.debug("Returned to top via logo")
+    except (TimeoutException, NoSuchElementException, WebDriverException) as exc:
+        log.debug("Return to top failed: %s", exc)
 
 
 # ================================================================== #
@@ -1374,16 +1814,47 @@ def active_action(driver) -> None:
     log.info("Active action complete. Likes delivered: %d", liked)
 
 
-def run_social_session(driver, session_seconds: float) -> None:
+def run_social_session(driver, session_seconds: float, follow_mode: bool = False) -> None:
     """
     Session loop with:
     - Per-session randomised passive/active split (truncated normal, not fixed 80/20).
     - Engagement variety: occasional notification check or profile view.
     - Guaranteed at least one active action per session (forced if < 60 s remain).
+
+    follow_mode (--follow flag): replaces the normal dispatch with a
+    heavily-weighted follow loop for testing follow actions end-to-end.
     """
+    global _session_followed
+    _session_followed = set()          # reset per-session seen-profile cache
+
     deadline    = time.time() + session_seconds
     count       = 0
     active_done = False
+
+    # ------------------------------------------------------------------
+    # FOLLOW MODE — heavy follow weighting for testing
+    # ------------------------------------------------------------------
+    if follow_mode:
+        log.info("[FOLLOW MODE] Session running with heavy follow weighting")
+        while time.time() < deadline:
+            roll = random.random()
+            if roll < 0.0:
+                # 35 %: hover username in feed → Follow via hover card
+                follow_from_feed(driver)
+            elif roll < 0.80:
+                # 30 %: navigate to profile page → guaranteed follow_from_profile_page
+                view_profile_from_feed(driver, force_follow=True)
+            elif roll < 0.0:
+                # 15 %: browse suggested-for-you cards (occasional follow)
+                interact_with_suggested_section(driver)
+            else:
+                # 20 %: brief passive scroll to surface fresh content
+                stochastic_scroll(driver, total_seconds=random.uniform(8, 20))
+            count += 1
+            time.sleep(random.uniform(1, 3))
+        log.info("[FOLLOW MODE] Session complete. Total actions: %d", count)
+        return
+    # ------------------------------------------------------------------
 
     # Draw per-session active probability from truncated normal (mean 0.22, SD 0.08)
     # clamped to [0.10, 0.45] — sessions range from mostly-passive to moderately active.
@@ -1406,9 +1877,18 @@ def run_social_session(driver, session_seconds: float) -> None:
             elif roll < active_prob + 0.06:
                 # ~6 % of iterations: check notifications
                 check_notifications_action(driver)
-            elif roll < active_prob + 0.10:
-                # ~4 % of iterations: visit a profile
-                view_profile_action(driver)
+            elif roll < active_prob + 0.12:
+                # ~6 % of iterations: click feed author link, browse profile
+                view_profile_from_feed(driver)
+            elif roll < active_prob + 0.15:
+                # ~3 % of iterations: quick-follow from feed (+) button
+                follow_from_feed(driver)
+            elif roll < active_prob + 0.18:
+                # ~3 % of iterations: browse suggested-for-you cards
+                interact_with_suggested_section(driver)
+            elif roll < active_prob + 0.21:
+                # ~3 % of iterations: return to top via logo
+                return_to_top_action(driver)
             else:
                 passive_action(driver)
 
@@ -1422,7 +1902,7 @@ def run_social_session(driver, session_seconds: float) -> None:
 #  SINGLE PROFILE WARM-UP ORCHESTRATOR
 # ================================================================== #
 
-def warm_profile(profile_id: str) -> None:
+def warm_profile(profile_id: str, follow_mode: bool = False) -> None:
     """Full end-to-end warm-up for one NstBrowser profile."""
     driver   = None
     launched = False
@@ -1456,7 +1936,7 @@ def warm_profile(profile_id: str) -> None:
         # 5. Main activity session
         session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
         log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
-        run_social_session(driver, session_sec)
+        run_social_session(driver, session_sec, follow_mode=follow_mode)
 
     except (TimeoutException, RuntimeError, WebDriverException) as exc:
         log.error("Error on profile %s: %s", profile_id, exc)
@@ -1488,6 +1968,7 @@ def warm_profile_attached(
     profile_id: str = "manual",
     skip_preflight: bool = False,
     close_after: bool = False,
+    follow_mode: bool = False,
 ) -> None:
     """
     Run a warm-up session on a browser that is *already open* in NstBrowser.
@@ -1538,7 +2019,7 @@ def warm_profile_attached(
 
         session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
         log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
-        run_social_session(driver, session_sec)
+        run_social_session(driver, session_sec, follow_mode=follow_mode)
 
     except (TimeoutException, RuntimeError, WebDriverException) as exc:
         log.error("Error on attached profile '%s': %s", profile_id, exc)
@@ -1683,6 +2164,16 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--follow",
+        action="store_true",
+        help=(
+            "Follow-testing mode: replaces the normal session dispatch with a "
+            "heavily-weighted follow loop (40%% quick-follow, 35%% profile-follow, "
+            "15%% suggested section, 10%% passive scroll).  "
+            "Useful for testing and debugging follow actions end-to-end."
+        ),
+    )
+    p.add_argument(
         "--close",
         action="store_true",
         help=(
@@ -1728,6 +2219,7 @@ def main() -> None:
             profile_id=label,
             skip_preflight=args.no_preflight,
             close_after=args.close,
+            follow_mode=args.follow,
         )
         log.info("=" * 60)
         log.info("Done.")
@@ -1750,7 +2242,7 @@ def main() -> None:
     for idx, profile_id in enumerate(profile_order):
         log.info("-" * 60)
         log.info("[%d/%d] Starting: %s", idx + 1, len(profile_order), profile_id)
-        warm_profile(profile_id)
+        warm_profile(profile_id, follow_mode=args.follow)
 
         if idx < len(profile_order) - 1:
             buf = random.uniform(BUFFER_MIN_MIN * 60, BUFFER_MAX_MIN * 60)
