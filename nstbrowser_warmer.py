@@ -1269,28 +1269,6 @@ def check_login_status(driver) -> bool:
 #  ENGAGEMENT VARIETY ACTIONS
 # ================================================================== #
 
-def check_notifications_action(driver) -> None:
-    """
-    Visit the activity/notifications tab and dwell briefly.
-    Simulates a user checking who liked or replied to them.
-    """
-    notif_urls = [
-        "https://www.threads.net/activity",
-        "https://www.threads.net/notifications",
-    ]
-    target = random.choice(notif_urls)
-    log.info("Checking notifications: %s", target)
-    try:
-        navigate_to(driver, target)
-        time.sleep(random.uniform(2.0, 5.0))
-        stochastic_scroll(driver, total_seconds=random.uniform(5, 15))
-        # Return to feed
-        navigate_to(driver, TARGET_SOCIAL_URL)
-        time.sleep(random.uniform(1.0, 2.5))
-    except (TimeoutException, WebDriverException) as exc:
-        log.debug("Notification check failed: %s", exc)
-
-
 def _is_visually_visible(driver, el) -> bool:
     """Return True if el has non-zero size and is not hidden by CSS."""
     try:
@@ -1315,10 +1293,22 @@ def _get_own_profile_href(driver) -> str:
     to its own account.
     """
     try:
-        el = driver.find_element(
-            By.CSS_SELECTOR,
-            'a[href^="/@"][role="link"]:has(svg[aria-label="Profile"])',
-        )
+        # Avoid CSS :has() — walk up from the Profile SVG to its <a> ancestor
+        el = driver.execute_script("""
+            var svgs = document.querySelectorAll('svg[aria-label="Profile"]');
+            for (var i = 0; i < svgs.length; i++) {
+                var node = svgs[i].parentElement;
+                for (var d = 0; d < 6; d++) {
+                    if (!node) break;
+                    var href = node.getAttribute('href') || '';
+                    if (node.tagName === 'A' && href.startsWith('/@')) return node;
+                    node = node.parentElement;
+                }
+            }
+            return null;
+        """)
+        if el is None:
+            return ""
         return (el.get_attribute("href") or "").rstrip("/")
     except Exception:
         return ""
@@ -1403,13 +1393,16 @@ def view_profile_from_feed(driver, force_follow: bool = False) -> bool:
     except (TimeoutException, WebDriverException) as exc:
         log.debug("View profile from feed failed: %s", exc)
         try:
-            navigate_to(driver, TARGET_SOCIAL_URL)
+            if not click_home_button(driver):
+                navigate_to(driver, TARGET_SOCIAL_URL)
         except Exception:
             pass
         return False
 
 def follow_from_feed(driver) -> bool:
     """
+    DISABLED — hover-card follow action commented out.
+
     Follow a user directly from the feed via the hover-card that Threads
     renders when the cursor rests over a post-author username.
 
@@ -1422,6 +1415,10 @@ def follow_from_feed(driver) -> bool:
       5. Move the cursor back to a neutral mid-feed position so the hover
          card dismisses naturally and scrolling can continue.
     """
+    # NOTE: Disabled — return immediately without doing anything.
+    log.debug("follow_from_feed: disabled, skipping")
+    return False
+    # ── DISABLED BODY BELOW ───────────────────────────────────────────────────
     try:
         # ── 1. Collect visible, non-timestamp feed profile links ──────────────
         own_href = _get_own_profile_href(driver)
@@ -1630,7 +1627,7 @@ def follow_from_profile_page(driver) -> bool:
     except (TimeoutException, NoSuchElementException, WebDriverException) as exc:
         log.debug("Follow from profile failed: %s", exc)
         return False
-
+'''
 def interact_with_suggested_section(driver) -> None:
     """
     Scroll the 'Suggested for you' card section, hover a few profiles,
@@ -1689,22 +1686,117 @@ def interact_with_suggested_section(driver) -> None:
 
     except (NoSuchElementException, WebDriverException) as exc:
         log.debug("Suggested section interaction failed: %s", exc)
+'''
+def _find_nav_btn_by_label(driver, aria_label: str):
+    """
+    Find a nav bar anchor/button by its SVG aria-label using a JS DOM walk.
+    Avoids CSS :has() which has unreliable support in ChromeDriver.
+    Returns the clickable <a> or role="button" ancestor element, or None.
+    """
+    return driver.execute_script("""
+        var svgs = document.querySelectorAll('svg[aria-label="' + arguments[0] + '"]');
+        for (var i = 0; i < svgs.length; i++) {
+            var svg = svgs[i];
+            var rect = svg.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+            var el = svg.parentElement;
+            for (var d = 0; d < 6; d++) {
+                if (!el) break;
+                if (el.tagName === 'A' || el.getAttribute('role') === 'button') {
+                    return el;
+                }
+                el = el.parentElement;
+            }
+        }
+        return null;
+    """, aria_label)
+
+
+def _click_nav_btn(driver, aria_label: str, label: str) -> bool:
+    """
+    Generic helper: find a nav bar icon by its SVG aria-label, bezier-move
+    to it, and click it.
+    aria_label  — the SVG aria-label value (e.g. "Home", "Search", "Notifications").
+    label       — human-readable name used only for log messages.
+    Returns True on success, False if not found / not clickable.
+    """
+    try:
+        btn = _find_nav_btn_by_label(driver, aria_label)
+        if not btn:
+            log.debug("_click_nav_btn: '%s' not found", label)
+            return False
+        WebDriverWait(driver, 4).until(lambda d: btn.is_displayed())
+        bezier_move(driver, btn)
+        time.sleep(random.uniform(0.3, 0.7))
+        btn.click()
+        time.sleep(random.uniform(0.8, 1.8))   # SPA transition settle
+        log.debug("_click_nav_btn: clicked '%s'", label)
+        return True
+    except WebDriverException as exc:
+        log.debug("_click_nav_btn: WebDriverException on '%s': %s", label, exc)
+        return False
+
+
+def click_home_button(driver) -> bool:
+    """
+    Click the Home or Threads-logo nav button to return to the feed.
+    Tries "Home" SVG label first (compact nav), then "Threads" (sidebar logo).
+    Returns True on success, False if neither is found.
+    """
+    # "Home" label used by compact/mobile nav; "Threads" by the sidebar logo
+    for aria_label in ("Home", "Threads"):
+        if _click_nav_btn(driver, aria_label, aria_label):
+            return True
+    log.debug("click_home_button: no home button found")
+    return False
+
+
+def check_notifications_action(driver) -> None:
+    """
+    Click the Notifications nav button and dwell briefly.
+    Simulates a user checking who liked or replied to them.
+    Uses bezier_move() + click on the nav icon — no URL-bar navigation.
+    """
+    log.info("Checking notifications via nav button")
+    try:
+        if not _click_nav_btn(driver, "Notifications", "Notifications"):
+            log.debug("Notifications button not found — skipping")
+            return
+        time.sleep(random.uniform(2.0, 5.0))
+        stochastic_scroll(driver, total_seconds=random.uniform(5, 15))
+        # Return to feed by clicking the Home nav button
+        if not click_home_button(driver):
+            navigate_to(driver, TARGET_SOCIAL_URL)
+        time.sleep(random.uniform(1.0, 2.5))
+    except (TimeoutException, WebDriverException) as exc:
+        log.debug("Notification check failed: %s", exc)
+
 
 def return_to_top_action(driver) -> None:
-    """Click the Threads logo to scroll back to the top of the feed."""
+    """Click the Home / Threads-logo nav button to scroll back to the top of the feed."""
+    if not click_home_button(driver):
+        log.debug("Return to top failed — home button not found")
+
+
+def visit_search_action(driver) -> None:
+    """
+    Click the Search nav icon, dwell briefly (no typing), then return home.
+    Simulates a user opening search to inspect trending topics or profiles
+    without committing to a query.
+    """
+    log.info("Visiting search page via nav button")
     try:
-        logo = WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, 'a[href="/"][aria-label], a[href="https://www.threads.net/"]')
-            )
-        )
-        bezier_move(driver, logo)
-        time.sleep(random.uniform(0.3, 0.8))
-        logo.click()
-        time.sleep(random.uniform(1.0, 2.5))
-        log.debug("Returned to top via logo")
-    except (TimeoutException, NoSuchElementException, WebDriverException) as exc:
-        log.debug("Return to top failed: %s", exc)
+        if not _click_nav_btn(driver, "Search", "Search"):
+            log.debug("Search button not found — skipping")
+            return
+        # Dwell as if scanning the search page
+        time.sleep(random.uniform(3.0, 8.0))
+        # Return to feed
+        if not click_home_button(driver):
+            navigate_to(driver, TARGET_SOCIAL_URL)
+        time.sleep(random.uniform(1.0, 2.0))
+    except (TimeoutException, WebDriverException) as exc:
+        log.debug("visit_search_action failed: %s", exc)
 
 
 # ================================================================== #
@@ -1838,15 +1930,17 @@ def run_social_session(driver, session_seconds: float, follow_mode: bool = False
         log.info("[FOLLOW MODE] Session running with heavy follow weighting")
         while time.time() < deadline:
             roll = random.random()
-            if roll < 0.0:
-                # 35 %: hover username in feed → Follow via hover card
-                follow_from_feed(driver)
-            elif roll < 0.80:
+            # follow_from_feed disabled — block commented out
+            # if roll < 0.0:
+            #     # 35 %: hover username in feed → Follow via hover card
+            #     follow_from_feed(driver)
+            # elif roll < 0.80:
+            if roll < 0.80:
                 # 30 %: navigate to profile page → guaranteed follow_from_profile_page
                 view_profile_from_feed(driver, force_follow=True)
-            elif roll < 0.0:
-                # 15 %: browse suggested-for-you cards (occasional follow)
-                interact_with_suggested_section(driver)
+            #elif roll < 0.0:
+            #    # 15 %: browse suggested-for-you cards (occasional follow)
+            #    interact_with_suggested_section(driver)
             else:
                 # 20 %: brief passive scroll to surface fresh content
                 stochastic_scroll(driver, total_seconds=random.uniform(8, 20))
@@ -1874,21 +1968,25 @@ def run_social_session(driver, session_seconds: float, follow_mode: bool = False
             if roll < active_prob:
                 active_action(driver)
                 active_done = True
-            elif roll < active_prob + 0.06:
+            elif roll < active_prob + 0.2:
                 # ~6 % of iterations: check notifications
                 check_notifications_action(driver)
-            elif roll < active_prob + 0.12:
+            elif roll < active_prob + 0.4:
                 # ~6 % of iterations: click feed author link, browse profile
                 view_profile_from_feed(driver)
-            elif roll < active_prob + 0.15:
-                # ~3 % of iterations: quick-follow from feed (+) button
-                follow_from_feed(driver)
-            elif roll < active_prob + 0.18:
-                # ~3 % of iterations: browse suggested-for-you cards
-                interact_with_suggested_section(driver)
-            elif roll < active_prob + 0.21:
+            # follow_from_feed disabled — block commented out
+            # elif roll < active_prob + 0.15:
+            #     # ~3 % of iterations: quick-follow from feed (+) button
+            #     follow_from_feed(driver)
+            #elif roll < active_prob + 0.45:
+            #    # ~3 % of iterations: browse suggested-for-you cards
+            #    interact_with_suggested_section(driver)
+            elif roll < active_prob + 0.6:
                 # ~3 % of iterations: return to top via logo
                 return_to_top_action(driver)
+            elif roll < active_prob + 0.8:
+                # ~3 % of iterations: open search page, dwell, return home
+                visit_search_action(driver)
             else:
                 passive_action(driver)
 
