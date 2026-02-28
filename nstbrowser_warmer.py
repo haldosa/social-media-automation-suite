@@ -405,6 +405,26 @@ def _maybe_add_overshoot(
     return ox, oy, True
 
 
+def init_cursor_pos(driver) -> None:
+    """
+    Silently set _cursor_pos to a random position within the current viewport.
+
+    No DOM event is dispatched — a single-step jump from (0,0) to a random
+    coordinate is a detectable bot signal.  The first real cursor event the
+    page sees will be the drift arc from _navigate_and_settle or the first
+    bezier_move call, both of which start from this seeded position.
+    """
+    global _cursor_pos
+    try:
+        vw = driver.execute_script("return window.innerWidth")
+        vh = driver.execute_script("return window.innerHeight")
+        x = random.randint(int(vw * 0.10), int(vw * 0.90))
+        y = random.randint(int(vh * 0.15), int(vh * 0.85))
+        _cursor_pos[0], _cursor_pos[1] = x, y
+        _mlog.debug("INIT  pos=(%d,%d)  vp=(%dx%d)", x, y, vw, vh)
+    except WebDriverException as exc:
+        log.debug("init_cursor_pos failed: %s", exc)
+
 def bezier_move(driver, target_element) -> None:
     """
     Move the mouse to target_element along a randomised quadratic Bezier curve
@@ -466,15 +486,28 @@ def bezier_move(driver, target_element) -> None:
             _cursor_pos[0], _cursor_pos[1] = x1, y1
             _mlog.debug("SKIP  already near target  pos=(%d,%d)", x1, y1)
             return
-        # Off-viewport guard: getBoundingClientRect can return coordinates
+        # Off-viewport correction: getBoundingClientRect can return coordinates
         # outside the visible viewport (e.g. element not yet scrolled into view).
-        # JS mousemove events with off-screen coordinates produce garbage paths;
-        # ActionChains.move_to_element() handles the scroll automatically.
+        # Scroll it into view first, re-query the position, then fall through to
+        # the arc computation with updated coordinates — no ActionChains snap.
         if x1 < 0 or y1 < 0 or x1 > int(vw) or y1 > int(vh):
-            ActionChains(driver).move_to_element(target_element).perform()
-            _cursor_pos[0], _cursor_pos[1] = x1, y1
-            _mlog.debug("SKIP  target off-screen  vp=(%dx%d)  pos=(%d,%d)", int(vw), int(vh), x1, y1)
-            return
+            driver.execute_script(
+                "arguments[0].scrollIntoView({behavior:'instant', block:'center'});",
+                target_element,
+            )
+            time.sleep(random.uniform(0.3, 0.6))
+            rect = driver.execute_script(
+                "var r=arguments[0].getBoundingClientRect();"
+                "return {x:r.left+r.width/2, y:r.top+r.height/2, w:r.width, h:r.height};",
+                target_element,
+            )
+            x1 = int(rect["x"])
+            y1 = int(rect["y"])
+            # Still off-screen after scroll (e.g. hidden element) — give up
+            if x1 < 0 or y1 < 0 or x1 > int(vw) or y1 > int(vh):
+                _mlog.debug("SKIP  target off-screen after scroll  pos=(%d,%d)", x1, y1)
+                return
+            # Fall through — arc computation continues with updated x1/y1
         # --- Overshoot (disabled) ----------------------------------------------
         # To re-enable: replace the line below with:
         #   arc_x, arc_y, overshot = _maybe_add_overshoot(
@@ -637,37 +670,6 @@ def bezier_move(driver, target_element) -> None:
     except WebDriverException:
         pass
 
-
-def init_cursor_pos(driver) -> None:
-    """
-    Place the synthetic cursor at a uniformly random position within the
-    current viewport and fire a single mousemove DOM event there.
-
-    Called once per page load (via inject_cursor_overlay) so the first
-    bezier_move arc starts from a plausible random location rather than
-    from (0, 0) or any other hard-coded corner — both of which are
-    immediate bot signals on monitor-refresh-rate timing analysis.
-    """
-    global _cursor_pos
-    try:
-        vw = driver.execute_script("return window.innerWidth")
-        vh = driver.execute_script("return window.innerHeight")
-        # Avoid the extreme edges and the browser chrome at the top
-        x = random.randint(int(vw * 0.10), int(vw * 0.90))
-        y = random.randint(int(vh * 0.15), int(vh * 0.85))
-        driver.execute_script(
-            "document.dispatchEvent(new MouseEvent('mousemove', {"
-            "  clientX: arguments[0], clientY: arguments[1],"
-            "  bubbles: true, cancelable: true, view: window"
-            "}));",
-            x, y,
-        )
-        _cursor_pos[0], _cursor_pos[1] = x, y
-        _mlog.debug("INIT  pos=(%d,%d)  vp=(%dx%d)", x, y, vw, vh)
-    except WebDriverException as exc:
-        log.debug("init_cursor_pos failed: %s", exc)
-
-
 def bezier_move_to_coords(driver, x1: int, y1: int) -> None:
     """
     Animate the cursor from _cursor_pos to explicit viewport coordinates
@@ -778,22 +780,22 @@ def _navigate_and_settle(driver, action) -> None:
          smooth Bezier arc — simulating the user reaching for the URL bar.
       2. Execute the navigation action (driver.get / back / forward).
       3. Wait for DOMContentLoaded.
-      4. Inject the visual debug overlay without changing the cursor position.
-      5. Restore the cursor to its pre-navigation coordinate via a single
-         synthetic mousemove — it was 'already there' while the page loaded.
+      4. Inject the visual debug overlay.
+      5. Silent position set — cursor was at (park_x, 0) before navigation and
+         is conceptually still there; no dispatch needed on the fresh page.
       6. Brief settle pause (user's eye scans the freshly rendered page).
-      7. Drift the cursor to a random viewport position — where the eye
-         naturally lands on the first piece of new content.
+      7. Drift the cursor into the feed — the first synthetic event the new
+         page sees, arcing naturally from the address-bar area down into content.
     """
     global _cursor_pos
+    # 1. Park at address-bar row
     try:
         vw = driver.execute_script("return window.innerWidth")
     except Exception:
         vw = 1280
-    # 1. Park
     park_x = random.randint(int(vw * 0.25), int(vw * 0.75))
     bezier_move_to_coords(driver, park_x, 0)
-    saved_x, saved_y = _cursor_pos[0], _cursor_pos[1]
+
     # 2. Navigate
     action()
     try:
@@ -802,28 +804,27 @@ def _navigate_and_settle(driver, action) -> None:
         )
     except TimeoutException:
         pass
+
     # 3. Overlay
     inject_cursor_overlay(driver)
-    # 4. Restore cursor
-    try:
-        driver.execute_script(
-            "document.dispatchEvent(new MouseEvent('mousemove',{"
-            "clientX:arguments[0],clientY:arguments[1],"
-            "bubbles:true,cancelable:true,view:window}));",
-            saved_x, saved_y,
-        )
-        _cursor_pos[0], _cursor_pos[1] = saved_x, saved_y
-        _mlog.debug("RESTORE  pos=(%d,%d)", saved_x, saved_y)
-    except WebDriverException:
-        pass
+
+    # 4. Silent position set — fresh page has no cursor history.
+    #    Cursor was at (park_x, 0) before navigation; it's still conceptually
+    #    there.  No dispatch needed — the drift arc below is the first event
+    #    the new page sees, which avoids a detectable in-place jump on load.
+    _cursor_pos[0], _cursor_pos[1] = park_x, 0
+    _mlog.debug("FRESH  pos=(%d,%d)", park_x, 0)
+
     # 5. Settle
-    time.sleep(random.uniform(0.4, 1.0))
-    # 6. Drift to random position
+    time.sleep(random.uniform(0.6, 1.4))
+
+    # 6. Drift into content — first synthetic event on the new page,
+    #    starting from (park_x, 0) and moving naturally into the feed area.
     try:
         vw2 = driver.execute_script("return window.innerWidth")
         vh2 = driver.execute_script("return window.innerHeight")
-        rx = random.randint(int(vw2 * 0.10), int(vw2 * 0.90))
-        ry = random.randint(int(vh2 * 0.20), int(vh2 * 0.80))
+        rx = random.randint(int(vw2 * 0.15), int(vw2 * 0.85))
+        ry = random.randint(int(vh2 * 0.25), int(vh2 * 0.75))
         bezier_move_to_coords(driver, rx, ry)
     except Exception:
         pass
@@ -853,6 +854,54 @@ def navigate_history(driver, direction: str = "back") -> None:
 #  We sleep `tick_ms` ms between calls in Python — same visual effect,
 #  no async plumbing, zero risk of timeout.
 # ------------------------------------------------------------------ #
+
+def _park_cursor_before_scroll(driver) -> None:
+    """
+    Drift the OS cursor to a loosely randomised position near the lateral
+    edge of the viewport before a scroll sequence — simulating a user
+    moving their hand out of the way before using the scroll wheel.
+    Not perfectly precise; intentionally sloppy.
+
+    Why this matters: window.scrollBy() moves the DOM under the OS cursor.
+    If the cursor is sitting over the feed column, elements drifting into
+    that coordinate fire real mouseenter events — triggering hover cards
+    without any intentional hover.  Positioning near an edge eliminates
+    this for the majority of scrolls.
+
+    20 % of the time no park happens at all — real users sometimes just
+    start scrolling with the cursor wherever it last rested, accepting
+    incidental hovers.  Perfect cursor hygiene before every scroll is
+    itself a detectable pattern.
+    """
+    global _cursor_pos
+    try:
+        vw = driver.execute_script("return window.innerWidth")
+        vh = driver.execute_script("return window.innerHeight")
+
+        # 50 % left edge, 50 % right edge — neither is a fixed column
+        if random.random() < 0.5:
+            park_x = random.randint(4, max(5, int(vw * 0.08)))
+        else:
+            park_x = random.randint(int(vw * 0.92), int(vw) - 4)
+
+        # Vertical position: somewhere in the middle half — not always centred
+        park_y = random.randint(int(vh * 0.25), int(vh * 0.75))
+
+        # 20 % of calls skip the park entirely
+        if random.random() < 0.20:
+            return
+
+        # bezier_move_to_coords dispatches synthetic mousemove events and updates
+        # _cursor_pos — both the overlay dot and the tracked position stay in sync.
+        # No separate ActionChains call: that would move the OS cursor via CDP
+        # without a matching synthetic event, causing the dot and OS cursor to
+        # diverge for the rest of the session.
+        bezier_move_to_coords(driver, park_x, park_y)
+        _mlog.debug("PARK  pos=(%d,%d)  edge=%s", _cursor_pos[0], _cursor_pos[1],
+                    "left" if park_x < vw // 2 else "right")
+    except WebDriverException:
+        pass
+
 
 def smooth_scroll_chunk(driver, distance_px: int,
                         step_px: int = 6, tick_ms: int = 16) -> None:
@@ -901,6 +950,10 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
      65%  normal read  1.5–4 s
     """
     deadline = time.time() + total_seconds
+    # Drift the OS cursor toward a viewport edge before scrolling begins.
+    # This prevents the page moving under a stationary cursor from firing
+    # spurious hover-card mouseenter events on feed content.
+    _park_cursor_before_scroll(driver)
     while time.time() < deadline:
         distance = random.randint(280, 650)
         step_px  = random.randint(4, 9)
@@ -1188,16 +1241,50 @@ def _find_unliked_buttons(driver) -> list:
     return results
 
 
-def _scroll_post_into_center(driver, element) -> None:
+def scroll_element_into_loose_view(driver, element) -> None:
     """
-    Scroll the like button's parent post into the vertical centre of
-    the viewport, then wait for the scroll to settle.
+    Scroll the page until the element is loosely visible — somewhere in
+    the viewport, not mathematically centered.  Mimics a human scrolling
+    until they can see what they're looking for and stopping.
+
+    Each scroll chunk is routed through smooth_scroll_chunk so it inherits
+    the same sine ease-in/ease-out velocity curve used during stochastic
+    browsing — slow start, peak in the middle, deceleration to stop.
+    Step sizes and tick rates are randomised per chunk so consecutive
+    scroll events vary the way real scroll-wheel flicks do.
     """
-    driver.execute_script(
-        "arguments[0].scrollIntoView({behavior:'smooth', block:'center'});",
-        element,
-    )
-    time.sleep(random.uniform(0.5, 1.0))
+    for _ in range(12):  # max attempts before giving up
+        rect = driver.execute_script(
+            "var r=arguments[0].getBoundingClientRect();"
+            "return {top:r.top, bottom:r.bottom, height:r.height};",
+            element,
+        )
+        vh = driver.execute_script("return window.innerHeight")
+
+        # Element is comfortably visible — not within 15 % of either edge
+        margin = vh * 0.15
+        if margin < rect["top"] and rect["bottom"] < (vh - margin):
+            break
+
+        if rect["top"] < margin:
+            # Element above viewport (or too close to top) — scroll up
+            step = -random.randint(80, 220)
+        else:
+            # Element below viewport (or too close to bottom) — scroll down
+            step = random.randint(80, 220)
+
+        # Use smooth_scroll_chunk so each scroll chunk gets the same sine
+        # ease-in/ease-out physics as normal browsing — not a raw instant jump.
+        smooth_scroll_chunk(
+            driver, step,
+            step_px=random.randint(4, 8),
+            tick_ms=random.randint(13, 20),
+        )
+        # Brief inter-chunk pause — hand rests between flicks
+        time.sleep(random.uniform(0.08, 0.25))
+
+    # Imprecise final pause — not a fixed sleep
+    time.sleep(random.uniform(0.3, 0.7))
 
 
 def _attempt_like(driver, element) -> bool:
@@ -1212,7 +1299,7 @@ def _attempt_like(driver, element) -> bool:
     Returns True on success.
     """
     try:
-        _scroll_post_into_center(driver, element)
+        scroll_element_into_loose_view(driver, element)
 
         # Reading pause before liking — humans read before they react
         time.sleep(random.uniform(0.8, 2.5))
@@ -1365,12 +1452,8 @@ def view_profile_from_feed(driver, force_follow: bool = False) -> bool:
             log.debug("Profile link scrolled off-screen since scan — skipping")
             return False
 
-        # Scroll the link into the vertical centre before moving the cursor to it.
-        driver.execute_script(
-            "arguments[0].scrollIntoView({behavior:'smooth', block:'center'});",
-            target,
-        )
-        time.sleep(random.uniform(0.4, 0.8))
+        # Scroll the link loosely into view before moving the cursor to it.
+        scroll_element_into_loose_view(driver, target)
 
         _session_followed.add(profile_url.rstrip("/"))
         log.info("Viewing profile from feed: %s", profile_url[:60])
@@ -1464,11 +1547,7 @@ def follow_from_feed(driver) -> bool:
         username_el = random.choice(candidates[:10])
 
         # ── 2. Scroll username into view, then hover (no click) ───────────────
-        driver.execute_script(
-            "arguments[0].scrollIntoView({behavior:'smooth', block:'center'});",
-            username_el,
-        )
-        time.sleep(random.uniform(0.4, 0.8))
+        scroll_element_into_loose_view(driver, username_el)
 
         # Snapshot of text-based Follow buttons already in DOM before hover
         pre_follow_ids = set(
@@ -1574,12 +1653,8 @@ def follow_from_profile_page(driver) -> bool:
         if not _is_visually_visible(driver, btn):
             return False
 
-        # Scroll it into view cleanly (handles any residual offset)
-        driver.execute_script(
-            "arguments[0].scrollIntoView({behavior:'smooth', block:'center'});",
-            btn,
-        )
-        time.sleep(random.uniform(0.3, 0.6))
+        # Scroll it loosely into view (handles any residual offset)
+        scroll_element_into_loose_view(driver, btn)
 
         # 3. Drift cursor into the header area before aiming at the button —
         #    simulates the eye landing on the profile header after scrolling up.
@@ -1642,11 +1717,8 @@ def interact_with_suggested_section(driver) -> None:
             return
 
         log.info("Interacting with Suggested for you section")
-        driver.execute_script(
-            "arguments[0].scrollIntoView({behavior:'smooth', block:'center'});",
-            suggested[0],
-        )
-        time.sleep(random.uniform(1.0, 2.5))
+        scroll_element_into_loose_view(driver, suggested[0])
+        time.sleep(random.uniform(0.7, 2.0))  # additional dwell on suggested section
 
         follow_btns = [
             el for el in driver.find_elements(By.XPATH, FOLLOW_BTN_XPATH)
@@ -1810,6 +1882,9 @@ def passive_action(driver) -> None:
     """
     scroll_time = random.uniform(25, 75)
     log.debug("Passive: scrolling %.0fs", scroll_time)
+    # Drift OS cursor toward a viewport edge before the scroll block so the
+    # page scrolling under it does not generate spurious hover card activations.
+    _park_cursor_before_scroll(driver)
     stochastic_scroll(driver, total_seconds=scroll_time)
 
     # Pause after scrolling stops — user finishes reading the post
@@ -1968,10 +2043,10 @@ def run_social_session(driver, session_seconds: float, follow_mode: bool = False
             if roll < active_prob:
                 active_action(driver)
                 active_done = True
-            elif roll < active_prob + 0.2:
+            elif roll < active_prob + 0.03:
                 # ~6 % of iterations: check notifications
                 check_notifications_action(driver)
-            elif roll < active_prob + 0.4:
+            elif roll < active_prob + 0.09:
                 # ~6 % of iterations: click feed author link, browse profile
                 view_profile_from_feed(driver)
             # follow_from_feed disabled — block commented out
@@ -1981,10 +2056,10 @@ def run_social_session(driver, session_seconds: float, follow_mode: bool = False
             #elif roll < active_prob + 0.45:
             #    # ~3 % of iterations: browse suggested-for-you cards
             #    interact_with_suggested_section(driver)
-            elif roll < active_prob + 0.6:
+            elif roll < active_prob + 0.12:
                 # ~3 % of iterations: return to top via logo
                 return_to_top_action(driver)
-            elif roll < active_prob + 0.8:
+            elif roll < active_prob + 0.18:
                 # ~3 % of iterations: open search page, dwell, return home
                 visit_search_action(driver)
             else:
