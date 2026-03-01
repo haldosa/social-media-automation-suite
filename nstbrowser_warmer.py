@@ -278,6 +278,23 @@ def _ease_in_out_sine(t: float) -> float:
 # cursor realistically last rested.
 _cursor_pos: list = [0, 0]
 
+
+def _set_cursor(x: int, y: int, tag: str = "") -> None:
+    """
+    Update _cursor_pos and emit a compact one-line position log to BOTH the
+    dedicated mouse-movement file (_mlog) AND the main console (log.info),
+    so every cursor coordinate change is visible in the live run output.
+
+    Low-level arc detail (ARC / STEP lines) continues to go only to _mlog.
+    This function covers the final settled position after each move.
+    """
+    global _cursor_pos
+    _cursor_pos[0], _cursor_pos[1] = x, y
+    label = f"  [{tag}]" if tag else ""
+    _mlog.debug("CURSOR  (%d, %d)%s", x, y, label)
+    log.info("cursor  (%d, %d)%s", x, y, label)
+
+
 # Profiles interacted with (followed or visited) during this session.
 # Cleared at the start of each run_social_session call so the same person
 # is never followed / visited twice in one session.
@@ -420,8 +437,8 @@ def init_cursor_pos(driver) -> None:
         vh = driver.execute_script("return window.innerHeight")
         x = random.randint(int(vw * 0.10), int(vw * 0.90))
         y = random.randint(int(vh * 0.15), int(vh * 0.85))
-        _cursor_pos[0], _cursor_pos[1] = x, y
-        _mlog.debug("INIT  pos=(%d,%d)  vp=(%dx%d)", x, y, vw, vh)
+        _mlog.debug("INIT  vp=(%dx%d)", vw, vh)
+        _set_cursor(x, y, "init")
     except WebDriverException as exc:
         log.debug("init_cursor_pos failed: %s", exc)
 
@@ -483,8 +500,8 @@ def bezier_move(driver, target_element) -> None:
         # in-place jitter that is an obvious bot signal.
         if math.hypot(x1 - x0, y1 - y0) < 10:
             ActionChains(driver).move_to_element(target_element).perform()
-            _cursor_pos[0], _cursor_pos[1] = x1, y1
-            _mlog.debug("SKIP  already near target  pos=(%d,%d)", x1, y1)
+            _set_cursor(x1, y1, "near-snap")
+            _mlog.debug("SKIP  already near target")
             return
         # Off-viewport correction: getBoundingClientRect can return coordinates
         # outside the visible viewport (e.g. element not yet scrolled into view).
@@ -664,8 +681,7 @@ def bezier_move(driver, target_element) -> None:
         ActionChains(driver).move_to_element_with_offset(
             target_element, off_dx, off_dy
         ).perform()
-        _cursor_pos[0], _cursor_pos[1] = snap_x, snap_y
-        _mlog.debug("SNAP  final=(%d,%d)", snap_x, snap_y)
+        _set_cursor(snap_x, snap_y, "bezier-snap")
 
     except WebDriverException:
         pass
@@ -765,8 +781,7 @@ def bezier_move_to_coords(driver, x1: int, y1: int) -> None:
             points, delays,
         )
         time.sleep(sum(d / 1000.0 for d in delays) + 0.05)
-        _cursor_pos[0], _cursor_pos[1] = x1, y1
-        _mlog.debug("SNAP  final=(%d,%d)", x1, y1)
+        _set_cursor(x1, y1, "arc-end")
     except WebDriverException:
         pass
 
@@ -812,8 +827,7 @@ def _navigate_and_settle(driver, action) -> None:
     #    Cursor was at (park_x, 0) before navigation; it's still conceptually
     #    there.  No dispatch needed — the drift arc below is the first event
     #    the new page sees, which avoids a detectable in-place jump on load.
-    _cursor_pos[0], _cursor_pos[1] = park_x, 0
-    _mlog.debug("FRESH  pos=(%d,%d)", park_x, 0)
+    _set_cursor(park_x, 0, "fresh-page")
 
     # 5. Settle
     time.sleep(random.uniform(0.6, 1.4))
@@ -832,11 +846,13 @@ def _navigate_and_settle(driver, action) -> None:
 
 def navigate_to(driver, url: str) -> None:
     """Navigate to url with human-like cursor park → restore → drift."""
+    log.info("[ NAV ]  → %s", url)
     _navigate_and_settle(driver, lambda: driver.get(url))
 
 
 def navigate_history(driver, direction: str = "back") -> None:
     """Go back or forward in history with human-like cursor park → restore → drift."""
+    log.info("[ NAV ]  %s", direction)
     fn = driver.back if direction == "back" else driver.forward
     _navigate_and_settle(driver, fn)
 
@@ -854,54 +870,6 @@ def navigate_history(driver, direction: str = "back") -> None:
 #  We sleep `tick_ms` ms between calls in Python — same visual effect,
 #  no async plumbing, zero risk of timeout.
 # ------------------------------------------------------------------ #
-
-def _park_cursor_before_scroll(driver) -> None:
-    """
-    Drift the OS cursor to a loosely randomised position near the lateral
-    edge of the viewport before a scroll sequence — simulating a user
-    moving their hand out of the way before using the scroll wheel.
-    Not perfectly precise; intentionally sloppy.
-
-    Why this matters: window.scrollBy() moves the DOM under the OS cursor.
-    If the cursor is sitting over the feed column, elements drifting into
-    that coordinate fire real mouseenter events — triggering hover cards
-    without any intentional hover.  Positioning near an edge eliminates
-    this for the majority of scrolls.
-
-    20 % of the time no park happens at all — real users sometimes just
-    start scrolling with the cursor wherever it last rested, accepting
-    incidental hovers.  Perfect cursor hygiene before every scroll is
-    itself a detectable pattern.
-    """
-    global _cursor_pos
-    try:
-        vw = driver.execute_script("return window.innerWidth")
-        vh = driver.execute_script("return window.innerHeight")
-
-        # 50 % left edge, 50 % right edge — neither is a fixed column
-        if random.random() < 0.5:
-            park_x = random.randint(4, max(5, int(vw * 0.08)))
-        else:
-            park_x = random.randint(int(vw * 0.92), int(vw) - 4)
-
-        # Vertical position: somewhere in the middle half — not always centred
-        park_y = random.randint(int(vh * 0.25), int(vh * 0.75))
-
-        # 20 % of calls skip the park entirely
-        if random.random() < 0.20:
-            return
-
-        # bezier_move_to_coords dispatches synthetic mousemove events and updates
-        # _cursor_pos — both the overlay dot and the tracked position stay in sync.
-        # No separate ActionChains call: that would move the OS cursor via CDP
-        # without a matching synthetic event, causing the dot and OS cursor to
-        # diverge for the rest of the session.
-        bezier_move_to_coords(driver, park_x, park_y)
-        _mlog.debug("PARK  pos=(%d,%d)  edge=%s", _cursor_pos[0], _cursor_pos[1],
-                    "left" if park_x < vw // 2 else "right")
-    except WebDriverException:
-        pass
-
 
 def smooth_scroll_chunk(driver, distance_px: int,
                         step_px: int = 6, tick_ms: int = 16) -> None:
@@ -950,10 +918,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
      65%  normal read  1.5–4 s
     """
     deadline = time.time() + total_seconds
-    # Drift the OS cursor toward a viewport edge before scrolling begins.
-    # This prevents the page moving under a stationary cursor from firing
-    # spurious hover-card mouseenter events on feed content.
-    _park_cursor_before_scroll(driver)
+    log.info("[ SCROLL ]  scrolling for %.0fs", total_seconds)
     while time.time() < deadline:
         distance = random.randint(280, 650)
         step_px  = random.randint(4, 9)
@@ -1016,81 +981,6 @@ def run_preflight(driver) -> None:
         log.info("Pre-flight: %s  (%.0fs)", site, dwell)
         navigate_to(driver, site)
         stochastic_scroll(driver, total_seconds=dwell)
-
-
-# ================================================================== #
-#  THREADS-SPECIFIC HOVERING
-# ================================================================== #
-
-# Selectors for content worth hovering over while reading the Threads feed
-_THREADS_HOVER_SELECTORS = [
-    "article",
-    "div[data-pressable-container='true']",   # Threads post card wrapper
-    "img[src*='cdninstagram']",               # Threads/Meta CDN images
-    "img[src*='fbcdn']",
-    "video",
-    "a[href*='/@']",                          # @username profile links
-    "a[href*='/t/']",                         # individual thread links
-    "p",
-    "span[dir='auto']",                       # localised post body text
-]
-
-
-def _hover_random_element(driver) -> None:
-    """
-    Move the cursor to a random visible Threads content element and linger.
-    Iterates selectors in priority order; stops at the first match found.
-    Only elements inside the current viewport are considered.
-    """
-    try:
-        viewport_h = driver.execute_script("return window.innerHeight")
-        for sel in _THREADS_HOVER_SELECTORS:
-            elems = driver.find_elements(By.CSS_SELECTOR, sel)
-            visible = []
-            for el in elems:
-                try:
-                    if not el.is_displayed():
-                        continue
-                    rect = driver.execute_script(
-                        "var r=arguments[0].getBoundingClientRect();"
-                        "return {top:r.top, bottom:r.bottom, height:r.height};", el
-                    )
-                    if rect["height"] > 8 and 0 <= rect["top"] <= viewport_h:
-                        visible.append(el)
-                except Exception:
-                    continue
-            if visible:
-                # Sort by vertical centre, split into thirds, weight bucket selection
-                # so the middle third (where a real user's eye rests) is most likely.
-                visible.sort(key=lambda e: e._id if hasattr(e, '_id') else 0)
-                try:
-                    visible.sort(
-                        key=lambda e: driver.execute_script(
-                            "return arguments[0].getBoundingClientRect().top;", e
-                        )
-                    )
-                except Exception:
-                    pass
-                n   = len(visible)
-                t1  = n // 3
-                t2  = t1 * 2
-                top_third    = visible[:t1]    if t1 > 0  else visible
-                mid_third    = visible[t1:t2]  if t2 > t1 else visible
-                bot_third    = visible[t2:]    if t2 < n  else visible
-                bucket_roll  = random.random()
-                if bucket_roll < 0.25:
-                    pool = top_third
-                elif bucket_roll < 0.75:
-                    pool = mid_third
-                else:
-                    pool = bot_third
-                if not pool:
-                    pool = visible
-                bezier_move(driver, random.choice(pool))
-                time.sleep(random.uniform(0.5, 2.5))
-                return
-    except (NoSuchElementException, WebDriverException):
-        pass
 
 
 # ================================================================== #
@@ -1299,6 +1189,7 @@ def _attempt_like(driver, element) -> bool:
     Returns True on success.
     """
     try:
+        log.info("[ LIKE ]  scrolling post into view + clicking like")
         scroll_element_into_loose_view(driver, element)
 
         # Reading pause before liking — humans read before they react
@@ -1629,6 +1520,7 @@ def follow_from_profile_page(driver) -> bool:
       5. Post-follow drift toward the mid-feed so navigate_history() has a
          realistic arc length when it parks the cursor at y=0.
     """
+    log.info("[ FOLLOW ]  attempting follow from profile page")
     try:
         if "/@" not in driver.current_url:
             log.debug("Not on a profile page — skipping follow")
@@ -1877,23 +1769,15 @@ def visit_search_action(driver) -> None:
 
 def passive_action(driver) -> None:
     """
-    Passive action: scroll + hover, with occasional browser back/forward
+    Passive action: scroll, with occasional browser back/forward
     to break the perfectly linear navigation graph.
     """
     scroll_time = random.uniform(25, 75)
-    log.debug("Passive: scrolling %.0fs", scroll_time)
-    # Drift OS cursor toward a viewport edge before the scroll block so the
-    # page scrolling under it does not generate spurious hover card activations.
-    _park_cursor_before_scroll(driver)
+    log.info("[ PASSIVE ]  scroll %.0fs", scroll_time)
     stochastic_scroll(driver, total_seconds=scroll_time)
 
     # Pause after scrolling stops — user finishes reading the post
     time.sleep(random.uniform(1.0, 3.0))
-
-    _hover_random_element(driver)
-    if random.random() < 0.30:
-        time.sleep(random.uniform(1.0, 2.5))
-        _hover_random_element(driver)
 
     # 8 % chance: brief back then forward (mis-tap or curiosity)
     if random.random() < 0.08:
@@ -1919,13 +1803,13 @@ def active_action(driver) -> None:
     on_threads = "threads.net" in current_url or "threads.com" in current_url
     if not on_threads:
         log.info(
-            "Active: not on threads.net/com (%s) — passive scroll instead",
+            "[ ACTIVE ]  not on threads (%s) — passive scroll instead",
             current_url[:60],
         )
         stochastic_scroll(driver, total_seconds=random.uniform(15, 30))
         return
 
-    log.info("Active: scanning for like buttons on %s", current_url[:60])
+    log.info("[ ACTIVE ]  scanning for likes  url=%s", current_url[:60])
     liked = 0
     try:
         # Stochastic pre-scroll — 50% short, 30% medium, 20% skip entirely
