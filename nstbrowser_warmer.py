@@ -29,6 +29,9 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.actions.action_builder import ActionBuilder
+from selenium.webdriver.common.actions.pointer_input import PointerInput
+from selenium.webdriver.common.actions import interaction
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
@@ -249,12 +252,66 @@ def connect_selenium(ws_debugger_url: str) -> webdriver.Chrome:
 #  HUMAN-LIKE INTERACTION PRIMITIVES
 # ================================================================== #
 
+# Bigram pairs that are naturally slow for most touch-typists — awkward
+# hand transitions that produce longer inter-key intervals in corpus data.
+_SLOW_BIGRAMS = {
+    'qu', 'wr', 'xc', 'zx', 'bv', 'vb', 'pq', 'yw', 'wq', 'xz',
+}
+
 def human_type(element, text: str) -> None:
-    """Type text one character at a time with randomised keystroke delays."""
+    """
+    Type text with a realistic keystroke timing model.
+
+    Timing model:
+    - Base delay: log-normal centred ~80 ms (matches corpus inter-key data).
+      Most keystrokes land in 40-120 ms; occasional slow ones up to ~600 ms.
+    - Slow bigrams (wr, qu, xc …): 1.4–2× longer due to awkward hand transitions.
+    - Word boundaries (space): +50–180 ms micro-pause.
+    - Post-sentence punctuation (.!?): +200–600 ms re-reading pause.
+    - Rare mid-word hesitation (thinking of next word): +300–800 ms, ~4 % chance.
+    - Burst pattern: 3–7 characters are typed in rapid succession, then a
+      brief burst-gap (60–200 ms extra) before the next burst begins — matching
+      the way humans type in phrases rather than character-by-character.
+    """
     element.click()
+    time.sleep(random.uniform(0.08, 0.25))   # focus-settle after click
+    prev      = ''
+    word_len  = 0
+    burst_rem = random.randint(3, 7)          # characters left in current burst
+
     for char in text:
+        # Base: log-normal centred around 80 ms, clamped 40–600 ms
+        base = random.lognormvariate(math.log(0.08), 0.4)
+        base = max(0.04, min(base, 0.60))
+
+        # Slow bigram penalty
+        if (prev + char).lower() in _SLOW_BIGRAMS:
+            base *= random.uniform(1.4, 2.0)
+
+        # Word boundary
+        if char == ' ':
+            base += random.uniform(0.05, 0.18)
+            word_len = 0
+        else:
+            word_len += 1
+
+        # Post-sentence punctuation re-reading pause
+        if prev in '.!?':
+            base += random.uniform(0.20, 0.60)
+
+        # Rare mid-word hesitation
+        if word_len > 4 and random.random() < 0.04:
+            base += random.uniform(0.30, 0.80)
+
+        # Burst gap: extra pause at end of each burst
+        burst_rem -= 1
+        if burst_rem <= 0:
+            base += random.uniform(0.06, 0.20)
+            burst_rem = random.randint(3, 7)
+
         element.send_keys(char)
-        time.sleep(random.uniform(0.1, 0.3))
+        time.sleep(base)
+        prev = char
 
 
 def _bezier_point(p0, p1, p2, t):
@@ -590,21 +647,48 @@ def bezier_move(driver, target_element) -> None:
         points = []
         delays = []
         prev   = (x0, y0)
+        # Distance scale: short arcs need proportionally less tremor.
+        # Normalised to 1.0 at 500 px, clamped to [0.15, 1.0] so very
+        # short hops (~30 px) still get a small but non-zero wobble.
+        dist_scale = max(0.15, min(_arc_dist / 500.0, 1.0))
+        # Low-frequency drift state — correlated wrist/arm oscillation.
+        # Its step-size also scales with arc distance so short hops don't
+        # wander off-target.
+        drift_x = 0.0
+        drift_y = 0.0
         for i in range(1, steps + 1):
             t_raw  = i / steps
             t      = _ease_in_out_sine(t_raw)           # S-curve position
             nx, ny = _bezier_point((x0, y0), cp, (arc_x, arc_y), t)
 
-            # Velocity-scaled tremor with Fitts's Law approach factor.
-            # Jitter SD is high at departure (hand lifting), minimal at peak speed
-            # mid-arc, then rises again in the final 20 % as the hand homes onto
-            # the target (fine corrective micro-movements near small elements).
+            # Two-factor tremor model:
+            #   velocity factor — sin bell, 1.0 at mid-arc, ~0 at endpoints.
+            #     Faster movement = less hand tremor (Fitts's Law + biomechanics).
+            #   distance factor (dist_scale) — long sweeping arcs produce more
+            #     total arm excursion and therefore more absolute tremor than a
+            #     small 30 px nudge to a nearby button.
+            #
+            # Combined formula at peak velocity, 500 px arc:  1.5×0.45×1.0 ≈ 0.68 px SD
+            # At peak velocity, 60 px arc:                    1.5×0.45×0.15 ≈ 0.10 px SD
+            # At start/end,     500 px arc:                   1.5×1.0×1.0  = 1.50 px SD
+            # Approach phase adds corrective wobble:          up to ~2.2×1.0 px SD
             if i < steps:
-                velocity  = math.sin(math.pi * t_raw)                       # bell 0→1→0
+                velocity  = math.sin(math.pi * t_raw)                        # bell 0→1→0
                 approach  = max(0.0, (t_raw - 0.80) / 0.20) if t_raw > 0.80 else 0.0
-                tremor_sd = 0.8 * (1.0 - velocity * 0.8) + approach * 0.8  # ~0.8 start, ~0.16 mid, ~1.3 final
-                nx = max(0, min(int(nx + random.gauss(0, tremor_sd * 1.0)), int(vw) - 1))
-                ny = max(0, min(int(ny + random.gauss(0, tremor_sd * 0.7)), int(vh) - 1))
+                tremor_sd = (1.5 * (1.0 - velocity * 0.55) + approach * 1.5) * dist_scale
+
+                # High-frequency tremor (independent per step)
+                nx = int(nx + random.gauss(0, tremor_sd))
+                ny = int(ny + random.gauss(0, tremor_sd * 0.75))
+
+                # Low-frequency drift: bounded random walk scaled to arc distance.
+                drift_x = drift_x * 0.88 + random.gauss(0, 0.55 * dist_scale)
+                drift_y = drift_y * 0.88 + random.gauss(0, 0.40 * dist_scale)
+                drift_cap = max(1.0, 4.0 * dist_scale)
+                drift_x = max(-drift_cap, min(drift_x, drift_cap))
+                drift_y = max(-drift_cap, min(drift_y, drift_cap))
+                nx = max(0, min(int(nx + drift_x), int(vw) - 1))
+                ny = max(0, min(int(ny + drift_y), int(vh) - 1))
 
             dx, dy = nx - prev[0], ny - prev[1]
             points.append([nx, ny, dx, dy])
@@ -805,14 +889,14 @@ def bezier_move_to_coords(driver, x1: int, y1: int) -> None:
 
         # Phase 2 — move the real CDP pointer to the destination so that
         # CSS :hover / browser hit-testing tracks with the JS animation.
-        # JS dispatchEvent only fires synthetic events; without this ActionChains
-        # call the real cursor stays wherever it was last physically moved
-        # (e.g. pinned to the last like-button click position).
-        # move_by_offset uses "pointer" origin — relative to wherever the W3C
-        # pointer currently sits — which always matches _cursor_pos because
-        # every real cursor move in this file updates _cursor_pos via _set_cursor.
+        # Uses ABSOLUTE viewport coordinates (move_to_location) rather than
+        # move_by_offset so that any accumulated drift between _cursor_pos and
+        # the W3C pointer is corrected on every call instead of compounding.
         try:
-            ActionChains(driver).move_by_offset(x1 - x0, y1 - y0).perform()
+            ab = ActionBuilder(driver,
+                               mouse=PointerInput(interaction.POINTER_MOUSE, "mouse"))
+            ab.pointer_action.move_to_location(x1, y1)
+            ab.perform()
         except WebDriverException:
             pass
 
@@ -952,6 +1036,45 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
      17%  quick skim   0.3–1.2 s (nothing to see, keep scrolling)
      65%  normal read  1.5–4 s
     """
+    def _reading_pause(seconds: float) -> None:
+        """
+        Sleep for `seconds` while continuously drifting the cursor — mimicking
+        a user's eyes and hand moving across content they're reading.
+
+        Rather than a flat sleep followed by a single wander, the pause is
+        broken into micro-segments of 0.6–2.0 s each.  After each segment there
+        is a 72 % chance of a small cursor nudge.  Nudges are *local* — biased
+        toward the current cursor position + Gaussian scatter — so the cursor
+        drifts organically across the content area rather than teleporting.
+
+        Short pauses (< 0.8 s) are served as a plain sleep to avoid the overhead
+        of JS viewport queries on quick skims.
+        """
+        if seconds < 0.8:
+            time.sleep(seconds)
+            return
+        end = time.time() + seconds
+        while True:
+            remaining = end - time.time()
+            if remaining <= 0:
+                break
+            sit = min(random.uniform(1.0, 3.0), remaining)
+            time.sleep(sit)
+            if end - time.time() <= 0.15:
+                break
+            if random.random() < 0.5:
+                try:
+                    vw_r = driver.execute_script("return window.innerWidth")
+                    vh_r = driver.execute_script("return window.innerHeight")
+                    # Local drift — stays near current position, Gaussian spread
+                    cx = max(int(vw_r * 0.08), min(int(vw_r * 0.92),
+                             _cursor_pos[0] + int(random.gauss(0, vw_r * 0.10))))
+                    cy = max(int(vh_r * 0.10), min(int(vh_r * 0.90),
+                             _cursor_pos[1] + int(random.gauss(0, vh_r * 0.09))))
+                    bezier_move_to_coords(driver, cx, cy)
+                except Exception:
+                    pass
+
     deadline = time.time() + total_seconds
     log.info("[ SCROLL ]  scrolling for %.0fs", total_seconds)
     while time.time() < deadline:
@@ -962,31 +1085,16 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
 
         # brief pause after scroll lands (hand leaving wheel)
         time.sleep(random.uniform(0.15, 0.45))
-
-        # 4-tier reading pause
+        # 4-tier reading pause — cursor drifts throughout via _reading_pause()
         tier = random.random()
         if tier < 0.03:
-            time.sleep(random.uniform(8.0, 15.0))   # distraction
+            _reading_pause(random.uniform(8.0, 15.0))   # distraction
         elif tier < 0.18:
-            time.sleep(random.uniform(4.5, 9.0))    # long read
+            _reading_pause(random.uniform(4.5, 9.0))    # long read
         elif tier < 0.35:
-            time.sleep(random.uniform(0.3, 1.2))    # quick skim
+            _reading_pause(random.uniform(0.3, 1.2))    # quick skim
         else:
-            time.sleep(random.uniform(1.5, 4.0))    # normal read
-
-        # Cursor idle wander — between scroll rests the cursor drifts over the
-        # content the user is 'reading' rather than freezing in one place.
-        # Skipped ~35 % of the time (quick skims where the hand stays put).
-        if random.random() < 0.65 and time.time() < deadline:
-            try:
-                vw_s = driver.execute_script("return window.innerWidth")
-                vh_s = driver.execute_script("return window.innerHeight")
-                wx = random.randint(int(vw_s * 0.08), int(vw_s * 0.92))
-                wy = random.randint(int(vh_s * 0.10), int(vh_s * 0.90))
-                bezier_move_to_coords(driver, wx, wy)
-            except Exception:
-                pass
-
+            _reading_pause(random.uniform(1.5, 4.0))    # normal read
         # occasional upward drift — small (re-reading) or large (going back to a post)
         if random.random() < 0.22:
             # 20 % of drift events scroll back a large amount (really went too far)
@@ -1253,26 +1361,75 @@ def _attempt_like(driver, element) -> bool:
 #  LOGIN GUARD
 # ================================================================== #
 
+# Specific URL path segments that indicate a challenge/verification screen.
+# Matched against the lowercased URL; these are path prefixes, not substrings
+# of page content, so they cannot be accidentally triggered by feed posts.
+CHALLENGE_URL_PATHS = [
+    "/challenge",
+    "/checkpoint",
+    "/accounts/suspended",
+    "/accounts/disabled",
+    "instagram.com/challenge",
+    "instagram.com/checkpoint",
+]
+
+# Structural DOM selectors that only appear on challenge/verification screens.
+# Using form actions and specific input names rather than body text so that
+# user-generated content on the feed can never cause a false positive.
+CHALLENGE_DOM_SELECTORS = [
+    'form[action*="/challenge"]',
+    'form[action*="/checkpoint"]',
+    'input[name="security_code"]',
+    'input[name="verification_code"]',
+    'button[name="Choice"][value="0"]',   # "Send security code" button
+]
+
 def check_login_status(driver) -> bool:
     """
     Return True if the current Threads page shows a logged-in feed.
-    Detects logged-out state by redirect to /login or absence of feed DOM.
+
+    Detects:
+    - Logged-out state via /login redirect.
+    - Challenge / verification screens via specific URL paths and structural
+      DOM elements — avoiding false positives from user-generated content.
+      A challenge page can look logged-in (no /login in URL, feed elements
+      absent) so explicit challenge detection is required.
     """
     try:
-        url = driver.current_url
-        if any(s in url for s in ("/login", "/accounts/login", "instagram.com/accounts")):
-            log.warning("Login redirect detected — profile may be logged out: %s", url)
+        url = driver.current_url.lower()
+
+        # Definite logged-out
+        if any(s in url for s in ("/login", "/accounts/login")):
+            log.warning("Login redirect detected: %s", url)
             return False
-        # Feed content present — logged in
+
+        # URL-based challenge detection — specific paths only
+        if any(s in url for s in CHALLENGE_URL_PATHS):
+            log.warning("Challenge URL detected: %s", url)
+            return False
+
+        # DOM-based challenge detection — structural elements only
+        for sel in CHALLENGE_DOM_SELECTORS:
+            try:
+                el = driver.find_element(By.CSS_SELECTOR, sel)
+                if el.is_displayed():
+                    log.warning("Challenge DOM element detected: %s", sel)
+                    return False
+            except NoSuchElementException:
+                continue
+
+        # Feed present — logged in
         articles = driver.find_elements(
             By.CSS_SELECTOR,
             "article, div[data-pressable-container='true']",
         )
         if articles:
             return True
-        # Fallback: URL is on threads.net or threads.com (redirect target)
+
+        # Fallback: on threads domain with no challenge signals
         if "threads.net" in url or "threads.com" in url:
             return True
+
     except WebDriverException:
         pass
     return False
@@ -1283,12 +1440,29 @@ def check_login_status(driver) -> bool:
 # ================================================================== #
 
 def _is_visually_visible(driver, el) -> bool:
-    """Return True if el has non-zero size and is not hidden by CSS."""
+    """
+    Return True only if el is genuinely visible to the user.
+
+    Guards against honeypot elements that pass is_displayed() but are
+    invisible via CSS tricks — opacity:0, visibility:hidden, zero size,
+    or off-screen positioning (left:-9999px).
+    """
     try:
         return driver.execute_script(
-            "var s = window.getComputedStyle(arguments[0]);"
-            "return s.visibility !== 'hidden' && s.display !== 'none'"
-            " && arguments[0].getBoundingClientRect().width > 0;",
+            """
+            var s   = window.getComputedStyle(arguments[0]);
+            var r   = arguments[0].getBoundingClientRect();
+            return s.display     !== 'none'
+                && s.visibility  !== 'hidden'
+                && s.opacity     !== '0'
+                && parseFloat(s.opacity) > 0
+                && parseInt(s.width)  > 0
+                && parseInt(s.height) > 0
+                && r.width  > 0
+                && r.height > 0
+                && r.right  > 0
+                && r.bottom > 0;
+            """,
             el,
         )
     except Exception:
@@ -1894,18 +2068,18 @@ def active_action(driver) -> None:
             stochastic_scroll(driver, total_seconds=random.uniform(15, 30))
             return
 
-        # Weighted like count: 15% skip, 50% 1-like, 25% 2-likes, 10% 3-likes
+        # Weighted like count: 75% 1-like, 25% 2-likes
         like_roll = random.random()
-        if like_roll < 0.15:
-            log.info("Active: decided to scroll past without liking")
-            stochastic_scroll(driver, total_seconds=random.uniform(10, 25))
-            return
-        elif like_roll < 0.65:
+        #if like_roll < 0.15:
+        #    log.info("Active: decided to scroll past without liking")
+        #    stochastic_scroll(driver, total_seconds=random.uniform(10, 25))
+        #    return
+        if like_roll < 0.75:
             n_targets = 1
-        elif like_roll < 0.90:
-            n_targets = 2
         else:
-            n_targets = 3
+            n_targets = 2
+        #else:
+        #    n_targets = 3
 
         n_targets = min(n_targets, len(candidates))
         targets   = random.sample(candidates, n_targets)
@@ -1974,8 +2148,8 @@ def run_social_session(driver, session_seconds: float, follow_mode: bool = False
     # ------------------------------------------------------------------
 
     # Draw per-session active probability from truncated normal (mean 0.22, SD 0.08)
-    # clamped to [0.10, 0.45] — sessions range from mostly-passive to moderately active.
-    active_prob = max(0.10, min(0.45, random.gauss(0.22, 0.08)))
+    # clamped to [0.20, 0.45] — sessions range from mostly-passive to moderately active.
+    active_prob = max(0.20, min(0.45, random.gauss(0.22, 0.08)))
     log.info("Session active probability this run: %.2f", active_prob)
 
     while time.time() < deadline:
