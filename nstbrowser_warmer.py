@@ -487,11 +487,13 @@ def bezier_move(driver, target_element) -> None:
         # between the last synthetic event and the real CDP hover event.
         x1 = int(rect["x"])   # true centre — JS animation endpoint
         y1 = int(rect["y"])
-        # --- Click-offset (disabled) -------------------------------------------
-        # off_dx, off_dy carry scatter for ActionChains.move_to_element_with_offset.
-        # To re-enable Gaussian aim scatter uncomment the line below:
-        #   off_dx, off_dy = _human_click_offset(int(rect["w"]), int(rect["h"]))
-        off_dx, off_dy = 0, 0
+        # Slight aim offset — humans don't land exactly on the geometric centre.
+        # Sigma scales with element size; clamped to ±35 % of element dimension
+        # so the click always stays well inside the element bounds.
+        _ew = max(1, int(rect["w"]))
+        _eh = max(1, int(rect["h"]))
+        off_dx = int(max(-_ew * 0.35, min(random.gauss(0, max(2.0, _ew * 0.12)), _ew * 0.35)))
+        off_dy = int(max(-_eh * 0.35, min(random.gauss(0, max(2.0, _eh * 0.12)), _eh * 0.35)))
         # Start from last known position, clamped to current viewport
         x0 = max(0, min(_cursor_pos[0], int(vw)))
         y0 = max(0, min(_cursor_pos[1], int(vh)))
@@ -530,7 +532,9 @@ def bezier_move(driver, target_element) -> None:
         #   arc_x, arc_y, overshot = _maybe_add_overshoot(
         #       x0, y0, x1, y1, int(rect["w"]), int(rect["h"])
         #   )
-        arc_x, arc_y = x1, y1
+        # JS animation endpoint incorporates the aim offset so that the final
+        # synthetic mousemove and the ActionChains snap land at the same spot.
+        arc_x, arc_y = x1 + off_dx, y1 + off_dy
         # Control point — always offset perpendicular to the travel vector so
         # the curve has genuine curvature regardless of travel direction.
         # A cp placed on the straight line (e.g. cp==start for vertical arcs)
@@ -561,10 +565,19 @@ def bezier_move(driver, target_element) -> None:
         _cp_y_clamped = max(0, min(_cp_y_trial, int(vh)))
         if abs(_cp_x_clamped - int(_mid_x)) + abs(_cp_y_clamped - int(_mid_y)) < min_cp_offset:
             lateral = -lateral  # flip: the other side of the midpoint is in-bounds
-        cp = (
-            max(0, min(int(_mid_x + _perp_x * lateral), int(vw))),
-            max(0, min(int(_mid_y + _perp_y * lateral), int(vh))),
-        )
+        # 35 % of arcs: let the control point bulge outside the viewport bounding
+        # box (20–40 % of arc length beyond the midpoint).  Real mouse paths often
+        # arc outward past the straight-line path, especially on diagonal moves.
+        # Intermediate points are still clamped per-step; only the cp escapes.
+        if random.random() < 0.35:
+            extra = random.uniform(0.20, 0.40) * _arc_dist * random.choice([-1, 1])
+            cp = (int(_mid_x + _perp_x * (lateral + extra)),
+                  int(_mid_y + _perp_y * (lateral + extra)))
+        else:
+            cp = (
+                max(0, min(int(_mid_x + _perp_x * lateral), int(vw))),
+                max(0, min(int(_mid_y + _perp_y * lateral), int(vh))),
+            )
         steps   = max(20, min(90, int(_arc_dist / 3.5)))   # ~3.5 px/step net; clamp 20-90
         step_ms = random.uniform(14.0, 18.0)            # base 14-18 ms per step
 
@@ -724,10 +737,18 @@ def bezier_move_to_coords(driver, x1: int, y1: int) -> None:
         _cp_y_clamped = max(0, min(_cp_y_trial, int(vh)))
         if abs(_cp_x_clamped - int(_mid_x)) + abs(_cp_y_clamped - int(_mid_y)) < min_cp_offset:
             lateral = -lateral
-        cp = (
-            max(0, min(int(_mid_x + _perp_x * lateral), int(vw))),
-            max(0, min(int(_mid_y + _perp_y * lateral), int(vh))),
-        )
+        # 35 % of arcs: let the control point bulge outside the viewport bounding
+        # box (20–40 % of arc length beyond the midpoint).  Real mouse paths often
+        # arc outward past the straight-line path, especially on diagonal moves.
+        if random.random() < 0.35:
+            extra = random.uniform(0.20, 0.40) * _arc_dist * random.choice([-1, 1])
+            cp = (int(_mid_x + _perp_x * (lateral + extra)),
+                  int(_mid_y + _perp_y * (lateral + extra)))
+        else:
+            cp = (
+                max(0, min(int(_mid_x + _perp_x * lateral), int(vw))),
+                max(0, min(int(_mid_y + _perp_y * lateral), int(vh))),
+            )
         steps   = max(20, min(70, int(_arc_dist / 3.5)))   # ~3.5 px/step net; clamp 20-70
         step_ms = random.uniform(14.0, 18.0)
         points = []
@@ -781,6 +802,20 @@ def bezier_move_to_coords(driver, x1: int, y1: int) -> None:
             points, delays,
         )
         time.sleep(sum(d / 1000.0 for d in delays) + 0.05)
+
+        # Phase 2 — move the real CDP pointer to the destination so that
+        # CSS :hover / browser hit-testing tracks with the JS animation.
+        # JS dispatchEvent only fires synthetic events; without this ActionChains
+        # call the real cursor stays wherever it was last physically moved
+        # (e.g. pinned to the last like-button click position).
+        # move_by_offset uses "pointer" origin — relative to wherever the W3C
+        # pointer currently sits — which always matches _cursor_pos because
+        # every real cursor move in this file updates _cursor_pos via _set_cursor.
+        try:
+            ActionChains(driver).move_by_offset(x1 - x0, y1 - y0).perform()
+        except WebDriverException:
+            pass
+
         _set_cursor(x1, y1, "arc-end")
     except WebDriverException:
         pass
@@ -1199,7 +1234,7 @@ def _attempt_like(driver, element) -> bool:
         time.sleep(random.uniform(0.2, 0.6))   # hand settling on the button
 
         try:
-            element.click()
+            ActionChains(driver).click().perform()
         except WebDriverException:
             log.debug("Selenium click intercepted — JS click fallback")
             driver.execute_script("arguments[0].click();", element)
@@ -1350,9 +1385,30 @@ def view_profile_from_feed(driver, force_follow: bool = False) -> bool:
         log.info("Viewing profile from feed: %s", profile_url[:60])
         bezier_move(driver, target)
         time.sleep(random.uniform(0.5, 1.5))
-        target.click()
 
-        WebDriverWait(driver, 10).until(lambda d: "/@" in d.current_url)
+        # ~25 % of visits: open the profile in a new tab (mirrors Ctrl+click /
+        # middle-click behaviour a real user exhibits occasionally).
+        use_new_tab = (random.random() < 0.25)
+        original_handle = driver.current_window_handle
+
+        if use_new_tab:
+            log.info("[ NAV ]  opening profile in new tab")
+            driver.execute_script("window.open(arguments[0], '_blank');", profile_url)
+            time.sleep(random.uniform(0.4, 0.9))   # brief pause while tab opens
+            driver.switch_to.window(driver.window_handles[-1])
+            try:
+                WebDriverWait(driver, 10).until(lambda d: "/@" in d.current_url)
+            except TimeoutException:
+                pass
+            inject_cursor_overlay(driver)
+            init_cursor_pos(driver)
+        else:
+            ActionChains(driver).click().perform()
+            try:
+                WebDriverWait(driver, 10).until(lambda d: "/@" in d.current_url)
+            except TimeoutException:
+                pass
+
         time.sleep(random.uniform(1.5, 3.0))
         stochastic_scroll(driver, total_seconds=random.uniform(2, 4))
 
@@ -1360,8 +1416,16 @@ def view_profile_from_feed(driver, force_follow: bool = False) -> bool:
         if force_follow or random.random() < 0.15:
             follow_from_profile_page(driver)
 
-        navigate_history(driver, "back")
-        time.sleep(random.uniform(1.0, 2.5))
+        if use_new_tab:
+            # Close the profile tab and return focus to the feed tab.
+            time.sleep(random.uniform(0.5, 1.2))
+            log.info("[ NAV ]  closing profile tab, returning to feed")
+            driver.close()
+            driver.switch_to.window(original_handle)
+            time.sleep(random.uniform(0.8, 1.8))
+        else:
+            navigate_history(driver, "back")
+            time.sleep(random.uniform(1.0, 2.5))
         return True
 
     except (TimeoutException, WebDriverException) as exc:
@@ -1480,7 +1544,7 @@ def follow_from_feed(driver) -> bool:
         time.sleep(random.uniform(0.3, 0.7))      # eye settling on the card
         bezier_move(driver, follow_btn)
         time.sleep(random.uniform(0.3, 0.8))
-        follow_btn.click()
+        ActionChains(driver).click().perform()
         time.sleep(random.uniform(0.8, 1.5))
         log.info("follow_from_feed: follow clicked via hover card")
         _session_followed.add((username_el.get_attribute("href") or "").rstrip("/"))
@@ -1563,7 +1627,7 @@ def follow_from_profile_page(driver) -> bool:
         time.sleep(random.uniform(2.0, 5.0))
         bezier_move(driver, btn)
         time.sleep(random.uniform(0.3, 0.8))
-        btn.click()
+        ActionChains(driver).click().perform()
         time.sleep(random.uniform(0.8, 1.5))
 
         try:
@@ -1692,7 +1756,7 @@ def _click_nav_btn(driver, aria_label: str, label: str) -> bool:
         WebDriverWait(driver, 4).until(lambda d: btn.is_displayed())
         bezier_move(driver, btn)
         time.sleep(random.uniform(0.3, 0.7))
-        btn.click()
+        ActionChains(driver).click().perform()
         time.sleep(random.uniform(0.8, 1.8))   # SPA transition settle
         log.debug("_click_nav_btn: clicked '%s'", label)
         return True
@@ -1778,7 +1842,7 @@ def passive_action(driver) -> None:
 
     # Pause after scrolling stops — user finishes reading the post
     time.sleep(random.uniform(1.0, 3.0))
-
+    '''
     # 8 % chance: brief back then forward (mis-tap or curiosity)
     if random.random() < 0.08:
         try:
@@ -1787,7 +1851,7 @@ def passive_action(driver) -> None:
             navigate_history(driver, "forward")
         except WebDriverException:
             pass
-
+        '''
 
 def active_action(driver) -> None:
     """
