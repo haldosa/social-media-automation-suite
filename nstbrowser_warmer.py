@@ -89,6 +89,31 @@ ACTIVE_HOURS_RANGE  = (8, 23)   # only run between 08:00 and 23:00 local time
 # Simulated inactive day — skip the entire run with this probability.
 # Models the natural days when a real user simply doesn't open Threads.
 INACTIVE_DAY_PROB   = 0.18
+# Comment pool — short, natural-sounding replies that fit a wide range of posts.
+# Add / remove entries to tune the vocabulary used by the bot.
+COMMENT_POOL = [
+    "Love this",
+    "So true",
+    "This is great!",
+    "Exactly how I feel",
+    "Needed to see this today",
+    "Facts",
+    "Well said",
+    "This made my day",
+    "Couldn't agree more",
+    "Really interesting perspective",
+    "This is so good",
+    "Haha yes exactly",
+    "Okay this is actually really good",
+    "lol same",
+    "Absolutely",
+    "More people need to see this",
+    "Love the energy here",
+    "This is everything",
+    "Amazing",
+    "Yes!!",
+]
+
 SCREENSHOT_DIR      = "screenshots"
 LOG_FILE            = "nstbrowser_warmer.log"
 MOUSE_LOG_FILE      = "mouse_moves.log"  # dedicated cursor movement log
@@ -104,6 +129,12 @@ QUICK_FOLLOW_BTN   = 'div[role="button"]:has(svg[aria-label="Follow"])'
 FOLLOW_BTN_XPATH   = '//div[@role="button" and .//div[normalize-space(text())="Follow"]]'
 # X button on suggested cards
 DISMISS_CARD_BTN   = 'div[role="button"]:has(svg[aria-label="Close"])'
+# Reply (comment) button in each post’s action bar
+REPLY_BTN_CSS      = 'div[role="button"]:has(svg[aria-label="Reply"])'
+# Contenteditable reply box that appears after clicking Reply
+COMMENT_BOX_CSS    = 'div[contenteditable="true"][role="textbox"]'
+# Post button that submits the comment (XPath — scoped to role=button wrapping text “Post”)
+COMMENT_POST_XPATH = '//div[@role="button" and .//div[normalize-space(text())="Post"]]'
 # ─────────────────────────────────────────────────────────────────────────────#
 
 # ------------------------------------------------------------------ #
@@ -2056,7 +2087,151 @@ def read_post_action(driver) -> bool:
         return False
 
 
-def run_social_session(driver, session_seconds: float, follow_mode: bool = False) -> None:
+# ================================================================== #
+#  COMMENT ACTION
+# ================================================================== #
+
+def comment_on_post(driver) -> bool:
+    """
+    Leave a short, natural comment on a random visible post in the feed.
+
+    Flow:
+      1. Find visible Reply buttons in the current viewport.
+      2. Pick one at random; scroll it loosely into view.
+      3. Read-pause — user finishes reading the post before replying.
+      4. Bezier-arc to the Reply button and click.
+      5. Wait up to 8 s for the comment text field to appear.
+      6. Bezier-arc to the text field; type a random comment from COMMENT_POOL
+         via human_type() (log-normal keystroke timing).
+      7. Re-reading pause — user proofreads before posting.
+      8. Find the Post button closest to the text field (avoids matching the
+         global “New post” compose button); bezier-arc and click.
+      9. Post-click pause — watching the reply appear.
+    Returns True on success.
+    """
+    try:
+        current_url = driver.current_url
+        on_threads  = "threads.net" in current_url or "threads.com" in current_url
+        if not on_threads:
+            log.debug("comment_on_post: not on Threads — skipping")
+            return False
+
+        # 1. Collect visible Reply buttons
+        reply_btns = driver.find_elements(By.CSS_SELECTOR, REPLY_BTN_CSS)
+        visible = []
+        for btn in reply_btns:
+            try:
+                r  = driver.execute_script(
+                    "var r=arguments[0].getBoundingClientRect();"
+                    "return {top:r.top, h:r.height};",
+                    btn,
+                )
+                vh = driver.execute_script("return window.innerHeight")
+                if r["h"] > 0 and 0 <= r["top"] <= vh and btn.is_displayed():
+                    visible.append(btn)
+            except Exception:
+                continue
+
+        if not visible:
+            log.debug("comment_on_post: no visible reply buttons found")
+            return False
+
+        target_btn = random.choice(visible[:8])
+        scroll_element_into_loose_view(driver, target_btn)
+
+        # 2. Read-pause — user reads the post before deciding to reply
+        time.sleep(random.uniform(2.5, 6.0))
+
+        # 3. Bezier-arc to Reply and click
+        bezier_move(driver, target_btn)
+        time.sleep(random.uniform(0.3, 0.7))
+        try:
+            ActionChains(driver).click().perform()
+        except WebDriverException:
+            driver.execute_script("arguments[0].click();", target_btn)
+
+        # 4. Wait for the comment box to appear
+        try:
+            comment_box = WebDriverWait(driver, 8).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, COMMENT_BOX_CSS))
+            )
+        except TimeoutException:
+            log.debug("comment_on_post: comment box did not appear after Reply click")
+            return False
+
+        time.sleep(random.uniform(0.5, 1.2))   # settle before moving to box
+
+        # 5. Bezier-arc to text field, then type
+        bezier_move(driver, comment_box)
+        time.sleep(random.uniform(0.3, 0.6))
+        comment = random.choice(COMMENT_POOL)
+        log.info("[ COMMENT ]  typing reply: %r", comment)
+        human_type(comment_box, comment)
+
+        # 6. Re-reading pause
+        time.sleep(random.uniform(1.2, 3.0))
+
+        # 7. Find the Post button.
+        #    Multiple matches can exist (one per visible reply form).
+        #    We pick the one whose vertical midpoint is closest to the comment
+        #    box — this reliably targets the active reply form’s submit button
+        #    without misidentifying the global compose button.
+        try:
+            box_mid = driver.execute_script(
+                "var r=arguments[0].getBoundingClientRect();"
+                "return r.top + r.height / 2;",
+                comment_box,
+            )
+            post_btns = driver.find_elements(By.XPATH, COMMENT_POST_XPATH)
+            post_btns = [b for b in post_btns if b.is_displayed()]
+            if not post_btns:
+                raise NoSuchElementException("Post button not found")
+            # Sort by distance from the comment box midpoint
+            def _dist(b):
+                try:
+                    r = driver.execute_script(
+                        "var r=arguments[0].getBoundingClientRect();"
+                        "return r.top + r.height / 2;",
+                        b,
+                    )
+                    return abs(r - box_mid)
+                except Exception:
+                    return 9999
+            post_btn = min(post_btns, key=_dist)
+        except (NoSuchElementException, WebDriverException):
+            log.debug("comment_on_post: Post button not found — aborting")
+            return False
+
+        scroll_element_into_loose_view(driver, post_btn)
+        bezier_move(driver, post_btn)
+        time.sleep(random.uniform(0.3, 0.6))
+        try:
+            ActionChains(driver).click().perform()
+        except WebDriverException:
+            driver.execute_script("arguments[0].click();", post_btn)
+
+        # 8. Post-click pause — watching the reply appear
+        time.sleep(random.uniform(1.5, 3.5))
+        log.info("[ COMMENT ]  comment posted successfully")
+        return True
+
+    except (NoSuchElementException, TimeoutException, WebDriverException) as exc:
+        log.debug("comment_on_post failed: %s", exc)
+        return False
+
+
+def run_social_session(
+    driver,
+    session_seconds: float,
+    follow_mode: bool = False,
+    w_like=None,
+    w_notify: float = 0.03,
+    w_profile: float = 0.06,
+    w_read: float = 0.08,
+    w_comment: float = 0.05,
+    w_top: float = 0.03,
+    w_search: float = 0.06,
+) -> None:
     """
     Session loop with:
     - Per-session randomised passive/active split (truncated normal, not fixed 80/20).
@@ -2102,8 +2277,20 @@ def run_social_session(driver, session_seconds: float, follow_mode: bool = False
 
     # Draw per-session active probability from truncated normal (mean 0.22, SD 0.08)
     # clamped to [0.20, 0.45] — sessions range from mostly-passive to moderately active.
-    active_prob = max(0.20, min(0.45, random.gauss(0.22, 0.08)))
-    log.info("Session active probability this run: %.2f", active_prob)
+    active_prob = w_like if w_like is not None else max(0.20, min(0.45, random.gauss(0.22, 0.08)))
+    log.info(
+        "Session active probability this run: %.2f  (weights: notify=%.2f profile=%.2f "
+        "read=%.2f comment=%.2f top=%.2f search=%.2f)",
+        active_prob, w_notify, w_profile, w_read, w_comment, w_top, w_search,
+    )
+
+    # Precompute cumulative dispatch thresholds from individual weights.
+    t_notify  = active_prob + w_notify
+    t_profile = t_notify   + w_profile
+    t_read    = t_profile  + w_read
+    t_comment = t_read     + w_comment
+    t_top     = t_comment  + w_top
+    t_search  = t_top      + w_search
 
     while time.time() < deadline:
         time_left = deadline - time.time()
@@ -2118,27 +2305,27 @@ def run_social_session(driver, session_seconds: float, follow_mode: bool = False
             if roll < active_prob:
                 active_action(driver)
                 active_done = True
-            elif roll < active_prob + 0.03:
-                # ~6 % of iterations: check notifications
+            elif roll < t_notify:
+                # notify weight (default ~3 %): check notifications
                 check_notifications_action(driver)
-            elif roll < active_prob + 0.09:
-                # ~6 % of iterations: click feed author link, browse profile
+            elif roll < t_profile:
+                # profile weight (default ~6 %): click feed author link, browse profile
                 view_profile_from_feed(driver)
-            elif roll < active_prob + 0.17:
-                # ~8 % of iterations: click into a thread, read reply chain, go back
+            elif roll < t_read:
+                # read weight (default ~8 %): click into a thread, read reply chain, go back
                 read_post_action(driver)
+            elif roll < t_comment:
+                # comment weight (default ~5 %): leave a short comment on a feed post
+                comment_on_post(driver)
             # follow_from_feed disabled — block commented out
-            # elif roll < active_prob + 0.15:
+            # elif roll < t_comment_prev:
             #     # ~3 % of iterations: quick-follow from feed (+) button
             #     follow_from_feed(driver)
-            #elif roll < active_prob + 0.45:
-            #    # ~3 % of iterations: browse suggested-for-you cards
-            #    interact_with_suggested_section(driver)
-            elif roll < active_prob + 0.20:
-                # ~3 % of iterations: return to top via logo
+            elif roll < t_top:
+                # top weight (default ~3 %): return to top via logo
                 return_to_top_action(driver)
-            elif roll < active_prob + 0.26:
-                # ~6 % of iterations: open search page, dwell, return home
+            elif roll < t_search:
+                # search weight (default ~6 %): open search page, dwell, return home
                 visit_search_action(driver)
             else:
                 passive_action(driver)
@@ -2153,7 +2340,7 @@ def run_social_session(driver, session_seconds: float, follow_mode: bool = False
 #  SINGLE PROFILE WARM-UP ORCHESTRATOR
 # ================================================================== #
 
-def warm_profile(profile_id: str, follow_mode: bool = False) -> None:
+def warm_profile(profile_id: str, follow_mode: bool = False, weights: dict | None = None) -> None:
     """Full end-to-end warm-up for one NstBrowser profile."""
     driver   = None
     launched = False
@@ -2191,7 +2378,7 @@ def warm_profile(profile_id: str, follow_mode: bool = False) -> None:
         else:
             session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
             log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
-        run_social_session(driver, session_sec, follow_mode=follow_mode)
+        run_social_session(driver, session_sec, follow_mode=follow_mode, **(weights or {}))
 
     except (TimeoutException, RuntimeError, WebDriverException) as exc:
         log.error("Error on profile %s: %s", profile_id, exc)
@@ -2224,6 +2411,7 @@ def warm_profile_attached(
     skip_preflight: bool = False,
     close_after: bool = False,
     follow_mode: bool = False,
+    weights: dict | None = None,
 ) -> None:
     """
     Run a warm-up session on a browser that is *already open* in NstBrowser.
@@ -2278,7 +2466,7 @@ def warm_profile_attached(
         else:
             session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
             log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
-        run_social_session(driver, session_sec, follow_mode=follow_mode)
+        run_social_session(driver, session_sec, follow_mode=follow_mode, **(weights or {}))
 
     except (TimeoutException, RuntimeError, WebDriverException) as exc:
         log.error("Error on attached profile '%s': %s", profile_id, exc)
@@ -2440,6 +2628,70 @@ def _build_parser() -> argparse.ArgumentParser:
             "Default: browser is left open when attaching."
         ),
     )
+
+    # ------------------------------------------------------------------ #
+    #  Per-action weight overrides
+    # ------------------------------------------------------------------ #
+    wg = p.add_argument_group(
+        "action weights",
+        "Override the probability weight of individual session actions. "
+        "Weights are a per-iteration fraction (0.0–1.0). "
+        "Unspecified weights use the built-in defaults shown in parentheses.",
+    )
+    wg.add_argument(
+        "--like",
+        metavar="WEIGHT",
+        type=float,
+        default=None,
+        help=(
+            "Base like/active-action probability per iteration "
+            "(default: ~0.20–0.45 drawn randomly each session)."
+        ),
+    )
+    wg.add_argument(
+        "--notify",
+        metavar="WEIGHT",
+        type=float,
+        default=None,
+        help="Notification-check weight per iteration (default: 0.03).",
+    )
+    wg.add_argument(
+        "--profile",
+        metavar="WEIGHT",
+        type=float,
+        default=None,
+        help="Profile-view weight per iteration (default: 0.06).",
+    )
+    wg.add_argument(
+        "--read-post",
+        metavar="WEIGHT",
+        type=float,
+        default=None,
+        dest="read_post",
+        help="Read-post weight per iteration (default: 0.08).",
+    )
+    wg.add_argument(
+        "--comment",
+        metavar="WEIGHT",
+        type=float,
+        default=None,
+        help="Comment weight per iteration (default: 0.05).",
+    )
+    wg.add_argument(
+        "--scroll",
+        metavar="WEIGHT",
+        type=float,
+        default=None,
+        help="Return-to-top scroll weight per iteration (default: 0.03).",
+    )
+    wg.add_argument(
+        "--search",
+        metavar="WEIGHT",
+        type=float,
+        default=None,
+        help="Search-page visit weight per iteration (default: 0.06).",
+    )
+
     return p
 
 
@@ -2453,6 +2705,19 @@ def main() -> None:
     log.info("=" * 60)
     log.info("NstBrowser Warmer (API v2) -- %s",
              datetime.now().strftime("%Y-%m-%d %H:%M"))
+
+    # Build per-action weight overrides dict — only keys explicitly passed by
+    # the user are included; omitted keys fall back to run_social_session defaults.
+    weights: dict = {}
+    if args.like      is not None: weights["w_like"]    = args.like
+    if args.notify    is not None: weights["w_notify"]  = args.notify
+    if args.profile   is not None: weights["w_profile"] = args.profile
+    if args.read_post is not None: weights["w_read"]    = args.read_post
+    if args.comment   is not None: weights["w_comment"] = args.comment
+    if args.scroll    is not None: weights["w_top"]     = args.scroll
+    if args.search    is not None: weights["w_search"]  = args.search
+    if weights:
+        log.info("Custom action weights: %s", weights)
 
     # ---------------------------------------------------------------- #
     #  ATTACH MODE  — reuse already-open browser, no daily open consumed
@@ -2479,6 +2744,7 @@ def main() -> None:
             skip_preflight=args.no_preflight,
             close_after=args.close,
             follow_mode=args.follow,
+            weights=weights or None,
         )
         log.info("=" * 60)
         log.info("Done.")
@@ -2519,7 +2785,7 @@ def main() -> None:
     for idx, profile_id in enumerate(profile_order):
         log.info("-" * 60)
         log.info("[%d/%d] Starting: %s", idx + 1, len(profile_order), profile_id)
-        warm_profile(profile_id, follow_mode=args.follow)
+        warm_profile(profile_id, follow_mode=args.follow, weights=weights or None)
 
         if idx < len(profile_order) - 1:
             if random.random() < BUFFER_LONG_PROB:
