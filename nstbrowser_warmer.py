@@ -430,8 +430,8 @@ _session_followed: set = set()
 
 _CURSOR_OVERLAY_JS = """
 (function () {
-    var ID  = '__dbg_cursor_dot__';
-    var LID = '__dbg_cursor_lbl__';
+    var ID  = '__cursor_debug_dot';
+    var LID = '__cursor_debug_lbl';
     // Remove stale instances from previous injection on same page
     var old = document.getElementById(ID);  if (old) old.remove();
     var olL = document.getElementById(LID); if (olL) olL.remove();
@@ -464,8 +464,9 @@ _CURSOR_OVERLAY_JS = """
         'white-space:nowrap',
     ].join(';');
 
-    document.body.appendChild(dot);
-    document.body.appendChild(lbl);
+    // Append to <html> not <body> so React reconciler cannot wipe the nodes.
+    document.documentElement.appendChild(dot);
+    document.documentElement.appendChild(lbl);
 
     document.addEventListener('mousemove', function (e) {
         var x = e.clientX, y = e.clientY;
@@ -475,6 +476,13 @@ _CURSOR_OVERLAY_JS = """
         lbl.style.top  = (y -  8) + 'px';
         lbl.textContent = x + ', ' + y;
     }, true);
+
+    var found = document.getElementById(ID);
+    return {
+        appended: found !== null,
+        bodyChildCount: document.body ? document.body.children.length : -1,
+        cspMeta: (document.querySelector('meta[http-equiv="Content-Security-Policy"]') || {}).content || 'none'
+    };
 })();
 """
 
@@ -485,7 +493,13 @@ def inject_cursor_overlay(driver) -> None:
     if not DEBUG_CURSOR_OVERLAY:
         return
     try:
-        driver.execute_script(_CURSOR_OVERLAY_JS)
+        # Brief settle so SPA hydration finishes before we inject.
+        time.sleep(0.4)
+        result = driver.execute_script(_CURSOR_OVERLAY_JS)
+        if result:
+            log.info("Overlay inject: appended=%s  bodyChildren=%s  csp=%s",
+                     result.get('appended'), result.get('bodyChildCount'),
+                     (result.get('cspMeta') or 'none')[:120])
     except WebDriverException as exc:
         log.debug("Cursor overlay injection failed: %s", exc)
 
@@ -653,6 +667,37 @@ def init_cursor_pos(driver) -> None:
     except WebDriverException as exc:
         log.debug("init_cursor_pos failed: %s", exc)
 
+
+def debug_cursor_state(driver, label: str = "") -> None:
+    """Log both the Python-tracked position and the overlay's actual DOM position.
+
+    Compares _cursor_pos (Python state) with the visual debug dot's style.left/top
+    to detect drift between the two cursor systems.
+    """
+    try:
+        dom_pos = driver.execute_script("""
+            var dot = document.getElementById('__cursor_debug_dot');
+            if (!dot) return {x: -1, y: -1, exists: false};
+            return {
+                x: parseInt(dot.style.left) || 0,
+                y: parseInt(dot.style.top)  || 0,
+                exists: true
+            };
+        """)
+        log.info("CURSOR SYNC CHECK [%s]  python=(%d,%d)  dom=(%d,%d)  overlay_exists=%s",
+                 label,
+                 _cursor_pos[0], _cursor_pos[1],
+                 dom_pos['x'], dom_pos['y'],
+                 dom_pos['exists'])
+        if dom_pos['exists']:
+            drift = math.hypot(dom_pos['x'] - _cursor_pos[0],
+                               dom_pos['y'] - _cursor_pos[1])
+            if drift > 15:
+                log.warning("CURSOR DRIFT  %.1fpx between Python state and overlay DOM", drift)
+    except Exception as e:
+        log.debug("debug_cursor_state failed: %s", e)
+
+
 def bezier_move(driver, target_element) -> None:
     """
     Move the mouse to target_element along a randomised quadratic Bezier curve
@@ -703,6 +748,7 @@ def bezier_move(driver, target_element) -> None:
             _set_cursor(int(rect["x"]) + off_dx, int(rect["y"]) + off_dy, "hover-dwell")
             _mlog.debug("DWELL  cursor within 25px of target  dist=%.1fpx",
                         math.hypot(x1 - x0, y1 - y0))
+            debug_cursor_state(driver, "bezier-dwell")
             return
         # Off-viewport correction: scroll element into view then re-query.
         if x1 < 0 or y1 < 0 or x1 > int(vw) or y1 > int(vh):
@@ -741,6 +787,7 @@ def bezier_move(driver, target_element) -> None:
             target_element, off_dx, off_dy
         ).perform()
         _set_cursor(snap_x, snap_y, "elem-hover")
+        debug_cursor_state(driver, "bezier-snap")
 
     except WebDriverException:
         pass
@@ -783,6 +830,7 @@ def bezier_move_to_coords(driver, x1: int, y1: int, tag: str = "arc-end") -> Non
         except WebDriverException:
             pass
         _set_cursor(x1, y1, tag)
+        debug_cursor_state(driver, f"bezier-coords/{tag}")
     except WebDriverException:
         pass
 
@@ -821,8 +869,22 @@ def _navigate_and_settle(driver, action) -> None:
     except TimeoutException:
         pass
 
-    # 3. Overlay
+    # 3. Overlay — inject after readyState complete, then verify it survives
+    #    React's next reconcile pass (1 s later).
     inject_cursor_overlay(driver)
+    if DEBUG_CURSOR_OVERLAY:
+        exists_now = driver.execute_script(
+            "return document.getElementById('__cursor_debug_dot') !== null;"
+        )
+        log.info("Overlay present immediately after inject: %s", exists_now)
+        time.sleep(1.0)
+        exists_1s = driver.execute_script(
+            "return document.getElementById('__cursor_debug_dot') !== null;"
+        )
+        log.info("Overlay still present 1 s later (React wipe check): %s", exists_1s)
+        if exists_now and not exists_1s:
+            log.warning("React wiped the overlay — re-injecting into documentElement")
+            inject_cursor_overlay(driver)
 
     # 4. Silent position set — fresh page has no cursor history.
     #    Cursor was at (park_x, 0) before navigation; it's still conceptually
@@ -1062,34 +1124,22 @@ def run_preflight(driver) -> None:
 _JS_FIND_LIKE_BTNS = """
 (function() {
     var vp   = window.innerHeight;
-    // Only select SVGs whose aria-label is exactly "Like" (un-liked state).
-    // After liking, Threads flips it to "Unlike" — so this naturally excludes them.
     var svgs = document.querySelectorAll('svg[aria-label="Like"]');
     var seen = new Set();
-    var hits = [];
+    var count = 0;
     for (var i = 0; i < svgs.length; i++) {
-        var svg = svgs[i];
-
-        // Walk up to the nearest div[role="button"] ancestor — that is the
-        // clickable wrapper, not the SVG itself.
-        var btn = svg.closest('div[role="button"]');
-        if (!btn) continue;
-
-        // Deduplicate (multiple SVGs may share a wrapper)
-        if (seen.has(btn)) continue;
+        var btn = svgs[i].closest('div[role="button"]');
+        if (!btn || seen.has(btn)) continue;
         seen.add(btn);
-
-        // Must be inside the visible viewport (with small tolerance)
         var r = btn.getBoundingClientRect();
-        if (r.height <= 0 || r.top < -20 || r.top > vp + 20) continue;
-
-        // Skip if the wrapper itself carries aria-label="Unlike"
-        var wrapperLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-        if (wrapperLabel === 'unlike') continue;
-
-        hits.push(btn);
+        var label = (btn.getAttribute('aria-label') || '').toLowerCase();
+        if (label === 'unlike') continue;
+        // Count buttons plausibly on-screen (generous tolerance)
+        if (r.height > 0 && r.top > -100 && r.top < vp + 100) count++;
     }
-    return hits;
+    // Return count only — DOM node serialisation via CDP is unreliable in
+    // Orbita and yields empty arrays despite real results.
+    return count;
 })();
 """
 
@@ -1119,49 +1169,46 @@ def _is_already_liked(el) -> bool:
 
 def _find_unliked_buttons(driver) -> list:
     """
-    Return all clickable like-button wrapper divs in the current viewport
-    that have NOT been liked yet.
+    Return all clickable like-button wrapper divs that are visible in the
+    current viewport and have NOT been liked yet.
 
-    Priority:
-      1. JS query (fastest, handles stale refs, checks fill style)
-      2. XPath fallback
-      3. CSS :has() fallback
+    XPath via find_elements is the primary strategy — it uses a proper CDP
+    DOM query and reliably returns WebElements.  The JS path only returns a
+    count (DOM node serialisation through Orbita's CDP is unreliable and
+    yields empty arrays).  CSS :has() is the fallback.
     """
     results = []
+    viewport_h = driver.execute_script("return window.innerHeight")
 
-    # 1. JS pass — most reliable
+    # Diagnostic only — JS count lets us see if SVGs exist at all.
     try:
-        js_results = driver.execute_script(_JS_FIND_LIKE_BTNS)
-        if js_results:
-            results = [el for el in js_results if not _is_already_liked(el)]
-            log.info("JS finder: %d unliked like button(s) in viewport", len(results))
+        js_count = driver.execute_script(_JS_FIND_LIKE_BTNS)
+        if js_count is not None:
+            log.debug("JS like-btn diagnostic count: %s", js_count)
     except Exception as e:
-        log.debug("JS finder failed: %s", e)
+        log.debug("JS like-btn diagnostic failed: %s", e)
 
-    # 2. XPath fallback
-    if not results:
-        viewport_h = driver.execute_script("return window.innerHeight")
-        for xp in _LIKE_XPATH_FALLBACK:
-            try:
-                for el in driver.find_elements(By.XPATH, xp):
-                    try:
-                        r = driver.execute_script(
-                            "var r=arguments[0].getBoundingClientRect();"
-                            "return {top:r.top,height:r.height};", el)
-                        if r["height"] > 0 and -20 <= r["top"] <= viewport_h + 20:
-                            if el.is_displayed() and not _is_already_liked(el):
-                                results.append(el)
-                    except Exception:
-                        continue
-            except (NoSuchElementException, WebDriverException):
-                continue
-            if results:
-                log.info("XPath fallback: %d unliked like button(s)", len(results))
-                break
+    # 1. XPath — primary strategy (proven reliable with Orbita CDP)
+    for xp in _LIKE_XPATH_FALLBACK:
+        try:
+            for el in driver.find_elements(By.XPATH, xp):
+                try:
+                    r = driver.execute_script(
+                        "var r=arguments[0].getBoundingClientRect();"
+                        "return {top:r.top,height:r.height};", el)
+                    if r["height"] > 0 and -50 <= r["top"] <= viewport_h + 50:
+                        if el.is_displayed() and not _is_already_liked(el):
+                            results.append(el)
+                except Exception:
+                    continue
+        except (NoSuchElementException, WebDriverException):
+            continue
+        if results:
+            log.info("XPath: %d unliked like button(s) in viewport", len(results))
+            break
 
-    # 3. CSS :has() fallback
+    # 2. CSS :has() fallback
     if not results:
-        viewport_h = driver.execute_script("return window.innerHeight")
         for sel in _LIKE_CSS_FALLBACK:
             try:
                 for el in driver.find_elements(By.CSS_SELECTOR, sel):
@@ -1169,7 +1216,7 @@ def _find_unliked_buttons(driver) -> list:
                         r = driver.execute_script(
                             "var r=arguments[0].getBoundingClientRect();"
                             "return {top:r.top,height:r.height};", el)
-                        if r["height"] > 0 and -20 <= r["top"] <= viewport_h + 20:
+                        if r["height"] > 0 and -50 <= r["top"] <= viewport_h + 50:
                             if el.is_displayed() and not _is_already_liked(el):
                                 results.append(el)
                     except Exception:
@@ -1177,7 +1224,7 @@ def _find_unliked_buttons(driver) -> list:
             except (NoSuchElementException, WebDriverException):
                 continue
             if results:
-                log.info("CSS fallback: %d unliked like button(s)", len(results))
+                log.info("CSS: %d unliked like button(s) in viewport", len(results))
                 break
 
     if not results:
@@ -1277,6 +1324,7 @@ def _attempt_like(driver, element) -> bool:
         except WebDriverException:
             log.debug("Selenium click intercepted — JS click fallback")
             driver.execute_script("arguments[0].click();", element)
+        debug_cursor_state(driver, "like-click")
 
         # Watch the heart animation
         time.sleep(random.uniform(0.8, 2.0))
@@ -1431,13 +1479,12 @@ def _get_own_profile_href(driver) -> str:
     except Exception:
         return ""
 
-def view_profile_from_feed(driver, force_follow: bool = False) -> bool:
+def view_profile_from_feed(driver) -> bool:
     """
     Click a random post-author username link in the feed to visit their
     profile, scroll it, optionally follow, then navigate back.
 
-    force_follow=True guarantees follow_from_profile_page() is called
-    (used by follow_mode).  Default is a 15 % probabilistic gate.
+    Has a 15 % probabilistic gate for calling follow_from_profile_page().
     """
     try:
         own_href = _get_own_profile_href(driver)
@@ -1509,6 +1556,7 @@ def view_profile_from_feed(driver, force_follow: bool = False) -> bool:
             init_cursor_pos(driver)
         else:
             ActionChains(driver).click().perform()
+            debug_cursor_state(driver, "profile-nav-click")
             try:
                 WebDriverWait(driver, 10).until(lambda d: "/@" in d.current_url)
             except TimeoutException:
@@ -1517,8 +1565,8 @@ def view_profile_from_feed(driver, force_follow: bool = False) -> bool:
         time.sleep(random.uniform(1.5, 3.0))
         stochastic_scroll(driver, total_seconds=random.uniform(2, 4))
 
-        # Follow gate — forced (follow_mode) or probabilistic (normal mode)
-        if force_follow or random.random() < 0.15:
+        # Follow gate — 15 % probabilistic
+        if random.random() < 0.15:
             follow_from_profile_page(driver)
 
         if use_new_tab:
@@ -1655,6 +1703,7 @@ def follow_from_feed(driver) -> bool:
         bezier_move(driver, follow_btn)
         time.sleep(random.uniform(0.3, 0.8))
         ActionChains(driver).click().perform()
+        debug_cursor_state(driver, "follow-feed-click")
         time.sleep(random.uniform(0.8, 1.5))
         log.info("follow_from_feed: follow clicked via hover card")
         _session_followed.add((username_el.get_attribute("href") or "").rstrip("/"))
@@ -1739,6 +1788,7 @@ def follow_from_profile_page(driver) -> bool:
         bezier_move(driver, btn)
         time.sleep(random.uniform(0.3, 0.8))
         ActionChains(driver).click().perform()
+        debug_cursor_state(driver, "follow-profile-click")
         time.sleep(random.uniform(0.8, 1.5))
 
         try:
@@ -1813,6 +1863,7 @@ def _click_nav_btn(driver, aria_label: str, label: str) -> bool:
         bezier_move(driver, btn)
         time.sleep(random.uniform(0.3, 0.7))
         ActionChains(driver).click().perform()
+        debug_cursor_state(driver, f"nav-btn/{label}")
         time.sleep(random.uniform(0.8, 1.8))   # SPA transition settle
         log.debug("_click_nav_btn: clicked '%s'", label)
         return True
@@ -2052,6 +2103,7 @@ def read_post_action(driver) -> bool:
         time.sleep(random.uniform(0.4, 1.2))
 
         ActionChains(driver).click().perform()
+        debug_cursor_state(driver, "read-post-click")
         try:
             WebDriverWait(driver, 15).until(
                 lambda d: d.execute_script("return document.readyState") == "complete"
@@ -2149,6 +2201,7 @@ def comment_on_post(driver) -> bool:
             ActionChains(driver).click().perform()
         except WebDriverException:
             driver.execute_script("arguments[0].click();", target_btn)
+        debug_cursor_state(driver, "comment-reply-click")
 
         # 4. Wait for the comment box to appear
         try:
@@ -2209,6 +2262,7 @@ def comment_on_post(driver) -> bool:
             ActionChains(driver).click().perform()
         except WebDriverException:
             driver.execute_script("arguments[0].click();", post_btn)
+        debug_cursor_state(driver, "comment-post-click")
 
         # 8. Post-click pause — watching the reply appear
         time.sleep(random.uniform(1.5, 3.5))
@@ -2223,7 +2277,6 @@ def comment_on_post(driver) -> bool:
 def run_social_session(
     driver,
     session_seconds: float,
-    follow_mode: bool = False,
     w_like=None,
     w_notify: float = 0.03,
     w_profile: float = 0.06,
@@ -2237,9 +2290,6 @@ def run_social_session(
     - Per-session randomised passive/active split (truncated normal, not fixed 80/20).
     - Engagement variety: occasional notification check or profile view.
     - Guaranteed at least one active action per session (forced if < 60 s remain).
-
-    follow_mode (--follow flag): replaces the normal dispatch with a
-    heavily-weighted follow loop for testing follow actions end-to-end.
     """
     global _session_followed
     _session_followed = set()          # reset per-session seen-profile cache
@@ -2247,33 +2297,6 @@ def run_social_session(
     deadline    = time.time() + session_seconds
     count       = 0
     active_done = False
-
-    # ------------------------------------------------------------------
-    # FOLLOW MODE — heavy follow weighting for testing
-    # ------------------------------------------------------------------
-    if follow_mode:
-        log.info("[FOLLOW MODE] Session running with heavy follow weighting")
-        while time.time() < deadline:
-            roll = random.random()
-            # follow_from_feed disabled — block commented out
-            # if roll < 0.0:
-            #     # 35 %: hover username in feed → Follow via hover card
-            #     follow_from_feed(driver)
-            # elif roll < 0.80:
-            if roll < 0.90:
-                # 30 %: navigate to profile page → guaranteed follow_from_profile_page
-                view_profile_from_feed(driver, force_follow=True)
-            #elif roll < 0.0:
-            #    # 15 %: browse suggested-for-you cards (occasional follow)
-            #    interact_with_suggested_section(driver)
-            else:
-                # 20 %: brief passive scroll to surface fresh content
-                stochastic_scroll(driver, total_seconds=random.uniform(8, 20))
-            count += 1
-            time.sleep(random.uniform(1, 3))
-        log.info("[FOLLOW MODE] Session complete. Total actions: %d", count)
-        return
-    # ------------------------------------------------------------------
 
     # Draw per-session active probability from truncated normal (mean 0.22, SD 0.08)
     # clamped to [0.20, 0.45] — sessions range from mostly-passive to moderately active.
@@ -2340,7 +2363,7 @@ def run_social_session(
 #  SINGLE PROFILE WARM-UP ORCHESTRATOR
 # ================================================================== #
 
-def warm_profile(profile_id: str, follow_mode: bool = False, weights: dict | None = None) -> None:
+def warm_profile(profile_id: str, weights: dict | None = None) -> None:
     """Full end-to-end warm-up for one NstBrowser profile."""
     driver   = None
     launched = False
@@ -2378,7 +2401,7 @@ def warm_profile(profile_id: str, follow_mode: bool = False, weights: dict | Non
         else:
             session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
             log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
-        run_social_session(driver, session_sec, follow_mode=follow_mode, **(weights or {}))
+        run_social_session(driver, session_sec, **(weights or {}))
 
     except (TimeoutException, RuntimeError, WebDriverException) as exc:
         log.error("Error on profile %s: %s", profile_id, exc)
@@ -2410,7 +2433,6 @@ def warm_profile_attached(
     profile_id: str = "manual",
     skip_preflight: bool = False,
     close_after: bool = False,
-    follow_mode: bool = False,
     weights: dict | None = None,
 ) -> None:
     """
@@ -2466,7 +2488,7 @@ def warm_profile_attached(
         else:
             session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
             log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
-        run_social_session(driver, session_sec, follow_mode=follow_mode, **(weights or {}))
+        run_social_session(driver, session_sec, **(weights or {}))
 
     except (TimeoutException, RuntimeError, WebDriverException) as exc:
         log.error("Error on attached profile '%s': %s", profile_id, exc)
@@ -2611,16 +2633,6 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "--follow",
-        action="store_true",
-        help=(
-            "Follow-testing mode: replaces the normal session dispatch with a "
-            "heavily-weighted follow loop (40%% quick-follow, 35%% profile-follow, "
-            "15%% suggested section, 10%% passive scroll).  "
-            "Useful for testing and debugging follow actions end-to-end."
-        ),
-    )
-    p.add_argument(
         "--close",
         action="store_true",
         help=(
@@ -2743,7 +2755,6 @@ def main() -> None:
             profile_id=label,
             skip_preflight=args.no_preflight,
             close_after=args.close,
-            follow_mode=args.follow,
             weights=weights or None,
         )
         log.info("=" * 60)
@@ -2785,7 +2796,7 @@ def main() -> None:
     for idx, profile_id in enumerate(profile_order):
         log.info("-" * 60)
         log.info("[%d/%d] Starting: %s", idx + 1, len(profile_order), profile_id)
-        warm_profile(profile_id, follow_mode=args.follow, weights=weights or None)
+        warm_profile(profile_id, weights=weights or None)
 
         if idx < len(profile_order) - 1:
             if random.random() < BUFFER_LONG_PROB:
