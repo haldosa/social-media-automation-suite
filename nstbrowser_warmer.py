@@ -427,56 +427,148 @@ def inject_cursor_overlay(driver) -> None:
     except WebDriverException as exc:
         log.debug("Cursor overlay injection failed: %s", exc)
 
-def _human_click_offset(element_width: int, element_height: int) -> tuple:
-    """
-    Return a Gaussian (dx, dy) offset from the element's geometric centre.
+# ------------------------------------------------------------------ #
+#  SHARED BÉZIER PATH ENGINE
+# ------------------------------------------------------------------ #
+# JS that replays a pre-computed path as DOM mousemove events at the
+# per-step delay computed in Python.  One execute_script call fires the
+# entire arc; Python sleeps while JS runs — no per-step round-trips.
+_BEZIER_DISPATCH_JS = """
+(function(pts, delays) {
+    var i = 0;
+    function tick() {
+        if (i >= pts.length) return;
+        var p = pts[i]; var d = delays[i]; i++;
+        document.dispatchEvent(new MouseEvent('mousemove', {
+            clientX: p[0], clientY: p[1],
+            bubbles: true, cancelable: true, view: window
+        }));
+        setTimeout(tick, d);
+    }
+    tick();
+})(arguments[0], arguments[1]);
+"""
 
-    Real humans do not click precisely on the centre of a button — they aim
-    within a scatter zone whose spread is proportional to the target's size.
-    Sigma is bounded to the range 5–10 px (human precision limits), so large
-    elements get the full ±10 px scatter and tiny elements get ±5 px minimum.
-    The offset is clamped so the click always lands within 80 % of the element
-    bounds, preventing accidental Selenium misses on very small icons.
 
-    DISABLED — currently not called.  Re-enable by uncommenting the call in
-    bezier_move() and removing the direct x1/y1 = rect centre assignment.
-    """
-    sigma_x = max(5.0, min(element_width  * 0.20, 10.0))
-    sigma_y = max(5.0, min(element_height * 0.20, 10.0))
-    dx = random.gauss(0, sigma_x)
-    dy = random.gauss(0, sigma_y)
-    dx = max(-element_width  * 0.4, min(dx,  element_width  * 0.4))
-    dy = max(-element_height * 0.4, min(dy,  element_height * 0.4))
-    return int(dx), int(dy)
-
-
-def _maybe_add_overshoot(
+def _fire_bezier_arc(
+    driver,
     x0: int, y0: int, x1: int, y1: int,
-    element_w: int, element_h: int,
+    vw: int, vh: int,
+    *,
+    exact_end: bool = False,
 ) -> tuple:
     """
-    For small targets (area < 4000 px²), 30 % chance of overshooting 4–10 px
-    past the intended aim point in the same direction, followed by a micro-arc
-    correction back.  Simulates the corrective sub-movements humans make when
-    homing onto small interactive elements (like buttons or icons).
+    Build a randomised quadratic Bézier path from (x0,y0) to (x1,y1),
+    dispatch it as JS mousemove events at ~60 fps, then sleep for the full
+    arc duration.  Returns (points, delays) for any post-arc work by the
+    caller (e.g. snap-gap logging in bezier_move).
 
-    Returns (overshoot_x, overshoot_y, did_overshoot).
-    When did_overshoot is False the caller uses (x1, y1) unchanged.
+    Control-point strategy
+    ----------------------
+    The cp is always offset perpendicular to the travel direction so the
+    curve has genuine curvature even on vertical or horizontal arcs.
+    • 25 % of arcs use a large lateral deviation (more visible sweep).
+    • 35 % let the cp bulge outside the viewport bbox — real paths often
+      arc beyond the straight-line trajectory on diagonal moves.
+    • The sign is flipped when the chosen direction would be eaten by the
+      viewport edge, guaranteeing a real perpendicular offset.
 
-    DISABLED — currently not called.  Re-enable by uncommenting the call in
-    bezier_move() and removing the direct arc_x/arc_y = x1, y1 assignment.
+    Tremor model
+    ------------
+    Two-factor: velocity × distance.
+    • velocity bell (sin π·t): tremor is low at mid-arc (fast movement)
+      and rises at endpoints.  The approach phase (t > 0.80) adds extra
+      corrective wobble, matching Fitts's Law biomechanics.
+    • dist_scale: short arcs get proportionally less absolute tremor.
+    The last step is not tremored:
+      exact_end=True  → forced to exactly (x1, y1) (coord-based arcs).
+      exact_end=False → bare Bézier point used (bezier_move, where the
+                        Phase 2 ActionChains snap corrects the position).
     """
-    if element_w * element_h > 4000 or random.random() > 0.30:
-        return x1, y1, False
-    dist = math.hypot(x1 - x0, y1 - y0)
-    if dist < 1:
-        return x1, y1, False
-    ux = (x1 - x0) / dist
-    uy = (y1 - y0) / dist
-    overshoot_px = random.uniform(4, 10)
-    ox = int(x1 + ux * overshoot_px)
-    oy = int(y1 + uy * overshoot_px)
-    return ox, oy, True
+    _arc_dist = math.hypot(x1 - x0, y1 - y0)
+    _mid_x    = (x0 + x1) / 2.0
+    _mid_y    = (y0 + y1) / 2.0
+    _perp_x   = -(y1 - y0) / _arc_dist
+    _perp_y   =  (x1 - x0) / _arc_dist
+    min_cp_offset = max(20, int(_arc_dist * 0.15))
+    if random.random() < 0.25:
+        # 25 % excursion: large lateral deviation for a visible curve
+        lateral = random.randint(30, 80) * random.choice([-1, 1])
+    else:
+        lateral = random.randint(
+            min_cp_offset,
+            max(min_cp_offset + 10, int(_arc_dist * 0.25)),
+        ) * random.choice([-1, 1])
+    # Flip sign if chosen lateral direction gets eaten by viewport clamp.
+    _cp_x_trial   = int(_mid_x + _perp_x * lateral)
+    _cp_y_trial   = int(_mid_y + _perp_y * lateral)
+    _cp_x_clamped = max(0, min(_cp_x_trial, int(vw)))
+    _cp_y_clamped = max(0, min(_cp_y_trial, int(vh)))
+    if abs(_cp_x_clamped - int(_mid_x)) + abs(_cp_y_clamped - int(_mid_y)) < min_cp_offset:
+        lateral = -lateral
+    # 35 % of arcs: let the cp bulge outside the viewport bounding box.
+    if random.random() < 0.35:
+        extra = random.uniform(0.20, 0.40) * _arc_dist * random.choice([-1, 1])
+        cp = (int(_mid_x + _perp_x * (lateral + extra)),
+              int(_mid_y + _perp_y * (lateral + extra)))
+    else:
+        cp = (
+            max(0, min(int(_mid_x + _perp_x * lateral), int(vw))),
+            max(0, min(int(_mid_y + _perp_y * lateral), int(vh))),
+        )
+    steps      = max(20, min(90, int(_arc_dist / 3.5)))  # ~3.5 px/step; clamp 20-90
+    step_ms    = random.uniform(14.0, 18.0)
+    points     = []
+    delays     = []
+    prev       = (x0, y0)
+    dist_scale = max(0.15, min(_arc_dist / 500.0, 1.0))
+    drift_x    = 0.0
+    drift_y    = 0.0
+    for i in range(1, steps + 1):
+        t_raw  = i / steps
+        t      = _ease_in_out_sine(t_raw)
+        nx, ny = _bezier_point((x0, y0), cp, (x1, y1), t)
+        if i < steps:
+            # Two-factor tremor: velocity bell × distance scale.
+            # Approach phase (t > 0.80) ramps up corrective wobble.
+            velocity  = math.sin(math.pi * t_raw)
+            approach  = max(0.0, (t_raw - 0.80) / 0.20) if t_raw > 0.80 else 0.0
+            tremor_sd = (1.5 * (1.0 - velocity * 0.55) + approach * 1.5) * dist_scale
+            nx = int(nx + random.gauss(0, tremor_sd))
+            ny = int(ny + random.gauss(0, tremor_sd * 0.75))
+            # Low-frequency drift: correlated wrist/arm oscillation.
+            drift_x = drift_x * 0.88 + random.gauss(0, 0.55 * dist_scale)
+            drift_y = drift_y * 0.88 + random.gauss(0, 0.40 * dist_scale)
+            drift_cap = max(1.0, 4.0 * dist_scale)
+            drift_x = max(-drift_cap, min(drift_x, drift_cap))
+            drift_y = max(-drift_cap, min(drift_y, drift_cap))
+            nx = max(0, min(int(nx + drift_x), int(vw) - 1))
+            ny = max(0, min(int(ny + drift_y), int(vh) - 1))
+        elif exact_end:
+            nx, ny = x1, y1   # force exact landing for coord-based arcs
+        dx, dy = nx - prev[0], ny - prev[1]
+        points.append([nx, ny, dx, dy])
+        prev = (nx, ny)
+        vel  = math.sin(math.pi * t_raw)
+        d_ms = step_ms * (1.5 - vel * 0.7) + random.gauss(0, 0.9)
+        delays.append(max(8.0, d_ms))
+    # Cumulative step-fire times for STEP log annotation.
+    cum_ms     = 0.0
+    step_times = []
+    for d in delays:
+        step_times.append(cum_ms)
+        cum_ms += d
+    _mlog.debug(
+        "ARC  from=(%d,%d)  cp=(%d,%d)  to=(%d,%d)  steps=%d  ms/step=%.1f  dur=%.0fms",
+        x0, y0, cp[0], cp[1], x1, y1, steps, step_ms, cum_ms,
+    )
+    if MOUSE_TRACE:
+        for i, ((nx, ny, dx, dy), t_ms) in enumerate(zip(points, step_times), 1):
+            _mlog.debug("STEP  i=%02d  t=+%.0fms  pos=(%d,%d)  delta=(%+d,%+d)",
+                        i, t_ms, nx, ny, dx, dy)
+    driver.execute_script(_BEZIER_DISPATCH_JS, points, delays)
+    time.sleep(sum(d / 1000.0 for d in delays) + 0.05)
+    return points, delays
 
 
 def init_cursor_pos(driver) -> None:
@@ -504,27 +596,21 @@ def bezier_move(driver, target_element) -> None:
     Move the mouse to target_element along a randomised quadratic Bezier curve
     at a true 60 fps frame rate.
 
-    Why the previous approach was ~3.4 fps:
-      ActionChains(driver).move_by_offset(dx, dy).perform() is a synchronous
-      HTTP round-trip: Python → ChromeDriver HTTP → CDP WebSocket → browser.
-      Each call costs ~280 ms regardless of the intended step_sec delay.
+    Two-phase approach:
+      Phase 1 — JS animation via _fire_bezier_arc(): all points are
+        pre-computed in Python and dispatched to the browser in ONE
+        execute_script call.  JS fires DOM mousemove events at the computed
+        per-step interval; Python sleeps for the arc duration.  No per-step
+        Python ↔ browser round-trips — genuine ~60 fps.
 
-    Fix — two-phase approach:
-      Phase 1 (animation):
-        Pre-compute all Bezier points in Python, pass the full path array to
-        the browser in ONE execute_script call, and let JavaScript dispatch
-        DOM mousemove events via setTimeout at the intended interval.
-        This drives the visual cursor overlay at genuine 60 fps because JS
-        runs inside the browser with no per-step Python ↔ browser latency.
-        Python sleeps for the full animation duration while JS runs.
+      Phase 2 — CDP hover: a single ActionChains.move_to_element_with_offset()
+        fires the real browser hover events (CSS :hover, mouseenter, etc.).
+        The aim-offset scatter (off_dx/off_dy) is applied only here so the
+        DOM sees at most a few pixels' gap between the last JS event and the
+        real pointer.
 
-      Phase 2 (hover):
-        A single ActionChains.move_to_element() call at the end fires the
-        real browser hover events (CSS :hover, mouseenter, etc.) on the target.
-        Only one HTTP round-trip total instead of 35-55.
-
-    Cursor continuity: uses _cursor_pos as the start point and updates it
-    after each call, so the hover snap never teleports between moves.
+    Cursor continuity: _cursor_pos is used as the start point and updated
+    after each call so every arc begins from where the cursor last rested.
     """
     global _cursor_pos
     try:
@@ -536,36 +622,27 @@ def bezier_move(driver, target_element) -> None:
             "        w:r.width, h:r.height};",
             target_element,
         )
-        # JS animation always ends at the element's true geometric centre so that
-        # the last synthetic mousemove and the ActionChains CDP event are at most
-        # a few pixels apart (jitter on final step).  Any click-scatter offset is
-        # applied ONLY to the ActionChains call via move_to_element_with_offset —
-        # never to the JS animation endpoint — so the DOM never sees a large jump
-        # between the last synthetic event and the real CDP hover event.
-        x1 = int(rect["x"])   # true centre — JS animation endpoint
+        x1 = int(rect["x"])
         y1 = int(rect["y"])
-        # Slight aim offset — humans don't land exactly on the geometric centre.
-        # Sigma scales with element size; clamped to ±35 % of element dimension
-        # so the click always stays well inside the element bounds.
+        # Aim offset: humans don't land on the geometric centre.
+        # Sigma scales with element size; clamped to ±35 % of dimension.
         _ew = max(1, int(rect["w"]))
         _eh = max(1, int(rect["h"]))
         off_dx = int(max(-_ew * 0.35, min(random.gauss(0, max(2.0, _ew * 0.12)), _ew * 0.35)))
         off_dy = int(max(-_eh * 0.35, min(random.gauss(0, max(2.0, _eh * 0.12)), _eh * 0.35)))
-        # Start from last known position, clamped to current viewport
+        # Start from last known position, clamped to current viewport.
         x0 = max(0, min(_cursor_pos[0], int(vw)))
         y0 = max(0, min(_cursor_pos[1], int(vh)))
-        # Proximity guard: if cursor is already within 10 px of the target,
-        # skip the arc entirely — a degenerate zero-travel arc produces
-        # in-place jitter that is an obvious bot signal.
-        if math.hypot(x1 - x0, y1 - y0) < 10:
-            ActionChains(driver).move_to_element(target_element).perform()
-            _set_cursor(x1, y1, "near-snap")
-            _mlog.debug("SKIP  already near target")
+        # Proximity guard: cursor already within 25 px — treat as hovering.
+        if math.hypot(x1 - x0, y1 - y0) < 25:
+            ActionChains(driver).move_to_element_with_offset(
+                target_element, off_dx, off_dy
+            ).perform()
+            _set_cursor(int(rect["x"]) + off_dx, int(rect["y"]) + off_dy, "hover-dwell")
+            _mlog.debug("DWELL  cursor within 25px of target  dist=%.1fpx",
+                        math.hypot(x1 - x0, y1 - y0))
             return
-        # Off-viewport correction: getBoundingClientRect can return coordinates
-        # outside the visible viewport (e.g. element not yet scrolled into view).
-        # Scroll it into view first, re-query the position, then fall through to
-        # the arc computation with updated coordinates — no ActionChains snap.
+        # Off-viewport correction: scroll element into view then re-query.
         if x1 < 0 or y1 < 0 or x1 > int(vw) or y1 > int(vh):
             driver.execute_script(
                 "arguments[0].scrollIntoView({behavior:'instant', block:'center'});",
@@ -579,187 +656,14 @@ def bezier_move(driver, target_element) -> None:
             )
             x1 = int(rect["x"])
             y1 = int(rect["y"])
-            # Still off-screen after scroll (e.g. hidden element) — give up
             if x1 < 0 or y1 < 0 or x1 > int(vw) or y1 > int(vh):
                 _mlog.debug("SKIP  target off-screen after scroll  pos=(%d,%d)", x1, y1)
                 return
-            # Fall through — arc computation continues with updated x1/y1
-        # --- Overshoot (disabled) ----------------------------------------------
-        # To re-enable: replace the line below with:
-        #   arc_x, arc_y, overshot = _maybe_add_overshoot(
-        #       x0, y0, x1, y1, int(rect["w"]), int(rect["h"])
-        #   )
-        # JS animation endpoint incorporates the aim offset so that the final
-        # synthetic mousemove and the ActionChains snap land at the same spot.
+        # Arc destination incorporates aim offset so JS animation and the
+        # Phase 2 ActionChains snap land at the same position.
         arc_x, arc_y = x1 + off_dx, y1 + off_dy
-        # Control point — always offset perpendicular to the travel vector so
-        # the curve has genuine curvature regardless of travel direction.
-        # A cp placed on the straight line (e.g. cp==start for vertical arcs)
-        # degenerates to a linear interpolation and produces frozen-then-teleport
-        # movement that is trivially detectable.
-        _arc_dist = math.hypot(arc_x - x0, arc_y - y0)
-        _mid_x    = (x0 + arc_x) / 2.0
-        _mid_y    = (y0 + arc_y) / 2.0
-        # Unit vector perpendicular to travel direction (rotate 90°)
-        _perp_x   = -(arc_y - y0) / _arc_dist
-        _perp_y   =  (arc_x - x0) / _arc_dist
-        min_cp_offset = max(20, int(_arc_dist * 0.15))
-        if random.random() < 0.25:
-            # 25 % excursion: large lateral deviation for a visible curve
-            lateral = random.randint(30, 80) * random.choice([-1, 1])
-        else:
-            # Normal arc: small perpendicular wobble, always ≥ min_cp_offset
-            lateral = random.randint(min_cp_offset,
-                                     max(min_cp_offset + 10,
-                                         int(_arc_dist * 0.25))) * random.choice([-1, 1])
-        # Ensure the perpendicular offset isn't eaten by the viewport clamp.
-        # If applying lateral in the chosen direction would push cp outside [0,vw]×[0,vh]
-        # (e.g. a horizontal arc at y=0 with negative lateral → clamped to y=0),
-        # flip the sign so the cp receives a genuine offset.
-        _cp_x_trial = int(_mid_x + _perp_x * lateral)
-        _cp_y_trial = int(_mid_y + _perp_y * lateral)
-        _cp_x_clamped = max(0, min(_cp_x_trial, int(vw)))
-        _cp_y_clamped = max(0, min(_cp_y_trial, int(vh)))
-        if abs(_cp_x_clamped - int(_mid_x)) + abs(_cp_y_clamped - int(_mid_y)) < min_cp_offset:
-            lateral = -lateral  # flip: the other side of the midpoint is in-bounds
-        # 35 % of arcs: let the control point bulge outside the viewport bounding
-        # box (20–40 % of arc length beyond the midpoint).  Real mouse paths often
-        # arc outward past the straight-line path, especially on diagonal moves.
-        # Intermediate points are still clamped per-step; only the cp escapes.
-        if random.random() < 0.35:
-            extra = random.uniform(0.20, 0.40) * _arc_dist * random.choice([-1, 1])
-            cp = (int(_mid_x + _perp_x * (lateral + extra)),
-                  int(_mid_y + _perp_y * (lateral + extra)))
-        else:
-            cp = (
-                max(0, min(int(_mid_x + _perp_x * lateral), int(vw))),
-                max(0, min(int(_mid_y + _perp_y * lateral), int(vh))),
-            )
-        steps   = max(20, min(90, int(_arc_dist / 3.5)))   # ~3.5 px/step net; clamp 20-90
-        step_ms = random.uniform(14.0, 18.0)            # base 14-18 ms per step
-
-        # Pre-compute all points in Python with easing + micro-jitter.
-        # _ease_in_out_sine maps the linear step fraction to an S-curve position
-        # so the cursor accelerates out of the start, sweeps fast through the
-        # middle, and decelerates smoothly onto the target (Fitts's Law).
-        # Gaussian noise is added to every intermediate point to prevent
-        # perfectly geometric arcs that anti-fraud systems flag as non-human.
-        points = []
-        delays = []
-        prev   = (x0, y0)
-        # Distance scale: short arcs need proportionally less tremor.
-        # Normalised to 1.0 at 500 px, clamped to [0.15, 1.0] so very
-        # short hops (~30 px) still get a small but non-zero wobble.
-        dist_scale = max(0.15, min(_arc_dist / 500.0, 1.0))
-        # Low-frequency drift state — correlated wrist/arm oscillation.
-        # Its step-size also scales with arc distance so short hops don't
-        # wander off-target.
-        drift_x = 0.0
-        drift_y = 0.0
-        for i in range(1, steps + 1):
-            t_raw  = i / steps
-            t      = _ease_in_out_sine(t_raw)           # S-curve position
-            nx, ny = _bezier_point((x0, y0), cp, (arc_x, arc_y), t)
-
-            # Two-factor tremor model:
-            #   velocity factor — sin bell, 1.0 at mid-arc, ~0 at endpoints.
-            #     Faster movement = less hand tremor (Fitts's Law + biomechanics).
-            #   distance factor (dist_scale) — long sweeping arcs produce more
-            #     total arm excursion and therefore more absolute tremor than a
-            #     small 30 px nudge to a nearby button.
-            #
-            # Combined formula at peak velocity, 500 px arc:  1.5×0.45×1.0 ≈ 0.68 px SD
-            # At peak velocity, 60 px arc:                    1.5×0.45×0.15 ≈ 0.10 px SD
-            # At start/end,     500 px arc:                   1.5×1.0×1.0  = 1.50 px SD
-            # Approach phase adds corrective wobble:          up to ~2.2×1.0 px SD
-            if i < steps:
-                velocity  = math.sin(math.pi * t_raw)                        # bell 0→1→0
-                approach  = max(0.0, (t_raw - 0.80) / 0.20) if t_raw > 0.80 else 0.0
-                tremor_sd = (1.5 * (1.0 - velocity * 0.55) + approach * 1.5) * dist_scale
-
-                # High-frequency tremor (independent per step)
-                nx = int(nx + random.gauss(0, tremor_sd))
-                ny = int(ny + random.gauss(0, tremor_sd * 0.75))
-
-                # Low-frequency drift: bounded random walk scaled to arc distance.
-                drift_x = drift_x * 0.88 + random.gauss(0, 0.55 * dist_scale)
-                drift_y = drift_y * 0.88 + random.gauss(0, 0.40 * dist_scale)
-                drift_cap = max(1.0, 4.0 * dist_scale)
-                drift_x = max(-drift_cap, min(drift_x, drift_cap))
-                drift_y = max(-drift_cap, min(drift_y, drift_cap))
-                nx = max(0, min(int(nx + drift_x), int(vw) - 1))
-                ny = max(0, min(int(ny + drift_y), int(vh) - 1))
-
-            dx, dy = nx - prev[0], ny - prev[1]
-            points.append([nx, ny, dx, dy])
-            prev = (nx, ny)
-            # Per-step delay from the velocity bell-curve:
-            # sin(π·t) peaks at t=0.5 (mid-arc) and is ~0 at both endpoints.
-            # Delay is long (~22 ms) when slow, short (~10 ms) at peak speed.
-            vel   = math.sin(math.pi * t_raw)           # 0 at ends, 1 at mid
-            d_ms  = step_ms * (1.5 - vel * 0.7) + random.gauss(0, 0.9)
-            delays.append(max(8.0, d_ms))
-
-        # Pre-compute cumulative intended fire times (ms from arc dispatch).
-        # Used to annotate STEP log lines with realistic timing instead of
-        # Python computation timestamps, which are all near-simultaneous.
-        cum_ms = 0.0
-        step_times = []
-        for d in delays:
-            step_times.append(cum_ms)
-            cum_ms += d
-        total_arc_ms = cum_ms
-
-        # Arc summary log
-        _mlog.debug(
-            "ARC  from=(%d,%d)  cp=(%d,%d)  to=(%d,%d)  steps=%d  ms/step=%.1f  dur=%.0fms",
-            x0, y0, cp[0], cp[1], arc_x, arc_y, steps, step_ms, total_arc_ms,
-        )
-        if MOUSE_TRACE:
-            for i, ((nx, ny, dx, dy), t_ms) in enumerate(zip(points, step_times), 1):
-                _mlog.debug("STEP  i=%02d  t=+%.0fms  pos=(%d,%d)  delta=(%+d,%+d)",
-                            i, t_ms, nx, ny, dx, dy)
-
-        # Phase 1 — dispatch the entire path inside the browser via JS setTimeout
-        # using per-step variable delays.  One execute_script call; JS fires
-        # mousemove events at each step's delay with no Python round-trips between
-        # steps, achieving genuine variable-rate ~60 fps movement that is slow at
-        # the arc's endpoints and fastest through the middle.
-        driver.execute_script(
-            """
-            (function(pts, delays) {
-                var i = 0;
-                function tick() {
-                    if (i >= pts.length) return;
-                    var p = pts[i];
-                    var d = delays[i];
-                    i++;
-                    document.dispatchEvent(new MouseEvent('mousemove', {
-                        clientX: p[0], clientY: p[1],
-                        bubbles: true, cancelable: true, view: window
-                    }));
-                    setTimeout(tick, d);
-                }
-                tick();
-            })(arguments[0], arguments[1]);
-            """,
-            points,
-            delays,
-        )
-        # Sleep for the total arc duration (sum of all variable per-step delays).
-        time.sleep(sum(d / 1000.0 for d in delays) + 0.05)
-
-        # --- Overshoot correction (disabled) ----------------------------------
-        # To re-enable, restore the overshot flag from _maybe_add_overshoot and
-        # uncomment:
-        # if overshot:
-        #     _mlog.debug("OVERSHOOT  past=(%d,%d)  correct_to=(%d,%d)", arc_x, arc_y, x1, y1)
-        #     time.sleep(random.uniform(0.04, 0.10))
-        #     bezier_move_to_coords(driver, x1, y1)
-
-        # Diagnostic: warn if the last synthetic point is far from the snap target.
-        # A large gap means the DOM would see an unrealistic jump between the final
-        # JS mousemove and the ActionChains CDP event.
+        points, _ = _fire_bezier_arc(driver, x0, y0, arc_x, arc_y, vw, vh)
+        # Diagnostic: warn if last synthetic point is far from the snap target.
         snap_x = int(rect["x"]) + off_dx
         snap_y = int(rect["y"]) + off_dy
         if points:
@@ -770,29 +674,31 @@ def bezier_move(driver, target_element) -> None:
                     "SNAP GAP  last_synthetic=(%d,%d)  snap_target=(%d,%d)  gap=%.1fpx",
                     last_syn_x, last_syn_y, snap_x, snap_y, snap_gap,
                 )
-
-        # Phase 2 — single ActionChains call to fire real hover/mouseenter events.
-        # Uses move_to_element_with_offset so click-scatter (off_dx, off_dy) is
-        # applied here only — the JS animation always ends at the true centre.
-        # off_dx/off_dy are (0, 0) while click-offset is disabled.
+        # Phase 2 — CDP hover fires real browser hover/mouseenter events.
         ActionChains(driver).move_to_element_with_offset(
             target_element, off_dx, off_dy
         ).perform()
-        _set_cursor(snap_x, snap_y, "bezier-snap")
+        _set_cursor(snap_x, snap_y, "elem-hover")
 
     except WebDriverException:
         pass
 
-def bezier_move_to_coords(driver, x1: int, y1: int) -> None:
+def bezier_move_to_coords(driver, x1: int, y1: int, tag: str = "arc-end") -> None:
     """
     Animate the cursor from _cursor_pos to explicit viewport coordinates
-    (x1, y1) along a randomised quadratic Bezier S-curve at ~60 fps.
+    (x1, y1) along a randomised quadratic Bezier arc at ~60 fps.
 
-    Unlike bezier_move(), no DOM element is required and no ActionChains
-    hover is fired — pure JS mousemove dispatch only.  Used for:
-      • parking the cursor at y=0 before any page navigation
-      • idle cursor wanders between scroll-rest reading pauses
-      • post-load cursor drift onto fresh content
+    Unlike bezier_move(), no DOM element is required.  Used for:
+      • parking the cursor at y=0 before page navigation  ("nav-park")
+      • idle cursor drift onto content after page load     ("idle-settle")
+      • cursor wanders during reading pauses               ("reading-wander")
+      • hand-shift nudges between scroll chunks            ("scroll-drift")
+      • pre-aim drifts toward a UI region                  ("nav-hover")
+
+    Phase 1: JS mousemove dispatch via _fire_bezier_arc() with exact_end=True
+             so the arc lands exactly on the target coordinate.
+    Phase 2: ActionBuilder.move_to_location() — absolute W3C pointer move
+             that corrects any drift between _cursor_pos and the real pointer.
     """
     global _cursor_pos
     try:
@@ -804,94 +710,9 @@ def bezier_move_to_coords(driver, x1: int, y1: int) -> None:
         y1 = max(0, min(y1, int(vh) - 1))
         if x0 == x1 and y0 == y1:
             return
-        _arc_dist = math.hypot(x1 - x0, y1 - y0)
-        _mid_x    = (x0 + x1) / 2.0
-        _mid_y    = (y0 + y1) / 2.0
-        # Unit vector perpendicular to travel direction (rotate 90°)
-        _perp_x   = -(y1 - y0) / _arc_dist
-        _perp_y   =  (x1 - x0) / _arc_dist
-        min_cp_offset = max(20, int(_arc_dist * 0.15))
-        lateral = random.randint(min_cp_offset,
-                                 max(min_cp_offset + 10,
-                                     int(_arc_dist * 0.25))) * random.choice([-1, 1])
-        # Flip sign if the chosen direction gets clamped to zero by viewport edge.
-        _cp_x_trial = int(_mid_x + _perp_x * lateral)
-        _cp_y_trial = int(_mid_y + _perp_y * lateral)
-        _cp_x_clamped = max(0, min(_cp_x_trial, int(vw)))
-        _cp_y_clamped = max(0, min(_cp_y_trial, int(vh)))
-        if abs(_cp_x_clamped - int(_mid_x)) + abs(_cp_y_clamped - int(_mid_y)) < min_cp_offset:
-            lateral = -lateral
-        # 35 % of arcs: let the control point bulge outside the viewport bounding
-        # box (20–40 % of arc length beyond the midpoint).  Real mouse paths often
-        # arc outward past the straight-line path, especially on diagonal moves.
-        if random.random() < 0.35:
-            extra = random.uniform(0.20, 0.40) * _arc_dist * random.choice([-1, 1])
-            cp = (int(_mid_x + _perp_x * (lateral + extra)),
-                  int(_mid_y + _perp_y * (lateral + extra)))
-        else:
-            cp = (
-                max(0, min(int(_mid_x + _perp_x * lateral), int(vw))),
-                max(0, min(int(_mid_y + _perp_y * lateral), int(vh))),
-            )
-        steps   = max(20, min(70, int(_arc_dist / 3.5)))   # ~3.5 px/step net; clamp 20-70
-        step_ms = random.uniform(14.0, 18.0)
-        points = []
-        delays = []
-        prev = (x0, y0)
-        for i in range(1, steps + 1):
-            t_raw = i / steps
-            t     = _ease_in_out_sine(t_raw)
-            nx, ny = _bezier_point((x0, y0), cp, (x1, y1), t)
-            if i == steps:
-                nx, ny = x1, y1          # land exactly on the target
-            dx, dy = nx - prev[0], ny - prev[1]
-            points.append([nx, ny, dx, dy])
-            prev = (nx, ny)
-            vel  = math.sin(math.pi * t_raw)
-            d_ms = step_ms * (1.5 - vel * 0.7) + random.gauss(0, 0.9)
-            delays.append(max(8.0, d_ms))
-
-        # Pre-compute cumulative intended fire times for accurate STEP logging.
-        cum_ms = 0.0
-        step_times = []
-        for d in delays:
-            step_times.append(cum_ms)
-            cum_ms += d
-        total_arc_ms = cum_ms
-
-        _mlog.debug(
-            "ARC  from=(%d,%d)  cp=(%d,%d)  to=(%d,%d)  steps=%d  ms/step=%.1f  dur=%.0fms",
-            x0, y0, cp[0], cp[1], x1, y1, steps, step_ms, total_arc_ms,
-        )
-        if MOUSE_TRACE:
-            for i, ((nx, ny, dx, dy), t_ms) in enumerate(zip(points, step_times), 1):
-                _mlog.debug("STEP  i=%02d  t=+%.0fms  pos=(%d,%d)  delta=(%+d,%+d)",
-                            i, t_ms, nx, ny, dx, dy)
-        driver.execute_script(
-            """
-            (function(pts, delays) {
-                var i = 0;
-                function tick() {
-                    if (i >= pts.length) return;
-                    var p = pts[i]; var d = delays[i]; i++;
-                    document.dispatchEvent(new MouseEvent('mousemove', {
-                        clientX: p[0], clientY: p[1],
-                        bubbles: true, cancelable: true, view: window
-                    }));
-                    setTimeout(tick, d);
-                }
-                tick();
-            })(arguments[0], arguments[1]);
-            """,
-            points, delays,
-        )
-        time.sleep(sum(d / 1000.0 for d in delays) + 0.05)
-
-        # Phase 2 — move the real CDP pointer to the destination so that
-        # CSS :hover / browser hit-testing tracks with the JS animation.
-        # Uses ABSOLUTE viewport coordinates (move_to_location) rather than
-        # move_by_offset so that any accumulated drift between _cursor_pos and
-        # the W3C pointer is corrected on every call instead of compounding.
+        _fire_bezier_arc(driver, x0, y0, x1, y1, vw, vh, exact_end=True)
+        # Phase 2 — absolute pointer correction so real W3C pointer tracks
+        # with _cursor_pos instead of accumulating relative drift.
         try:
             ab = ActionBuilder(driver,
                                mouse=PointerInput(interaction.POINTER_MOUSE, "mouse"))
@@ -899,8 +720,7 @@ def bezier_move_to_coords(driver, x1: int, y1: int) -> None:
             ab.perform()
         except WebDriverException:
             pass
-
-        _set_cursor(x1, y1, "arc-end")
+        _set_cursor(x1, y1, tag)
     except WebDriverException:
         pass
 
@@ -928,7 +748,7 @@ def _navigate_and_settle(driver, action) -> None:
     except Exception:
         vw = 1280
     park_x = random.randint(int(vw * 0.25), int(vw * 0.75))
-    bezier_move_to_coords(driver, park_x, 0)
+    bezier_move_to_coords(driver, park_x, 0, tag="nav-park")
 
     # 2. Navigate
     action()
@@ -958,7 +778,7 @@ def _navigate_and_settle(driver, action) -> None:
         vh2 = driver.execute_script("return window.innerHeight")
         rx = random.randint(int(vw2 * 0.15), int(vw2 * 0.85))
         ry = random.randint(int(vh2 * 0.25), int(vh2 * 0.75))
-        bezier_move_to_coords(driver, rx, ry)
+        bezier_move_to_coords(driver, rx, ry, tag="idle-settle")
     except Exception:
         pass
 
@@ -1071,20 +891,43 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
                              _cursor_pos[0] + int(random.gauss(0, vw_r * 0.10))))
                     cy = max(int(vh_r * 0.10), min(int(vh_r * 0.90),
                              _cursor_pos[1] + int(random.gauss(0, vh_r * 0.09))))
-                    bezier_move_to_coords(driver, cx, cy)
+                    bezier_move_to_coords(driver, cx, cy, tag="reading-wander")
                 except Exception:
                     pass
 
     deadline = time.time() + total_seconds
     log.info("[ SCROLL ]  scrolling for %.0fs", total_seconds)
+    # Scroll-chunk nudge counter — fire a small cursor shift every 3-5 chunks
+    # to model the hand resting on the desk and shifting while scrolling.
+    _nudge_after = random.randint(3, 5)
+    _chunk_count = 0
     while time.time() < deadline:
         distance = random.randint(280, 650)
         step_px  = random.randint(4, 9)
         tick_ms  = random.randint(12, 20)
         smooth_scroll_chunk(driver, distance, step_px, tick_ms)
+        _chunk_count += 1
 
         # brief pause after scroll lands (hand leaving wheel)
         time.sleep(random.uniform(0.15, 0.45))
+
+        # Occasional hand-shift nudge between scroll chunks.
+        # Fires after every _nudge_after chunks; threshold is re-randomised
+        # each time so the interval is never periodic.
+        if _chunk_count >= _nudge_after:
+            _chunk_count = 0
+            _nudge_after = random.randint(3, 5)
+            try:
+                vw_n = driver.execute_script("return window.innerWidth")
+                vh_n = driver.execute_script("return window.innerHeight")
+                nx = max(int(vw_n * 0.08), min(int(vw_n * 0.92),
+                         _cursor_pos[0] + int(random.gauss(0, vw_n * 0.12))))
+                ny = max(int(vh_n * 0.10), min(int(vh_n * 0.90),
+                         _cursor_pos[1] + int(random.gauss(0, vh_n * 0.10))))
+                bezier_move_to_coords(driver, nx, ny, tag="scroll-drift")
+            except Exception:
+                pass
+
         # 4-tier reading pause — cursor drifts throughout via _reading_pause()
         tier = random.random()
         if tier < 0.03:
@@ -1706,6 +1549,7 @@ def follow_from_feed(driver) -> bool:
                     driver,
                     random.randint(int(vw_e * 0.20), int(vw_e * 0.80)),
                     random.randint(int(vh_e * 0.45), int(vh_e * 0.75)),
+                    tag="idle-settle",
                 )
                 time.sleep(random.uniform(0.2, 0.4))
                 # Small scroll to force any lingering hover card off the screen
@@ -1731,6 +1575,7 @@ def follow_from_feed(driver) -> bool:
                 driver,
                 random.randint(int(vw_e * 0.20), int(vw_e * 0.80)),
                 random.randint(int(vh_e * 0.45), int(vh_e * 0.75)),
+                tag="idle-settle",
             )
             time.sleep(random.uniform(0.2, 0.4))
             # Scroll down slightly — moves the hovered username off-screen so
@@ -1793,7 +1638,7 @@ def follow_from_profile_page(driver) -> bool:
             vh_f = driver.execute_script("return window.innerHeight")
             pre_x = random.randint(int(vw_f * 0.10), int(vw_f * 0.60))
             pre_y = random.randint(int(vh_f * 0.10), int(vh_f * 0.30))
-            bezier_move_to_coords(driver, pre_x, pre_y)
+            bezier_move_to_coords(driver, pre_x, pre_y, tag="nav-hover")
         except WebDriverException:
             pass
 
@@ -1823,7 +1668,7 @@ def follow_from_profile_page(driver) -> bool:
             vh_f = driver.execute_script("return window.innerHeight")
             drift_x = random.randint(int(vw_f * 0.20), int(vw_f * 0.80))
             drift_y = random.randint(int(vh_f * 0.40), int(vh_f * 0.70))
-            bezier_move_to_coords(driver, drift_x, drift_y)
+            bezier_move_to_coords(driver, drift_x, drift_y, tag="idle-settle")
         except WebDriverException:
             pass
 
@@ -1832,63 +1677,8 @@ def follow_from_profile_page(driver) -> bool:
     except (TimeoutException, NoSuchElementException, WebDriverException) as exc:
         log.debug("Follow from profile failed: %s", exc)
         return False
-'''
-def interact_with_suggested_section(driver) -> None:
-    """
-    Scroll the 'Suggested for you' card section, hover a few profiles,
-    and occasionally follow one.
-    """
-    try:
-        suggested = driver.find_elements(
-            By.XPATH, '//span[normalize-space(text())="Suggested for you"]'
-        )
-        if not suggested:
-            log.debug("No 'Suggested for you' section found")
-            return
 
-        log.info("Interacting with Suggested for you section")
-        scroll_element_into_loose_view(driver, suggested[0])
-        time.sleep(random.uniform(0.7, 2.0))  # additional dwell on suggested section
 
-        follow_btns = [
-            el for el in driver.find_elements(By.XPATH, FOLLOW_BTN_XPATH)
-            if el.is_displayed() and _is_visually_visible(driver, el)
-        ]
-        if not follow_btns:
-            log.debug("No follow buttons in suggested section")
-            return
-
-        # Hover 1–3 cards without following (browsing behaviour)
-        n_hover = min(random.randint(1, 3), len(follow_btns))
-        for btn in random.sample(follow_btns, n_hover):
-            bezier_move(driver, btn)
-            time.sleep(random.uniform(0.8, 2.5))
-
-        # 25 % chance: follow one
-        if random.random() < 0.25:
-            target = random.choice(follow_btns)
-            bezier_move(driver, target)
-            time.sleep(random.uniform(0.5, 1.2))
-            target.click()
-            time.sleep(random.uniform(0.8, 1.5))
-            log.info("Followed from Suggested for you section")
-
-        # 15 % chance: dismiss a card
-        if random.random() < 0.15:
-            dismiss_btns = [
-                el for el in driver.find_elements(By.CSS_SELECTOR, DISMISS_CARD_BTN)
-                if el.is_displayed()
-            ]
-            if dismiss_btns:
-                btn = random.choice(dismiss_btns)
-                bezier_move(driver, btn)
-                time.sleep(random.uniform(0.3, 0.7))
-                btn.click()
-                log.debug("Dismissed a suggested card")
-
-    except (NoSuchElementException, WebDriverException) as exc:
-        log.debug("Suggested section interaction failed: %s", exc)
-'''
 def _find_nav_btn_by_label(driver, aria_label: str):
     """
     Find a nav bar anchor/button by its SVG aria-label using a JS DOM walk.
@@ -2016,16 +1806,7 @@ def passive_action(driver) -> None:
 
     # Pause after scrolling stops — user finishes reading the post
     time.sleep(random.uniform(1.0, 3.0))
-    '''
-    # 8 % chance: brief back then forward (mis-tap or curiosity)
-    if random.random() < 0.08:
-        try:
-            navigate_history(driver, "back")
-            time.sleep(random.uniform(0.5, 1.5))
-            navigate_history(driver, "forward")
-        except WebDriverException:
-            pass
-        '''
+
 
 def active_action(driver) -> None:
     """
@@ -2070,16 +1851,10 @@ def active_action(driver) -> None:
 
         # Weighted like count: 75% 1-like, 25% 2-likes
         like_roll = random.random()
-        #if like_roll < 0.15:
-        #    log.info("Active: decided to scroll past without liking")
-        #    stochastic_scroll(driver, total_seconds=random.uniform(10, 25))
-        #    return
         if like_roll < 0.75:
             n_targets = 1
         else:
             n_targets = 2
-        #else:
-        #    n_targets = 3
 
         n_targets = min(n_targets, len(candidates))
         targets   = random.sample(candidates, n_targets)
