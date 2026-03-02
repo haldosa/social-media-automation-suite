@@ -51,17 +51,48 @@ PROFILE_IDS = [
 ]
 
 TARGET_SOCIAL_URL   = "https://www.threads.net"       # change to your target
-PREFLIGHT_SITES     = ["https://www.wikipedia.org",]
-PREFLIGHT_DWELL_MIN = 5      # minimum seconds on each pre-flight site (testing)
-PREFLIGHT_DWELL_MAX = 5      # maximum seconds on each pre-flight site (increase for prod)
-SESSION_MIN_MIN     = 2     # minimum session length (minutes)
-SESSION_MAX_MIN     = 2     # maximum session length (minutes)
-BUFFER_MIN_MIN      = 0     # minimum buffer between profiles (minutes)
-BUFFER_MAX_MIN      = 0     # maximum buffer between profiles (minutes)
+
+# Pre-flight site pool — 2-4 sites are sampled at random each run to vary
+# the browsing history seeded before navigating to Threads.
+PREFLIGHT_SITES_POOL = [
+    "https://www.wikipedia.org",
+    "https://www.bbc.com",
+    "https://www.reddit.com",
+    "https://www.youtube.com",
+    "https://www.nytimes.com",
+    "https://www.theguardian.com",
+    "https://www.espn.com",
+    "https://news.ycombinator.com",
+]
+PREFLIGHT_SITES_MIN  = 2    # minimum number of pre-flight sites to visit
+PREFLIGHT_SITES_MAX  = 4    # maximum number of pre-flight sites to visit
+PREFLIGHT_DWELL_MIN  = 18   # minimum seconds on each pre-flight site
+PREFLIGHT_DWELL_MAX  = 55   # maximum seconds on each pre-flight site
+
+SESSION_MIN_MIN     = 6     # minimum session length (minutes)
+SESSION_MAX_MIN     = 32    # maximum session length (minutes)
+# 15 % chance of a long session (40-70 min) — models binge days
+SESSION_LONG_PROB   = 0.15
+SESSION_LONG_MIN    = 40    # long-session minimum (minutes)
+SESSION_LONG_MAX    = 70    # long-session maximum (minutes)
+
+BUFFER_MIN_MIN      = 8     # minimum buffer between profiles (minutes)
+BUFFER_MAX_MIN      = 25    # maximum buffer between profiles (minutes)
+# 15 % chance of an extended mid-run break (20-60 min) after a profile
+BUFFER_LONG_PROB    = 0.15
+BUFFER_LONG_MIN     = 20    # extended break minimum (minutes)
+BUFFER_LONG_MAX     = 60    # extended break maximum (minutes)
+
+# Time-of-day scheduling — the warmer will refuse to run outside these hours
+# (24-hour local time).  Set ACTIVE_HOURS_RANGE = (0, 23) to disable.
+ACTIVE_HOURS_RANGE  = (8, 23)   # only run between 08:00 and 23:00 local time
+# Simulated inactive day — skip the entire run with this probability.
+# Models the natural days when a real user simply doesn't open Threads.
+INACTIVE_DAY_PROB   = 0.18
 SCREENSHOT_DIR      = "screenshots"
 LOG_FILE            = "nstbrowser_warmer.log"
 MOUSE_LOG_FILE      = "mouse_moves.log"  # dedicated cursor movement log
-MOUSE_TRACE         = True              # True = log every Bezier step (verbose)
+MOUSE_TRACE         = False             # True = log every Bezier step (verbose)
 DEBUG_CURSOR_OVERLAY= True             # True = inject red dot overlay to visualise cursor movement
 
 # ── Selector constants ─────────────────────────────────────────────────────── #
@@ -533,7 +564,7 @@ def _fire_bezier_arc(
             # Approach phase (t > 0.80) ramps up corrective wobble.
             velocity  = math.sin(math.pi * t_raw)
             approach  = max(0.0, (t_raw - 0.80) / 0.20) if t_raw > 0.80 else 0.0
-            tremor_sd = (1.5 * (1.0 - velocity * 0.55) + approach * 1.5) * dist_scale
+            tremor_sd = (0.8 * (1.0 - velocity * 0.55) + approach * 0.8) * dist_scale
             nx = int(nx + random.gauss(0, tremor_sd))
             ny = int(ny + random.gauss(0, tremor_sd * 0.75))
             # Low-frequency drift: correlated wrist/arm oscillation.
@@ -959,10 +990,17 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
 
 def run_preflight(driver) -> None:
     """
-    Browse pre-flight sites for a randomly drawn dwell time to seed a natural
+    Browse a random selection of pre-flight sites to seed a varied, natural
     browsing history before navigating to Threads.
+
+    Each run samples 2-4 sites from PREFLIGHT_SITES_POOL so the history is
+    never identical across sessions, reducing the pattern of a single
+    Wikipedia visit that always precedes Threads activity.
     """
-    for site in PREFLIGHT_SITES:
+    k     = random.randint(PREFLIGHT_SITES_MIN, PREFLIGHT_SITES_MAX)
+    sites = random.sample(PREFLIGHT_SITES_POOL, k=min(k, len(PREFLIGHT_SITES_POOL)))
+    log.info("Pre-flight: visiting %d site(s): %s", len(sites), [s.split('/')[2] for s in sites])
+    for site in sites:
         dwell = random.uniform(PREFLIGHT_DWELL_MIN, PREFLIGHT_DWELL_MAX)
         log.info("Pre-flight: %s  (%.0fs)", site, dwell)
         navigate_to(driver, site)
@@ -1177,6 +1215,25 @@ def _attempt_like(driver, element) -> bool:
     try:
         log.info("[ LIKE ]  scrolling post into view + clicking like")
         scroll_element_into_loose_view(driver, element)
+
+        # Content-aware guard: skip posts with no visible engagement signal.
+        # Real users predominantly like content that already has replies, likes,
+        # or reposts.  Liking zero-engagement posts in bulk is a bot pattern.
+        # 70 % skip rate when no digit is visible — leaves a small chance so
+        # the bot can occasionally like emerging posts as a real user would.
+        try:
+            has_signal = driver.execute_script("""
+                var btn  = arguments[0];
+                var post = btn.closest('article') ||
+                           btn.closest('[data-pressable-container]');
+                if (!post) return true;
+                return /\\d/.test(post.innerText || '');
+            """, element)
+            if not has_signal and random.random() < 0.70:
+                log.debug("[ LIKE ]  skipping zero-engagement post (content-aware guard)")
+                return False
+        except Exception:
+            pass
 
         # Reading pause before liking — humans read before they react
         time.sleep(random.uniform(0.8, 2.5))
@@ -1441,7 +1498,11 @@ def view_profile_from_feed(driver, force_follow: bool = False) -> bool:
             driver.switch_to.window(original_handle)
             time.sleep(random.uniform(0.8, 1.8))
         else:
-            navigate_history(driver, "back")
+            # Return via Home nav button — more human-like than the back button.
+            # Falls back to navigate_history only if the nav icon is not found.
+            if not click_home_button(driver):
+                log.debug("view_profile_from_feed: home button not found — back fallback")
+                navigate_history(driver, "back")
             time.sleep(random.uniform(1.0, 2.5))
         return True
 
@@ -1799,7 +1860,31 @@ def passive_action(driver) -> None:
     """
     Passive action: scroll, with occasional browser back/forward
     to break the perfectly linear navigation graph.
+
+    Feed guard: if the current URL is not the Threads feed homepage
+    (e.g. an unintended click during a prior action landed elsewhere),
+    the home nav button is used to return before scrolling starts.
+    A hard navigate_to fallback fires if the button is not found.
     """
+    # ── Feed URL guard ────────────────────────────────────────────────
+    _FEED_ROOTS = ("https://www.threads.com/", "https://www.threads.net/")
+    try:
+        current = driver.current_url
+        on_feed = any(current.rstrip("/") + "/" == root or current == root
+                      for root in _FEED_ROOTS)
+        if not on_feed:
+            log.info(
+                "[ PASSIVE ]  off-feed URL detected (%s) — returning to feed",
+                current[:80],
+            )
+            if not click_home_button(driver):
+                log.debug("[ PASSIVE ]  home button not found — hard navigate fallback")
+                navigate_to(driver, TARGET_SOCIAL_URL)
+            time.sleep(random.uniform(1.2, 2.5))  # settle after nav
+    except WebDriverException as exc:
+        log.debug("[ PASSIVE ]  URL guard error: %s", exc)
+    # ─────────────────────────────────────────────────────────────────
+
     scroll_time = random.uniform(25, 75)
     log.info("[ PASSIVE ]  scroll %.0fs", scroll_time)
     stochastic_scroll(driver, total_seconds=scroll_time)
@@ -1878,6 +1963,99 @@ def active_action(driver) -> None:
     log.info("Active action complete. Likes delivered: %d", liked)
 
 
+# ================================================================== #
+#  READ-POST ACTION
+# ================================================================== #
+
+def read_post_action(driver) -> bool:
+    """
+    Click into a thread post to read the full reply chain, dwell naturally,
+    then navigate back to the feed.
+
+    This models the common behaviour of a user tapping a post to read the
+    comments — a signal that strongly differentiates real users from bots
+    that only scroll-and-like without ever opening individual threads.
+
+    Flow:
+      1. Find visible post links (href contains /post/ or /t/).
+      2. Scroll the chosen link into loose view.
+      3. Bezier-arc to the link and click.
+      4. Dwell 5–18 s with stochastic scrolling through the reply chain.
+      5. Navigate back to the feed.
+    """
+    try:
+        current_url = driver.current_url
+        if "threads.net" not in current_url and "threads.com" not in current_url:
+            log.debug("read_post_action: not on Threads — skipping")
+            return False
+
+        # Collect visible post links
+        links = driver.find_elements(
+            By.CSS_SELECTOR,
+            'a[href*="/post/"], a[href*="/t/"]',
+        )
+        visible = []
+        for lnk in links:
+            try:
+                if lnk.is_displayed():
+                    r = driver.execute_script(
+                        "var r=arguments[0].getBoundingClientRect();"
+                        "return {top:r.top, h:r.height};",
+                        lnk,
+                    )
+                    vh = driver.execute_script("return window.innerHeight")
+                    if r["h"] > 0 and 0 <= r["top"] <= vh:
+                        visible.append(lnk)
+            except Exception:
+                continue
+
+        if not visible:
+            log.debug("read_post_action: no visible post links found")
+            return False
+
+        target = random.choice(visible[:10])
+        scroll_element_into_loose_view(driver, target)
+
+        # Deliberate hover pause — user deciding to click
+        bezier_move(driver, target)
+        time.sleep(random.uniform(0.4, 1.2))
+
+        ActionChains(driver).click().perform()
+        try:
+            WebDriverWait(driver, 15).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+        except TimeoutException:
+            pass
+        inject_cursor_overlay(driver)
+        init_cursor_pos(driver)
+
+        dwell = random.uniform(5.0, 18.0)
+        log.info("[ READ POST ]  reading thread for %.0fs", dwell)
+        time.sleep(random.uniform(1.0, 2.5))  # initial read of the post itself
+        stochastic_scroll(driver, total_seconds=dwell)
+
+        # Return via Home nav button — clicking the logo is more natural than
+        # the browser back button when finishing reading a thread.
+        # Falls back to navigate_history only if the nav icon is not found.
+        if not click_home_button(driver):
+            log.debug("read_post_action: home button not found — back fallback")
+            navigate_history(driver, "back")
+        time.sleep(random.uniform(1.0, 2.5))
+        log.info("[ READ POST ]  returned to feed")
+        return True
+
+    except (NoSuchElementException, TimeoutException, WebDriverException) as exc:
+        log.debug("read_post_action failed: %s", exc)
+        try:
+            if driver.current_url != current_url:
+                if not click_home_button(driver):
+                    navigate_history(driver, "back")
+        except Exception:
+            pass
+        return False
+
+
 def run_social_session(driver, session_seconds: float, follow_mode: bool = False) -> None:
     """
     Session loop with:
@@ -1907,7 +2085,7 @@ def run_social_session(driver, session_seconds: float, follow_mode: bool = False
             #     # 35 %: hover username in feed → Follow via hover card
             #     follow_from_feed(driver)
             # elif roll < 0.80:
-            if roll < 0.80:
+            if roll < 0.90:
                 # 30 %: navigate to profile page → guaranteed follow_from_profile_page
                 view_profile_from_feed(driver, force_follow=True)
             #elif roll < 0.0:
@@ -1946,6 +2124,9 @@ def run_social_session(driver, session_seconds: float, follow_mode: bool = False
             elif roll < active_prob + 0.09:
                 # ~6 % of iterations: click feed author link, browse profile
                 view_profile_from_feed(driver)
+            elif roll < active_prob + 0.17:
+                # ~8 % of iterations: click into a thread, read reply chain, go back
+                read_post_action(driver)
             # follow_from_feed disabled — block commented out
             # elif roll < active_prob + 0.15:
             #     # ~3 % of iterations: quick-follow from feed (+) button
@@ -1953,11 +2134,11 @@ def run_social_session(driver, session_seconds: float, follow_mode: bool = False
             #elif roll < active_prob + 0.45:
             #    # ~3 % of iterations: browse suggested-for-you cards
             #    interact_with_suggested_section(driver)
-            elif roll < active_prob + 0.12:
+            elif roll < active_prob + 0.20:
                 # ~3 % of iterations: return to top via logo
                 return_to_top_action(driver)
-            elif roll < active_prob + 0.18:
-                # ~3 % of iterations: open search page, dwell, return home
+            elif roll < active_prob + 0.26:
+                # ~6 % of iterations: open search page, dwell, return home
                 visit_search_action(driver)
             else:
                 passive_action(driver)
@@ -2003,9 +2184,13 @@ def warm_profile(profile_id: str, follow_mode: bool = False) -> None:
             )
             return
 
-        # 5. Main activity session
-        session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
-        log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
+        # 5. Main activity session — 15 % chance of a long binge session
+        if random.random() < SESSION_LONG_PROB:
+            session_sec = random.uniform(SESSION_LONG_MIN * 60, SESSION_LONG_MAX * 60)
+            log.info("Long session drawn: %.1f min  |  profile: %s", session_sec / 60, profile_id)
+        else:
+            session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
+            log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
         run_social_session(driver, session_sec, follow_mode=follow_mode)
 
     except (TimeoutException, RuntimeError, WebDriverException) as exc:
@@ -2087,8 +2272,12 @@ def warm_profile_attached(
                       profile_id)
             return
 
-        session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
-        log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
+        if random.random() < SESSION_LONG_PROB:
+            session_sec = random.uniform(SESSION_LONG_MIN * 60, SESSION_LONG_MAX * 60)
+            log.info("Long session drawn: %.1f min  |  profile: %s", session_sec / 60, profile_id)
+        else:
+            session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
+            log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
         run_social_session(driver, session_sec, follow_mode=follow_mode)
 
     except (TimeoutException, RuntimeError, WebDriverException) as exc:
@@ -2298,6 +2487,24 @@ def main() -> None:
     # ---------------------------------------------------------------- #
     #  NORMAL MODE  — open every profile via the API
     # ---------------------------------------------------------------- #
+
+    # Inactive-day simulation — models days when a real user never opens Threads.
+    if random.random() < INACTIVE_DAY_PROB:
+        log.info(
+            "Simulating inactive day (%.0f%% probability) — no profiles run today.",
+            INACTIVE_DAY_PROB * 100,
+        )
+        return
+
+    # Time-of-day scheduling guard — refuse to run outside natural waking hours.
+    _now_hour = datetime.now().hour
+    if not (ACTIVE_HOURS_RANGE[0] <= _now_hour <= ACTIVE_HOURS_RANGE[1]):
+        log.warning(
+            "Outside active hours (%02d:00\u2013%02d:00 local) — not running.",
+            ACTIVE_HOURS_RANGE[0], ACTIVE_HOURS_RANGE[1],
+        )
+        return
+
     log.info("Target: %s  |  Profiles: %d", TARGET_SOCIAL_URL, len(PROFILE_IDS))
 
     running = get_running_browsers()
@@ -2315,8 +2522,12 @@ def main() -> None:
         warm_profile(profile_id, follow_mode=args.follow)
 
         if idx < len(profile_order) - 1:
-            buf = random.uniform(BUFFER_MIN_MIN * 60, BUFFER_MAX_MIN * 60)
-            log.info("Buffer: %.1f min before next profile...", buf / 60)
+            if random.random() < BUFFER_LONG_PROB:
+                buf = random.uniform(BUFFER_LONG_MIN * 60, BUFFER_LONG_MAX * 60)
+                log.info("Extended buffer: %.1f min before next profile...", buf / 60)
+            else:
+                buf = random.uniform(BUFFER_MIN_MIN * 60, BUFFER_MAX_MIN * 60)
+                log.info("Buffer: %.1f min before next profile...", buf / 60)
             time.sleep(buf)
 
     log.info("=" * 60)
