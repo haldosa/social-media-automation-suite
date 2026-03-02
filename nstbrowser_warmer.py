@@ -525,6 +525,34 @@ _BEZIER_DISPATCH_JS = """
 })(arguments[0], arguments[1]);
 """
 
+def debug_cursor_state(driver, label: str = "") -> None:
+    """Log both the Python-tracked position and the overlay's actual DOM position.
+
+    Compares _cursor_pos (Python state) with the visual debug dot's style.left/top
+    to detect drift between the two cursor systems.
+    """
+    try:
+        dom_pos = driver.execute_script("""
+            var dot = document.getElementById('__cursor_debug_dot');
+            if (!dot) return {x: -1, y: -1, exists: false};
+            return {
+                x: parseInt(dot.style.left) || 0,
+                y: parseInt(dot.style.top)  || 0,
+                exists: true
+            };
+        """)
+        log.info("CURSOR SYNC CHECK [%s]  python=(%d,%d)  dom=(%d,%d)  overlay_exists=%s",
+                 label,
+                 _cursor_pos[0], _cursor_pos[1],
+                 dom_pos['x'], dom_pos['y'],
+                 dom_pos['exists'])
+        if dom_pos['exists']:
+            drift = math.hypot(dom_pos['x'] - _cursor_pos[0],
+                               dom_pos['y'] - _cursor_pos[1])
+            if drift > 15:
+                log.warning("CURSOR DRIFT  %.1fpx between Python state and overlay DOM", drift)
+    except Exception as e:
+        log.debug("debug_cursor_state failed: %s", e)
 
 def _fire_bezier_arc(
     driver,
@@ -593,11 +621,11 @@ def _fire_bezier_arc(
             max(0, min(int(_mid_y + _perp_y * lateral), int(vh))),
         )
     steps      = max(20, min(90, int(_arc_dist / 3.5)))  # ~3.5 px/step; clamp 20-90
-    step_ms    = random.uniform(14.0, 18.0)
+    step_ms    = random.uniform(12.0, 22.0)
     points     = []
     delays     = []
     prev       = (x0, y0)
-    dist_scale = max(0.15, min(_arc_dist / 500.0, 1.0))
+    dist_scale = max(0.30, min(_arc_dist / 500.0, 1.0))
     drift_x    = 0.0
     drift_y    = 0.0
     for i in range(1, steps + 1):
@@ -609,12 +637,21 @@ def _fire_bezier_arc(
             # Approach phase (t > 0.80) ramps up corrective wobble.
             velocity  = math.sin(math.pi * t_raw)
             approach  = max(0.0, (t_raw - 0.80) / 0.20) if t_raw > 0.80 else 0.0
-            tremor_sd = (0.8 * (1.0 - velocity * 0.55) + approach * 0.8) * dist_scale
+            # Bleed-out: linearly reduce tremor and drift over the last few
+            # steps so the arc quiets gracefully before the final snap,
+            # avoiding a hard velocity discontinuity at landing.
+            bleed_steps    = max(1, min(3, steps // 4))
+            steps_from_end = steps - i
+            bleed_factor   = (
+                steps_from_end / (bleed_steps + 1)
+                if steps_from_end <= bleed_steps else 1.0
+            )
+            tremor_sd = (1.2 * (1.0 - velocity * 0.55) + approach * 1.2) * dist_scale * bleed_factor
             nx = int(nx + random.gauss(0, tremor_sd))
             ny = int(ny + random.gauss(0, tremor_sd * 0.75))
             # Low-frequency drift: correlated wrist/arm oscillation.
-            drift_x = drift_x * 0.88 + random.gauss(0, 0.55 * dist_scale)
-            drift_y = drift_y * 0.88 + random.gauss(0, 0.40 * dist_scale)
+            drift_x = drift_x * 0.88 + random.gauss(0, 0.55 * dist_scale * bleed_factor)
+            drift_y = drift_y * 0.88 + random.gauss(0, 0.40 * dist_scale * bleed_factor)
             drift_cap = max(1.0, 4.0 * dist_scale)
             drift_x = max(-drift_cap, min(drift_x, drift_cap))
             drift_y = max(-drift_cap, min(drift_y, drift_cap))
@@ -626,7 +663,7 @@ def _fire_bezier_arc(
         points.append([nx, ny, dx, dy])
         prev = (nx, ny)
         vel  = math.sin(math.pi * t_raw)
-        d_ms = step_ms * (1.5 - vel * 0.7) + random.gauss(0, 0.9)
+        d_ms = step_ms * (1.5 - vel * 0.7) + random.gauss(0, 2.5)
         delays.append(max(8.0, d_ms))
     # Cumulative step-fire times for STEP log annotation.
     cum_ms     = 0.0
@@ -645,7 +682,6 @@ def _fire_bezier_arc(
     driver.execute_script(_BEZIER_DISPATCH_JS, points, delays)
     time.sleep(sum(d / 1000.0 for d in delays) + 0.05)
     return points, delays
-
 
 def init_cursor_pos(driver) -> None:
     """
@@ -666,37 +702,6 @@ def init_cursor_pos(driver) -> None:
         _set_cursor(x, y, "init")
     except WebDriverException as exc:
         log.debug("init_cursor_pos failed: %s", exc)
-
-
-def debug_cursor_state(driver, label: str = "") -> None:
-    """Log both the Python-tracked position and the overlay's actual DOM position.
-
-    Compares _cursor_pos (Python state) with the visual debug dot's style.left/top
-    to detect drift between the two cursor systems.
-    """
-    try:
-        dom_pos = driver.execute_script("""
-            var dot = document.getElementById('__cursor_debug_dot');
-            if (!dot) return {x: -1, y: -1, exists: false};
-            return {
-                x: parseInt(dot.style.left) || 0,
-                y: parseInt(dot.style.top)  || 0,
-                exists: true
-            };
-        """)
-        log.info("CURSOR SYNC CHECK [%s]  python=(%d,%d)  dom=(%d,%d)  overlay_exists=%s",
-                 label,
-                 _cursor_pos[0], _cursor_pos[1],
-                 dom_pos['x'], dom_pos['y'],
-                 dom_pos['exists'])
-        if dom_pos['exists']:
-            drift = math.hypot(dom_pos['x'] - _cursor_pos[0],
-                               dom_pos['y'] - _cursor_pos[1])
-            if drift > 15:
-                log.warning("CURSOR DRIFT  %.1fpx between Python state and overlay DOM", drift)
-    except Exception as e:
-        log.debug("debug_cursor_state failed: %s", e)
-
 
 def bezier_move(driver, target_element) -> None:
     """
@@ -862,12 +867,26 @@ def _navigate_and_settle(driver, action) -> None:
 
     # 2. Navigate
     action()
+    # Phase 1 — wait for the browser's resource-load signal.
     try:
         WebDriverWait(driver, 20).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
     except TimeoutException:
         pass
+    # Phase 2 — SPA content check: wait for a feed article or pressable
+    # container to appear.  readyState fires before React has rendered any
+    # feed cards, so without this the settle pause and idle-settle drift
+    # happen against a blank loading screen.
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda d: d.find_elements(
+                By.CSS_SELECTOR,
+                "article, div[data-pressable-container='true']",
+            )
+        )
+    except TimeoutException:
+        pass  # fall through — page may still be partially usable
 
     # 3. Overlay — inject after readyState complete, then verify it survives
     #    React's next reconcile pass (1 s later).
@@ -892,8 +911,9 @@ def _navigate_and_settle(driver, action) -> None:
     #    the new page sees, which avoids a detectable in-place jump on load.
     _set_cursor(park_x, 0, "fresh-page")
 
-    # 5. Settle
-    time.sleep(random.uniform(0.6, 1.4))
+    # 5. Settle — 1.5–3.5 s to mimic a real user visually orienting
+    #    after a full page navigation before moving the mouse.
+    time.sleep(random.uniform(1.5, 3.5))
 
     # 6. Drift into content — first synthetic event on the new page,
     #    starting from (park_x, 0) and moving naturally into the feed area.
@@ -1596,8 +1616,6 @@ def view_profile_from_feed(driver) -> bool:
 
 def follow_from_feed(driver) -> bool:
     """
-    DISABLED — hover-card follow action commented out.
-
     Follow a user directly from the feed via the hover-card that Threads
     renders when the cursor rests over a post-author username.
 
@@ -1610,10 +1628,6 @@ def follow_from_feed(driver) -> bool:
       5. Move the cursor back to a neutral mid-feed position so the hover
          card dismisses naturally and scrolling can continue.
     """
-    # NOTE: Disabled — return immediately without doing anything.
-    log.debug("follow_from_feed: disabled, skipping")
-    return False
-    # ── DISABLED BODY BELOW ───────────────────────────────────────────────────
     try:
         # ── 1. Collect visible, non-timestamp feed profile links ──────────────
         own_href = _get_own_profile_href(driver)
@@ -2282,6 +2296,7 @@ def run_social_session(
     w_profile: float = 0.06,
     w_read: float = 0.08,
     w_comment: float = 0.05,
+    w_follow: float = 0.03,
     w_top: float = 0.03,
     w_search: float = 0.06,
 ) -> None:
@@ -2303,8 +2318,8 @@ def run_social_session(
     active_prob = w_like if w_like is not None else max(0.20, min(0.45, random.gauss(0.22, 0.08)))
     log.info(
         "Session active probability this run: %.2f  (weights: notify=%.2f profile=%.2f "
-        "read=%.2f comment=%.2f top=%.2f search=%.2f)",
-        active_prob, w_notify, w_profile, w_read, w_comment, w_top, w_search,
+        "read=%.2f comment=%.2f follow=%.2f top=%.2f search=%.2f)",
+        active_prob, w_notify, w_profile, w_read, w_comment, w_follow, w_top, w_search,
     )
 
     # Precompute cumulative dispatch thresholds from individual weights.
@@ -2312,7 +2327,8 @@ def run_social_session(
     t_profile = t_notify   + w_profile
     t_read    = t_profile  + w_read
     t_comment = t_read     + w_comment
-    t_top     = t_comment  + w_top
+    t_follow  = t_comment  + w_follow
+    t_top     = t_follow   + w_top
     t_search  = t_top      + w_search
 
     while time.time() < deadline:
@@ -2340,10 +2356,9 @@ def run_social_session(
             elif roll < t_comment:
                 # comment weight (default ~5 %): leave a short comment on a feed post
                 comment_on_post(driver)
-            # follow_from_feed disabled — block commented out
-            # elif roll < t_comment_prev:
-            #     # ~3 % of iterations: quick-follow from feed (+) button
-            #     follow_from_feed(driver)
+            elif roll < t_follow:
+                # follow weight (default ~3 %): quick-follow from feed (+) button
+                follow_from_feed(driver)
             elif roll < t_top:
                 # top weight (default ~3 %): return to top via logo
                 return_to_top_action(driver)
@@ -2690,6 +2705,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Comment weight per iteration (default: 0.05).",
     )
     wg.add_argument(
+        "--follow",
+        metavar="WEIGHT",
+        type=float,
+        default=None,
+        help="Follow-from-feed weight per iteration (default: 0.03).",
+    )
+    wg.add_argument(
         "--scroll",
         metavar="WEIGHT",
         type=float,
@@ -2726,6 +2748,7 @@ def main() -> None:
     if args.profile   is not None: weights["w_profile"] = args.profile
     if args.read_post is not None: weights["w_read"]    = args.read_post
     if args.comment   is not None: weights["w_comment"] = args.comment
+    if args.follow    is not None: weights["w_follow"]  = args.follow
     if args.scroll    is not None: weights["w_top"]     = args.scroll
     if args.search    is not None: weights["w_search"]  = args.search
     if weights:
