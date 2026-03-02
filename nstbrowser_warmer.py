@@ -5,7 +5,7 @@ Target platform : threads.net
 API reference   : https://apidocs.nstbrowser.io/
 
 Requirements:
-    pip install selenium requests webdriver-manager
+    pip install selenium requests webdriver-manager pyautogui pyperclip
 
 Setup:
     1. Install & launch the NstBrowser desktop app.
@@ -24,11 +24,13 @@ import re
 import textwrap
 import argparse
 import requests
-from datetime import datetime
+import json
+from datetime import datetime, date
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.actions.action_builder import ActionBuilder
 from selenium.webdriver.common.actions.pointer_input import PointerInput
 from selenium.webdriver.common.actions import interaction
@@ -114,6 +116,31 @@ COMMENT_POOL = [
     "Yes!!",
 ]
 
+# ── Content posting ────────────────────────────────────────────────────────── #
+# Set MEDIA_POOL_DIR to a local folder of images to attach to new posts.
+# Leave as None to post text-only captions.
+MEDIA_POOL_DIR        = "media"                               # e.g. "media_pool"
+POST_MEDIA_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
+
+# Captions for original posts.  Add / remove entries freely.
+POST_CAPTION_POOL = [
+    "Little moments, big feelings.",
+    "Day well spent.",
+    "Grateful for today.",
+    "Just sharing what\u2019s on my mind.",
+    "Sometimes less really is more.",
+    "Finding beauty in the ordinary.",
+    "Small wins count too.",
+    "This made me smile \u2014 sharing it.",
+    "Quiet day, loud thoughts.",
+    "Not everything needs a caption, but here we are.",
+]
+
+# Path to the persistent posting-state JSON (per-profile daily counts + age).
+POST_STATE_FILE       = "post_state.json"
+# Hard minimum gap between consecutive posts per profile.
+POST_MIN_INTERVAL_SEC = 2 * 3600   # 2 hours
+
 SCREENSHOT_DIR      = "screenshots"
 LOG_FILE            = "nstbrowser_warmer.log"
 MOUSE_LOG_FILE      = "mouse_moves.log"  # dedicated cursor movement log
@@ -135,6 +162,19 @@ REPLY_BTN_CSS      = 'div[role="button"]:has(svg[aria-label="Reply"])'
 COMMENT_BOX_CSS    = 'div[contenteditable="true"][role="textbox"]'
 # Post button that submits the comment (XPath — scoped to role=button wrapping text “Post”)
 COMMENT_POST_XPATH = '//div[@role="button" and .//div[normalize-space(text())="Post"]]'
+# Hidden file-upload input inside the compose modal
+COMPOSE_FILE_INPUT_CSS = 'input[type="file"][accept]'
+# Compose / New-post button in the nav sidebar (aria-label="Create")
+COMPOSE_BTN_SELECTORS = [
+    ("css", 'div[role="button"]:has(svg[aria-label="Create"])'),
+    ("css", 'a[role="link"]:has(svg[aria-label="Create"])'),
+    ("css", 'div[role="button"][aria-label="Create"]'),
+    ("xpath", '//div[@role="button" and .//*[local-name()="svg"][@aria-label="Create"]]'),
+]
+# Compose modal textbox (new-post box, not the comment/reply box)
+COMPOSE_TEXTBOX_CSS = 'div[data-lexical-editor="true"][contenteditable="true"]'
+# "Attach media" button inside the compose modal
+COMPOSE_ATTACH_BTN_CSS = 'div[role="button"]:has(svg[aria-label="Attach media"])'
 # ─────────────────────────────────────────────────────────────────────────────#
 
 # ------------------------------------------------------------------ #
@@ -2288,6 +2328,372 @@ def comment_on_post(driver) -> bool:
         return False
 
 
+# ================================================================== #
+#  POSTING ENGINE
+# ================================================================== #
+# Creates original posts from POST_CAPTION_POOL with optional media from
+# MEDIA_POOL_DIR.  A persistent state file (POST_STATE_FILE) tracks per-
+# profile daily counts and account age to enforce a progressive ramp-up:
+#   Days  1– 5 : 0 posts/day  (account establishing credibility)
+#   Days  6–10 : 1 post/day
+#   Days 11–14 : 2 posts/day
+#   Day  15+   : 3 posts/day
+# A hard 2-hour minimum gap (POST_MIN_INTERVAL_SEC) between posts is
+# enforced on top of the daily quota.
+# ================================================================== #
+
+def _load_post_state() -> dict:
+    """Load per-profile posting state from POST_STATE_FILE (creates if absent)."""
+    if os.path.exists(POST_STATE_FILE):
+        try:
+            with open(POST_STATE_FILE, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("post_state load failed (%s) — starting fresh", exc)
+    return {}
+
+
+def _save_post_state(state: dict) -> None:
+    try:
+        with open(POST_STATE_FILE, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, indent=2)
+    except OSError as exc:
+        log.warning("post_state save failed: %s", exc)
+
+
+def _post_daily_quota(days_old: int) -> int:
+    """Max posts per day for an account days_old days old (0-indexed)."""
+    if days_old < 5:   return 0   # days 1–5:  no posts
+    if days_old < 10:  return 1   # days 6–10: 1/day
+    if days_old < 14:  return 2   # days 11–14: 2/day
+    return 3                       # day 15+: 3/day
+
+
+def _ensure_profile_in_state(profile_id: str, state: dict) -> None:
+    """Register profile's first-seen date if not already recorded."""
+    if profile_id and profile_id not in state:
+        today = date.today().isoformat()
+        state[profile_id] = {
+            "first_seen":   today,
+            "daily_counts": {},
+            "last_post_ts": 0.0,
+        }
+        _save_post_state(state)
+        log.info("[ POST ]  registered account start date: %s  (day 1 of ramp-up)", today)
+
+
+def _can_post_now(profile_id: str, state: dict) -> bool:
+    """Return True if this profile is allowed to post right now."""
+    if not profile_id or profile_id in ("manual", ""):
+        log.debug("_can_post_now: no meaningful profile_id — post suppressed")
+        return False
+
+    _ensure_profile_in_state(profile_id, state)
+    entry = state[profile_id]
+    today = date.today().isoformat()
+
+    # Hard 2-hour minimum between posts
+    elapsed = time.time() - entry.get("last_post_ts", 0.0)
+    if elapsed < POST_MIN_INTERVAL_SEC:
+        log.info(
+            "[ POST ]  skipping — %.0f min since last post (2-hour cooldown)",
+            elapsed / 60,
+        )
+        return False
+
+    # Account age ramp-up
+    days_old = (
+        date.fromisoformat(today) - date.fromisoformat(entry["first_seen"])
+    ).days
+    quota = _post_daily_quota(days_old)
+    if quota == 0:
+        log.info(
+            "[ POST ]  skipping — account age %d day(s), quota=0 during ramp-up",
+            days_old,
+        )
+        return False
+
+    # Daily cap
+    today_count = entry.get("daily_counts", {}).get(today, 0)
+    if today_count >= quota:
+        log.info(
+            "[ POST ]  skipping — daily quota %d reached (%d posted today)",
+            quota, today_count,
+        )
+        return False
+
+    return True
+
+
+def _record_post(profile_id: str, state: dict) -> None:
+    """Increment daily count and update last-post timestamp."""
+    today = date.today().isoformat()
+    _ensure_profile_in_state(profile_id, state)
+    state[profile_id]["last_post_ts"] = time.time()
+    daily = state[profile_id].setdefault("daily_counts", {})
+    daily[today] = daily.get(today, 0) + 1
+    _save_post_state(state)
+    log.info(
+        "[ POST ]  state updated  |  profile=%s  today=%d  first_seen=%s",
+        profile_id, daily[today], state[profile_id]["first_seen"],
+    )
+
+
+def create_post(driver, profile_id: str) -> bool:
+    """
+    Create an original Threads post with a caption from POST_CAPTION_POOL
+    and optionally an image from MEDIA_POOL_DIR.
+
+    Flow:
+      1.  Guard — _can_post_now() checks quota + 2-hour cooldown.
+      2.  Pick a random caption and (if MEDIA_POOL_DIR is set) a random image.
+      3.  Find the compose / New post button in the nav sidebar.
+      4.  Bezier-arc to the button and click to open the compose modal.
+      5.  Attach image via the hidden <input type="file"> if a path was picked.
+      6.  Bezier-arc to the textbox and type the caption with human_type().
+      7.  Re-read pause (1.5–4 s) — mimics proof-reading before posting.
+      8.  Find the Post button in the modal and click it.
+      9.  Wait for the modal to dismiss, then call _record_post().
+
+    Selector notes:
+      COMPOSE_BTN — tried in priority order; first visible match wins.
+      File input   — made temporarily visible via JS so send_keys works on
+                     the hidden <input type="file"> without a click chain.
+      Post button  — reuses COMMENT_POST_XPATH (same "Post" text node).
+    """
+    state = _load_post_state()
+    if not _can_post_now(profile_id, state):
+        return False
+
+    if not POST_CAPTION_POOL:
+        log.warning("create_post: POST_CAPTION_POOL is empty — cannot post")
+        return False
+
+    # Pick media
+    image_path = None
+    if MEDIA_POOL_DIR and os.path.isdir(MEDIA_POOL_DIR):
+        images = [
+            os.path.abspath(os.path.join(MEDIA_POOL_DIR, f))
+            for f in os.listdir(MEDIA_POOL_DIR)
+            if os.path.splitext(f)[1].lower() in POST_MEDIA_EXTENSIONS
+        ]
+        if images:
+            image_path = random.choice(images)
+
+    caption = random.choice(POST_CAPTION_POOL)
+    log.info(
+        "[ POST ]  composing  |  caption=%r  |  media=%s",
+        caption,
+        os.path.basename(image_path) if image_path else "none",
+    )
+
+    try:
+        # 1. Ensure we're on the Threads feed (compose button lives in the nav)
+        url = driver.current_url or ""
+        if "threads.net" not in url and "threads.com" not in url:
+            navigate_to(driver, TARGET_SOCIAL_URL)
+
+        # 2. Find the compose / New post button (multiple selector fallbacks)
+        compose_btn = None
+        for kind, sel in COMPOSE_BTN_SELECTORS:
+            by = By.CSS_SELECTOR if kind == "css" else By.XPATH
+            visible = [el for el in driver.find_elements(by, sel) if el.is_displayed()]
+            if visible:
+                compose_btn = visible[0]
+                break
+
+        if not compose_btn:
+            log.debug("create_post: compose button not found — aborting")
+            return False
+
+        scroll_element_into_loose_view(driver, compose_btn)
+        bezier_move(driver, compose_btn)
+        time.sleep(random.uniform(0.4, 0.9))
+        try:
+            ActionChains(driver).click().perform()
+        except WebDriverException:
+            driver.execute_script("arguments[0].click();", compose_btn)
+
+        # 3. Wait for the compose modal's contenteditable text area.
+        #    Use the compose-specific selector (data-lexical-editor + aria-placeholder)
+        #    so we never accidentally match a reply/comment box still in the DOM.
+        try:
+            text_box = WebDriverWait(driver, 10).until(
+                lambda d: next(
+                    (
+                        el for el in d.find_elements(By.CSS_SELECTOR, COMPOSE_TEXTBOX_CSS)
+                        if el.is_displayed()
+                    ),
+                    None,
+                )
+            )
+            if not text_box:
+                raise TimeoutException("compose textbox not visible")
+        except TimeoutException:
+            log.debug("create_post: compose modal textarea did not appear")
+            driver.execute_script(
+                "document.dispatchEvent(new KeyboardEvent('keydown',"
+                "{key:'Escape',keyCode:27,bubbles:true}));"
+            )
+            return False
+
+        # Brief settle — SPA modal animation
+        time.sleep(random.uniform(0.6, 1.2))
+
+        # 4. Attach image — click the Attach-media button (opens OS file dialog),
+        #    simulate human file-locate time, then dismiss the dialog by pasting
+        #    the absolute path into the filename field via pyautogui + pyperclip.
+        #    Falls back to the hidden-input send_keys trick if either library is absent.
+        if image_path:
+            try:
+                attach_btns = [
+                    el for el in driver.find_elements(
+                        By.CSS_SELECTOR, COMPOSE_ATTACH_BTN_CSS
+                    )
+                    if el.is_displayed()
+                ]
+                if not attach_btns:
+                    raise WebDriverException("Attach media button not found")
+
+                bezier_move(driver, attach_btns[0])
+                time.sleep(random.uniform(0.3, 0.6))
+
+                # Click → OS file dialog opens
+                try:
+                    ActionChains(driver).click().perform()
+                except WebDriverException:
+                    driver.execute_script("arguments[0].click();", attach_btns[0])
+
+                try:
+                    import pyautogui as _pag
+                    import pyperclip as _ppc
+
+                    # ── Simulate locating the file in the file manager ──────────
+                    # Dialog is open; human browses folders, scrolls, finds file.
+                    # Truncated-normal centred at 5 s, clamped to [3, 9] s.
+                    _locate_delay = max(3.0, min(9.0, random.gauss(5.0, 1.5)))
+                    log.debug("create_post: OS dialog open — file-locate pause %.1fs", _locate_delay)
+                    time.sleep(_locate_delay)
+
+                    # ── Type path via clipboard paste → Enter ────────────────────
+                    # Copy the absolute path to the system clipboard so we don't
+                    # have to deal with backslashes / special chars char-by-char.
+                    _ppc.copy(os.path.abspath(image_path))
+                    time.sleep(random.uniform(0.10, 0.25))   # clipboard settle
+                    _pag.hotkey("ctrl", "a")                  # select existing text in field
+                    time.sleep(random.uniform(0.06, 0.14))
+                    _pag.hotkey("ctrl", "v")                  # paste absolute path
+                    time.sleep(random.uniform(0.15, 0.35))
+                    _pag.press("enter")                       # confirm → dialog closes
+                    log.info("[ POST ]  media attached via OS dialog: %s",
+                             os.path.basename(image_path))
+                    # Allow SPA to receive the file-change event and start upload
+                    time.sleep(random.uniform(1.5, 2.5))
+
+                except ImportError:
+                    # ── Fallback: inject path into hidden <input type="file"> ────
+                    log.debug("create_post: pyautogui/pyperclip missing — hidden-input fallback"
+                              " (pip install pyautogui pyperclip to enable OS-dialog path)")
+                    # Brief wait for the SPA to create / unhide the input
+                    time.sleep(random.uniform(0.4, 0.8))
+                    file_inputs = driver.find_elements(By.CSS_SELECTOR, COMPOSE_FILE_INPUT_CSS)
+                    if file_inputs:
+                        fi = file_inputs[0]
+                        driver.execute_script(
+                            "arguments[0].style.display    = 'block';"
+                            "arguments[0].style.visibility = 'visible';"
+                            "arguments[0].style.opacity    = '1';",
+                            fi,
+                        )
+                        fi.send_keys(image_path)
+                        log.info("[ POST ]  media attached (fallback): %s",
+                                 os.path.basename(image_path))
+                    else:
+                        log.debug("create_post: no file input found — text-only")
+                        image_path = None
+
+                # Wait for upload thumbnail / preview to render
+                if image_path:
+                    time.sleep(random.uniform(2.0, 4.0))
+
+            except WebDriverException as exc:
+                log.debug("create_post: media attach failed (%s) — text-only fallback", exc)
+                image_path = None
+
+        # 5. Type caption
+        bezier_move(driver, text_box)
+        time.sleep(random.uniform(0.3, 0.7))
+        human_type(text_box, caption)
+
+        # 6. Re-read pause — mimics proof-reading before hitting Post
+        reread_s = random.uniform(1.5, 4.0)
+        log.info("[ POST ]  re-reading before submit (%.1fs)…", reread_s)
+        time.sleep(reread_s)
+
+        # 7. Find the Post button in the modal (reuses COMMENT_POST_XPATH)
+        post_btn = None
+        try:
+            post_btn = WebDriverWait(driver, 8).until(
+                lambda d: next(
+                    (
+                        el
+                        for el in d.find_elements(By.XPATH, COMMENT_POST_XPATH)
+                        if el.is_displayed() and el.is_enabled()
+                    ),
+                    None,
+                )
+            )
+        except TimeoutException:
+            pass
+
+        if not post_btn:
+            log.debug("create_post: Post button not found in modal")
+            driver.execute_script(
+                "document.dispatchEvent(new KeyboardEvent('keydown',"
+                "{key:'Escape',keyCode:27,bubbles:true}));"
+            )
+            return False
+
+        scroll_element_into_loose_view(driver, post_btn)
+        bezier_move(driver, post_btn)
+        time.sleep(random.uniform(0.4, 0.9))
+        try:
+            ActionChains(driver).click().perform()
+        except WebDriverException:
+            driver.execute_script("arguments[0].click();", post_btn)
+        debug_cursor_state(driver, "post-submit-click")
+
+        # 8. Wait for modal to close (compose textbox disappears on success)
+        try:
+            WebDriverWait(driver, 12).until(
+                lambda d: not d.find_elements(By.CSS_SELECTOR, COMPOSE_TEXTBOX_CSS)
+            )
+        except TimeoutException:
+            pass
+        time.sleep(random.uniform(1.5, 3.0))
+
+        _record_post(profile_id, state)
+        log.info("[ POST ]  new post published successfully")
+        return True
+
+    except (NoSuchElementException, TimeoutException, WebDriverException) as exc:
+        log.debug("create_post failed: %s", exc)
+        try:
+            driver.execute_script(
+                "document.dispatchEvent(new KeyboardEvent('keydown',"
+                "{key:'Escape',keyCode:27,bubbles:true}));"
+            )
+        except Exception:
+            pass
+        return False
+
+
+def post_action(driver, profile_id: str) -> None:
+    """Session-loop dispatch wrapper for create_post."""
+    log.info("[ POST ACTION ]  creating a new post")
+    create_post(driver, profile_id)
+
+
 def run_social_session(
     driver,
     session_seconds: float,
@@ -2299,6 +2705,8 @@ def run_social_session(
     w_follow: float = 0.03,
     w_top: float = 0.03,
     w_search: float = 0.06,
+    w_post: float = 0.02,
+    profile_id: str = "",
 ) -> None:
     """
     Session loop with:
@@ -2318,8 +2726,8 @@ def run_social_session(
     active_prob = w_like if w_like is not None else max(0.20, min(0.45, random.gauss(0.22, 0.08)))
     log.info(
         "Session active probability this run: %.2f  (weights: notify=%.2f profile=%.2f "
-        "read=%.2f comment=%.2f follow=%.2f top=%.2f search=%.2f)",
-        active_prob, w_notify, w_profile, w_read, w_comment, w_follow, w_top, w_search,
+        "read=%.2f comment=%.2f follow=%.2f top=%.2f search=%.2f post=%.2f)",
+        active_prob, w_notify, w_profile, w_read, w_comment, w_follow, w_top, w_search, w_post,
     )
 
     # Precompute cumulative dispatch thresholds from individual weights.
@@ -2330,6 +2738,7 @@ def run_social_session(
     t_follow  = t_comment  + w_follow
     t_top     = t_follow   + w_top
     t_search  = t_top      + w_search
+    t_post    = t_search   + w_post
 
     while time.time() < deadline:
         time_left = deadline - time.time()
@@ -2365,6 +2774,9 @@ def run_social_session(
             elif roll < t_search:
                 # search weight (default ~6 %): open search page, dwell, return home
                 visit_search_action(driver)
+            elif roll < t_post:
+                # post weight (default ~2 %): create a new original post
+                post_action(driver, profile_id)
             else:
                 passive_action(driver)
 
@@ -2416,7 +2828,7 @@ def warm_profile(profile_id: str, weights: dict | None = None) -> None:
         else:
             session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
             log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
-        run_social_session(driver, session_sec, **(weights or {}))
+        run_social_session(driver, session_sec, profile_id=profile_id, **(weights or {}))
 
     except (TimeoutException, RuntimeError, WebDriverException) as exc:
         log.error("Error on profile %s: %s", profile_id, exc)
@@ -2503,7 +2915,7 @@ def warm_profile_attached(
         else:
             session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
             log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
-        run_social_session(driver, session_sec, **(weights or {}))
+        run_social_session(driver, session_sec, profile_id=profile_id, **(weights or {}))
 
     except (TimeoutException, RuntimeError, WebDriverException) as exc:
         log.error("Error on attached profile '%s': %s", profile_id, exc)
@@ -2725,6 +3137,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Search-page visit weight per iteration (default: 0.06).",
     )
+    wg.add_argument(
+        "--post",
+        metavar="WEIGHT",
+        type=float,
+        default=None,
+        help=(
+            "New-post creation weight per iteration (default: 0.02). "
+            "Subject to daily quota ramp-up and 2-hour cooldown regardless of weight."
+        ),
+    )
 
     return p
 
@@ -2751,6 +3173,7 @@ def main() -> None:
     if args.follow    is not None: weights["w_follow"]  = args.follow
     if args.scroll    is not None: weights["w_top"]     = args.scroll
     if args.search    is not None: weights["w_search"]  = args.search
+    if args.post      is not None: weights["w_post"]    = args.post
     if weights:
         log.info("Custom action weights: %s", weights)
 
