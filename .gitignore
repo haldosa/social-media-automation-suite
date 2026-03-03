@@ -1,4 +1,5 @@
-./mouse_moves.log
-./nstbrowser_warmer.log
-*.log
-*.log.*
+mouse_moves.log
+nstbrowser_warmer.log
+post_state.json
+__pycache__/nstbrowser_warmer.cpython-311.pyc
+media/VirtualBox_Kali Linux_18_02_2026_23_14_11.png
