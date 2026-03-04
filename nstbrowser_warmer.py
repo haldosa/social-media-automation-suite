@@ -201,6 +201,34 @@ COMPOSE_BTN_SELECTORS = [
 COMPOSE_TEXTBOX_CSS = 'div[data-lexical-editor="true"][contenteditable="true"]'
 # "Attach media" button inside the compose modal
 COMPOSE_ATTACH_BTN_CSS = 'div[role="button"]:has(svg[aria-label="Attach media"])'
+
+# ── Multi-signal element resolution ────────────────────────────────────────── #
+# Instead of relying solely on aria-label selectors (which Meta A/B tests,
+# localizes, and rotates), element identification uses a composite scoring
+# system that evaluates multiple independent signals:
+#   1. Structural position within the post component
+#   2. SVG path geometry (heart shape fingerprint)
+#   3. Fill state (transparent vs currentColor)
+#   4. Sibling context (action bar grouping)
+#   5. ARIA labels as a LOW-WEIGHT fallback signal
+# When the top candidate scores below ELEMENT_CONFIDENCE_THRESHOLD the action
+# is skipped entirely and the failure is logged for offline selector review.
+ELEMENT_CONFIDENCE_THRESHOLD = 0.45
+
+# Known aria-label values across locales — LOW-WEIGHT signal only.
+_KNOWN_LIKE_LABELS = frozenset({
+    "like", "love", "heart", "me gusta", "j'aime", "gefällt mir",
+    "いいね", "curtir", "좋아요", "赞", "mi piace", "thích",
+})
+_KNOWN_UNLIKE_LABELS = frozenset({
+    "unlike", "unlove", "no me gusta", "je n'aime plus",
+    "gefällt mir nicht mehr", "いいね取消", "descurtir",
+    "좋아요 취소", "取消赞", "non mi piace più",
+})
+_KNOWN_REPLY_LABELS = frozenset({
+    "reply", "comment", "respond", "responder", "répondre",
+    "antworten", "返信", "comentar", "댓글", "评论", "rispondi",
+})
 # ─────────────────────────────────────────────────────────────────────────────#
 
 # ------------------------------------------------------------------ #
@@ -1686,95 +1714,273 @@ def run_preflight(driver) -> None:
 
 
 # ================================================================== #
-#  THREADS LIKE ENGINE
+#  MULTI-SIGNAL LIKE ENGINE
 # ================================================================== #
 #
-# From inspecting the live Threads DOM, the like button structure is:
+# Element identification uses composite scoring across multiple signals
+# instead of relying solely on fragile aria-label selectors:
+#   1. Structural position in the action bar (like = 1st button)
+#   2. SVG path geometry (heart = many Bezier curves, ~square viewBox)
+#   3. Fill state (transparent = un-liked, currentColor = liked)
+#   4. Sibling context (3-5 icon-button siblings = action bar)
+#   5. ARIA labels (low-weight fallback covering known locales)
 #
-#   div.x4vbgl9  (action bar container)
-#     div[role="button"].x165d6jo  (like wrapper — x165d6jo is unique to like)
-#       div > div
-#         svg[aria-label="Like"]   style="--x-fill: transparent"   (un-liked)
-#         svg[aria-label="Unlike"] style="--x-fill: currentColor"  (liked)
-#
-# Strategy — try in order, stop at first that returns results:
-#   1. JS-based search (most reliable — reads live DOM, no stale refs)
-#   2. XPath on the wrapper div containing the Like SVG
-#   3. CSS :has() on the wrapper div
+# Self-healing: when no candidate passes ELEMENT_CONFIDENCE_THRESHOLD
+# a DOM snapshot is logged for offline selector maintenance.  Legacy
+# XPath/CSS selectors serve as a fallback during transitions.
 # ================================================================== #
 
-# JavaScript that finds all un-liked like buttons currently in the viewport.
-# Returns the clickable wrapper div[role="button"], not the SVG itself,
-# so Selenium's .click() lands on the correct interactive element.
-_JS_FIND_LIKE_BTNS = """
-(function() {
-    var vp   = window.innerHeight;
-    var svgs = document.querySelectorAll('svg[aria-label="Like"]');
-    var seen = new Set();
-    var count = 0;
-    for (var i = 0; i < svgs.length; i++) {
-        var btn = svgs[i].closest('div[role="button"]');
-        if (!btn || seen.has(btn)) continue;
-        seen.add(btn);
-        var r = btn.getBoundingClientRect();
-        var label = (btn.getAttribute('aria-label') || '').toLowerCase();
-        if (label === 'unlike') continue;
-        // Count buttons plausibly on-screen (generous tolerance)
-        if (r.height > 0 && r.top > -100 && r.top < vp + 100) count++;
+# JavaScript: multi-signal like-button scorer.
+# Returns [[WebElement, score, positionIdx, siblingCount, ariaLabel], ...].
+# Selenium deserialises returned DOM nodes as WebElements.
+_JS_MULTI_SIGNAL_LIKE = r"""
+(function(threshold) {
+    var vp = window.innerHeight;
+    var results = [];
+    var posts = document.querySelectorAll(
+        'article, [data-pressable-container="true"]'
+    );
+
+    for (var p = 0; p < posts.length; p++) {
+        var post = posts[p];
+        var pr   = post.getBoundingClientRect();
+        if (pr.bottom < -100 || pr.top > vp + 100 || pr.height === 0) continue;
+
+        /* -- Find the action bar structurally --
+           The action bar is a container whose direct children include
+           3-6 role="button" elements each wrapping an SVG icon.
+           We pick the one lowest (largest relative-Y) in the post. */
+        var allDivs  = post.querySelectorAll('div');
+        var barBtns  = [];
+        var bestRelY = -Infinity;
+
+        for (var d = 0; d < allDivs.length; d++) {
+            var ctr  = allDivs[d];
+            var btns = [];
+            for (var c = 0; c < ctr.children.length; c++) {
+                var ch  = ctr.children[c];
+                var rb  = (ch.getAttribute && ch.getAttribute('role') === 'button')
+                          ? ch
+                          : (ch.querySelector ? ch.querySelector('[role="button"]') : null);
+                if (rb && rb.querySelector('svg')) btns.push(rb);
+            }
+            if (btns.length < 3 || btns.length > 6) continue;
+            var cr   = ctr.getBoundingClientRect();
+            var relY = cr.top - pr.top;
+            if (relY > bestRelY) { bestRelY = relY; barBtns = btns; }
+        }
+        if (!barBtns.length) continue;
+
+        /* -- Score each button in the action bar -- */
+        for (var i = 0; i < barBtns.length; i++) {
+            var btn = barBtns[i];
+            var svg = btn.querySelector('svg');
+            if (!svg) continue;
+            var br = btn.getBoundingClientRect();
+            if (br.height === 0 || br.width === 0) continue;
+
+            var s = 0.0;
+
+            /* Signal 1 - Position: like is almost always first */
+            if      (i === 0) s += 0.25;
+            else if (i === 1) s += 0.08;
+            else              s -= 0.15;
+
+            /* Signal 2 - SVG path geometry: heart = many Bezier curves */
+            var paths = svg.querySelectorAll('path');
+            for (var pp = 0; pp < paths.length; pp++) {
+                var dd     = paths[pp].getAttribute('d') || '';
+                var curves = (dd.match(/[CcQqSsAa]/g) || []).length;
+                if (curves >= 4) { s += 0.15; break; }
+            }
+
+            /* Signal 3 - ViewBox aspect ratio: hearts are roughly square */
+            var vb = (svg.getAttribute('viewBox') || '').split(/[\s,]+/);
+            if (vb.length === 4) {
+                var rat = parseFloat(vb[2]) / Math.max(1, parseFloat(vb[3]));
+                if (rat > 0.8 && rat < 1.3) s += 0.10;
+            }
+
+            /* Signal 4 - Fill state: transparent = NOT yet liked */
+            var sty  = svg.getAttribute('style') || '';
+            var fill = svg.getAttribute('fill')  || '';
+            var isTransparent = (sty.indexOf('transparent') > -1 ||
+                                 fill === 'transparent' || fill === 'none');
+            var isFilled      = (sty.indexOf('currentColor') > -1 ||
+                                 fill === 'currentColor');
+            if (isTransparent) s += 0.15;
+            if (isFilled)      s -= 0.50;
+
+            /* Signal 5 - ARIA label (low weight fallback) */
+            var lbl = (svg.getAttribute('aria-label') ||
+                       btn.getAttribute('aria-label') || '').toLowerCase();
+            var likeL   = ['like','love','heart','me gusta',"j'aime",
+                           'curtir','gefällt mir','\u3044\u3044\u306d','\uC88B\uC544\uC694',
+                           '\u8D5E','mi piace','thích'];
+            var unlikeL = ['unlike','unlove','no me gusta','descurtir',
+                           "je n'aime plus",'\u3044\u3044\u306d\u53d6\u6d88',
+                           '\uC88B\uC544\uC694 \uCDE8\uC18C','\u53d6\u6d88\u8d5e'];
+            for (var kl = 0; kl < likeL.length;   kl++) {
+                if (lbl === likeL[kl])   { s += 0.12; break; }
+            }
+            for (var ku = 0; ku < unlikeL.length; ku++) {
+                if (lbl === unlikeL[ku]) { s -= 0.60; break; }
+            }
+
+            /* Signal 6 - aria-pressed */
+            if (btn.getAttribute('aria-pressed') === 'true') s -= 0.40;
+
+            /* Signal 7 - Sibling context: 3-5 icon-button siblings */
+            if (barBtns.length >= 3 && barBtns.length <= 5) s += 0.08;
+
+            if (s >= threshold) {
+                results.push([btn, s, i, barBtns.length, lbl || '']);
+            }
+        }
     }
-    // Return count only — DOM node serialisation via CDP is unreliable in
-    // Orbita and yields empty arrays despite real results.
-    return count;
-})();
+
+    results.sort(function(a, b) { return b[1] - a[1]; });
+    return results;
+})(arguments[0]);
 """
 
-# XPath fallback: wrapper div containing an un-liked Like SVG
-_LIKE_XPATH_FALLBACK = [
-    "//div[@role='button'][.//*[local-name()='svg'][@aria-label='Like']]",
-]
+# JavaScript: multi-signal reply-button scorer.
+# Reply is typically the 2nd button in the action bar; its SVG has a
+# speech-bubble shape (mix of curves and lines, moderate total commands).
+_JS_MULTI_SIGNAL_REPLY = r"""
+(function(threshold) {
+    var vp = window.innerHeight;
+    var results = [];
+    var posts = document.querySelectorAll(
+        'article, [data-pressable-container="true"]'
+    );
 
-# CSS fallback: :has() — Chromium 105+ supports this
-_LIKE_CSS_FALLBACK = [
-    "div[role='button']:has(svg[aria-label='Like'])",
-]
+    for (var p = 0; p < posts.length; p++) {
+        var post = posts[p];
+        var pr   = post.getBoundingClientRect();
+        if (pr.bottom < -100 || pr.top > vp + 100 || pr.height === 0) continue;
+
+        var allDivs  = post.querySelectorAll('div');
+        var barBtns  = [];
+        var bestRelY = -Infinity;
+
+        for (var d = 0; d < allDivs.length; d++) {
+            var ctr  = allDivs[d];
+            var btns = [];
+            for (var c = 0; c < ctr.children.length; c++) {
+                var ch  = ctr.children[c];
+                var rb  = (ch.getAttribute && ch.getAttribute('role') === 'button')
+                          ? ch
+                          : (ch.querySelector ? ch.querySelector('[role="button"]') : null);
+                if (rb && rb.querySelector('svg')) btns.push(rb);
+            }
+            if (btns.length < 3 || btns.length > 6) continue;
+            var cr   = ctr.getBoundingClientRect();
+            var relY = cr.top - pr.top;
+            if (relY > bestRelY) { bestRelY = relY; barBtns = btns; }
+        }
+        if (!barBtns.length) continue;
+
+        for (var i = 0; i < barBtns.length; i++) {
+            var btn = barBtns[i];
+            var svg = btn.querySelector('svg');
+            if (!svg) continue;
+            var br = btn.getBoundingClientRect();
+            if (br.height === 0) continue;
+
+            var s = 0.0;
+
+            /* Position: reply is typically second (index 1) */
+            if      (i === 1) s += 0.30;
+            else if (i === 0) s -= 0.10;
+            else if (i === 2) s += 0.05;
+            else              s -= 0.15;
+
+            /* SVG geometry: speech bubbles have moderate curve+line mix */
+            var paths = svg.querySelectorAll('path');
+            for (var pp = 0; pp < paths.length; pp++) {
+                var dd     = paths[pp].getAttribute('d') || '';
+                var curves = (dd.match(/[CcQqSsAa]/g) || []).length;
+                var lines  = (dd.match(/[LlHhVv]/g) || []).length;
+                if (curves >= 2 && curves <= 8 && (curves + lines) >= 3) {
+                    s += 0.15; break;
+                }
+            }
+
+            /* ViewBox aspect: speech bubbles are often roughly square-ish */
+            var vb = (svg.getAttribute('viewBox') || '').split(/[\s,]+/);
+            if (vb.length === 4) {
+                var rat = parseFloat(vb[2]) / Math.max(1, parseFloat(vb[3]));
+                if (rat > 0.85 && rat < 1.4) s += 0.08;
+            }
+
+            /* ARIA label (low weight) */
+            var lbl = (svg.getAttribute('aria-label') ||
+                       btn.getAttribute('aria-label') || '').toLowerCase();
+            var replyL = ['reply','comment','respond','responder','répondre',
+                          'antworten','\u8FD4\u4FE1','comentar','\uB313\uAE00',
+                          '\u8BC4\u8BBA','rispondi'];
+            for (var k = 0; k < replyL.length; k++) {
+                if (lbl === replyL[k]) { s += 0.15; break; }
+            }
+
+            /* Sibling context */
+            if (barBtns.length >= 3 && barBtns.length <= 5) s += 0.08;
+
+            if (s >= threshold) results.push([btn, s, i]);
+        }
+    }
+
+    results.sort(function(a, b) { return b[1] - a[1]; });
+    return results;
+})(arguments[0]);
+"""
 
 
-def _is_already_liked(el) -> bool:
-    """Return True if this element represents an already-liked post."""
+def _log_selector_failure(driver, element_type: str) -> None:
+    """Log a DOM snapshot for offline selector maintenance when scoring fails."""
     try:
-        label = (el.get_attribute("aria-label") or "").lower()
-        if label == "unlike":
-            return True
-        if el.get_attribute("aria-pressed") == "true":
-            return True
-    except WebDriverException:
-        pass
-    return False
+        snapshot = driver.execute_script("""
+            var posts = document.querySelectorAll(
+                'article, [data-pressable-container="true"]'
+            );
+            var out = [];
+            for (var i = 0; i < Math.min(posts.length, 3); i++) {
+                var p = posts[i];
+                var btns = p.querySelectorAll('div[role="button"]');
+                var info = [];
+                for (var b = 0; b < Math.min(btns.length, 8); b++) {
+                    var svg = btns[b].querySelector('svg');
+                    info.push({
+                        aria: btns[b].getAttribute('aria-label') || '',
+                        svg_aria: svg ? (svg.getAttribute('aria-label') || '') : '',
+                        pressed: btns[b].getAttribute('aria-pressed') || '',
+                        visible: btns[b].offsetParent !== null,
+                    });
+                }
+                out.push({ btn_count: info.length, buttons: info });
+            }
+            return out;
+        """)
+        log.warning(
+            "[SELF-HEAL]  element=%s  score_failure  dom_snapshot=%s",
+            element_type, json.dumps(snapshot)[:500],
+        )
+    except Exception:
+        log.warning(
+            "[SELF-HEAL]  element=%s  score_failure  snapshot_unavailable",
+            element_type,
+        )
 
 
-def _find_unliked_buttons(driver) -> list:
-    """
-    Return all clickable like-button wrapper divs that are visible in the
-    current viewport and have NOT been liked yet.
-
-    XPath via find_elements is the primary strategy — it uses a proper CDP
-    DOM query and reliably returns WebElements.  The JS path only returns a
-    count (DOM node serialisation through Orbita's CDP is unreliable and
-    yields empty arrays).  CSS :has() is the fallback.
-    """
+def _find_unliked_buttons_fallback(driver) -> list:
+    """Legacy XPath/CSS fallback for like buttons — used when JS scoring fails."""
     results = []
     viewport_h = driver.execute_script("return window.innerHeight")
 
-    # Diagnostic only — JS count lets us see if SVGs exist at all.
-    try:
-        js_count = driver.execute_script(_JS_FIND_LIKE_BTNS)
-        if js_count is not None:
-            log.debug("JS like-btn diagnostic count: %s", js_count)
-    except Exception as e:
-        log.debug("JS like-btn diagnostic failed: %s", e)
-
-    # 1. XPath — primary strategy (proven reliable with Orbita CDP)
-    for xp in _LIKE_XPATH_FALLBACK:
+    for xp in [
+        "//div[@role='button'][.//*[local-name()='svg'][@aria-label='Like']]",
+    ]:
         try:
             for el in driver.find_elements(By.XPATH, xp):
                 try:
@@ -1782,19 +1988,21 @@ def _find_unliked_buttons(driver) -> list:
                         "var r=arguments[0].getBoundingClientRect();"
                         "return {top:r.top,height:r.height};", el)
                     if r["height"] > 0 and -50 <= r["top"] <= viewport_h + 50:
-                        if el.is_displayed() and not _is_already_liked(el):
-                            results.append(el)
+                        if el.is_displayed():
+                            pressed = el.get_attribute("aria-pressed")
+                            label   = (el.get_attribute("aria-label") or "").lower()
+                            if pressed != "true" and label not in _KNOWN_UNLIKE_LABELS:
+                                results.append(el)
                 except Exception:
                     continue
         except (NoSuchElementException, WebDriverException):
             continue
         if results:
-            log.info("XPath: %d unliked like button(s) in viewport", len(results))
+            log.info("[FALLBACK]  XPath: %d unliked like button(s)", len(results))
             break
 
-    # 2. CSS :has() fallback
     if not results:
-        for sel in _LIKE_CSS_FALLBACK:
+        for sel in ["div[role='button']:has(svg[aria-label='Like'])"]:
             try:
                 for el in driver.find_elements(By.CSS_SELECTOR, sel):
                     try:
@@ -1802,19 +2010,129 @@ def _find_unliked_buttons(driver) -> list:
                             "var r=arguments[0].getBoundingClientRect();"
                             "return {top:r.top,height:r.height};", el)
                         if r["height"] > 0 and -50 <= r["top"] <= viewport_h + 50:
-                            if el.is_displayed() and not _is_already_liked(el):
-                                results.append(el)
+                            if el.is_displayed():
+                                pressed = el.get_attribute("aria-pressed")
+                                label   = (el.get_attribute("aria-label") or "").lower()
+                                if pressed != "true" and label not in _KNOWN_UNLIKE_LABELS:
+                                    results.append(el)
                     except Exception:
                         continue
             except (NoSuchElementException, WebDriverException):
                 continue
             if results:
-                log.info("CSS: %d unliked like button(s) in viewport", len(results))
+                log.info("[FALLBACK]  CSS: %d unliked like button(s)", len(results))
                 break
 
     if not results:
-        log.info("No likeable posts visible in viewport right now")
+        log.info("No likeable posts visible in viewport (fallback)")
+    return results
 
+
+def _find_unliked_buttons(driver) -> list:
+    """
+    Return all clickable like-button wrapper divs that are visible in the
+    current viewport and have NOT been liked yet.
+
+    Uses multi-signal composite scoring:
+      1. Structural position in the action bar
+      2. SVG path geometry (heart fingerprint)
+      3. Fill state (transparent = un-liked)
+      4. Sibling context (3-5 icon buttons)
+      5. ARIA labels (low-weight fallback)
+
+    Elements scoring below ELEMENT_CONFIDENCE_THRESHOLD are discarded.
+    Falls back to legacy XPath/CSS selectors if JS scoring fails.
+    """
+    results = []
+    try:
+        raw = driver.execute_script(
+            _JS_MULTI_SIGNAL_LIKE, ELEMENT_CONFIDENCE_THRESHOLD
+        )
+
+        if not raw:
+            log.info("[MULTI-SIGNAL]  no like-button candidates found in viewport")
+            _log_selector_failure(driver, "like")
+            # Try legacy fallback
+            return _find_unliked_buttons_fallback(driver)
+
+        for item in raw:
+            el    = item[0]
+            score = item[1]
+            pos   = item[2]
+            sibs  = item[3]
+            label = item[4] if len(item) > 4 else ""
+            try:
+                if not el.is_displayed():
+                    continue
+                results.append(el)
+                log.debug(
+                    "[MULTI-SIGNAL]  like candidate  score=%.2f  pos=%d/%d  aria=%r",
+                    score, pos, sibs, label,
+                )
+            except Exception:
+                continue
+
+        if results:
+            log.info(
+                "[MULTI-SIGNAL]  %d unliked like button(s) found (best_score=%.2f)",
+                len(results), raw[0][1] if raw else 0,
+            )
+        else:
+            log.info("[MULTI-SIGNAL]  candidates found but none displayed")
+            _log_selector_failure(driver, "like")
+
+    except WebDriverException as exc:
+        log.debug("[MULTI-SIGNAL]  like-button scan error: %s", exc)
+        results = _find_unliked_buttons_fallback(driver)
+
+    return results
+
+
+def _find_reply_buttons(driver) -> list:
+    """
+    Return visible reply buttons using multi-signal structural scoring.
+
+    The reply button is identified as the 2nd button in the action bar
+    with speech-bubble SVG geometry.  Falls back to the legacy CSS
+    selector (REPLY_BTN_CSS) if JS scoring fails.
+    """
+    results = []
+    try:
+        raw = driver.execute_script(
+            _JS_MULTI_SIGNAL_REPLY, ELEMENT_CONFIDENCE_THRESHOLD
+        )
+        if raw:
+            for item in raw:
+                el = item[0]
+                try:
+                    if el.is_displayed():
+                        r = driver.execute_script(
+                            "var r=arguments[0].getBoundingClientRect();"
+                            "return {top:r.top,h:r.height};", el)
+                        vh = driver.execute_script("return window.innerHeight")
+                        if r["h"] > 0 and 0 <= r["top"] <= vh:
+                            results.append(el)
+                except Exception:
+                    continue
+        if results:
+            log.info("[MULTI-SIGNAL]  %d reply button(s) found", len(results))
+            return results
+    except WebDriverException:
+        pass
+
+    # Legacy fallback
+    for btn in driver.find_elements(By.CSS_SELECTOR, REPLY_BTN_CSS):
+        try:
+            r = driver.execute_script(
+                "var r=arguments[0].getBoundingClientRect();"
+                "return {top:r.top,h:r.height};", btn)
+            vh = driver.execute_script("return window.innerHeight")
+            if r["h"] > 0 and 0 <= r["top"] <= vh and btn.is_displayed():
+                results.append(btn)
+        except Exception:
+            continue
+    if results:
+        log.info("[FALLBACK]  %d reply button(s) found via CSS", len(results))
     return results
 
 
@@ -2095,6 +2413,15 @@ def view_profile_from_feed(driver) -> bool:
                     continue
                 if href.rstrip("/") in _session_followed:
                     continue
+                # Viewport filter — only keep elements currently on-screen
+                rect = driver.execute_script(
+                    "var r=arguments[0].getBoundingClientRect();"
+                    "return {y:r.top, h:r.height};",
+                    el,
+                )
+                vh_c = driver.execute_script("return window.innerHeight")
+                if rect["h"] == 0 or rect["y"] < 0 or rect["y"] > vh_c:
+                    continue
                 candidates.append(el)
             except Exception:
                 continue
@@ -2103,21 +2430,29 @@ def view_profile_from_feed(driver) -> bool:
             log.info("[ACTION SKIP]  action=profile_view  reason=no_feed_profile_links")
             return False
 
-        target = random.choice(candidates[:15])
-        profile_url = target.get_attribute("href")
-        if not profile_url:
-            return False
+        # Try up to 3 candidates in case one goes stale between scan and click
+        random.shuffle(candidates)
+        for attempt, target in enumerate(candidates[:3]):
+            profile_url = target.get_attribute("href")
+            if not profile_url:
+                continue
 
-        # Re-validate — element may have scrolled off-screen since the candidate
-        # list was built (page could have loaded more content / user scroll).
-        _rect = driver.execute_script(
-            "var r=arguments[0].getBoundingClientRect();"
-            "return {y: r.top, h: r.height};",
-            target,
-        )
-        _vh = driver.execute_script("return window.innerHeight")
-        if _rect["h"] == 0 or _rect["y"] < 0 or _rect["y"] > _vh:
-            log.debug("Profile link scrolled off-screen since scan — skipping")
+            # Re-validate — element may have scrolled off-screen since the candidate
+            # list was built (page could have loaded more content / user scroll).
+            _rect = driver.execute_script(
+                "var r=arguments[0].getBoundingClientRect();"
+                "return {y: r.top, h: r.height};",
+                target,
+            )
+            _vh = driver.execute_script("return window.innerHeight")
+            if _rect["h"] == 0 or _rect["y"] < 0 or _rect["y"] > _vh:
+                log.debug("Profile link scrolled off-screen since scan — trying next candidate (%d)", attempt + 1)
+                continue
+
+            # Found a valid on-screen candidate — proceed with it
+            break
+        else:
+            log.debug("Profile link scrolled off-screen since scan — all candidates exhausted")
             return False
 
         # Scroll the link loosely into view before moving the cursor to it.
@@ -2943,21 +3278,8 @@ def comment_on_post(driver) -> bool:
         log.info("[ACTION START]  action=comment")
         # ────────────────────────────────────────────────────────────────────
 
-        # 1. Collect visible Reply buttons
-        reply_btns = driver.find_elements(By.CSS_SELECTOR, REPLY_BTN_CSS)
-        visible = []
-        for btn in reply_btns:
-            try:
-                r  = driver.execute_script(
-                    "var r=arguments[0].getBoundingClientRect();"
-                    "return {top:r.top, h:r.height};",
-                    btn,
-                )
-                vh = driver.execute_script("return window.innerHeight")
-                if r["h"] > 0 and 0 <= r["top"] <= vh and btn.is_displayed():
-                    visible.append(btn)
-            except Exception:
-                continue
+        # 1. Collect visible Reply buttons using multi-signal scoring
+        visible = _find_reply_buttons(driver)
 
         log.info("[COMMENT]  visible_reply_buttons=%d", len(visible))
         if not visible:
@@ -3473,6 +3795,138 @@ def _humanize_caption(pool: list) -> str:
     return f"{a.rstrip('.!?…')} — {b}"
 
 
+# ================================================================== #
+#  BEHAVIORAL TEXTBOX DETECTION
+# ================================================================== #
+# Identifies the compose text input by behavioral characteristics rather
+# than framework-specific attributes (data-lexical-editor) which Meta
+# renames whenever the Lexical editor framework is refactored.
+#
+# Detection strategy (priority order):
+#   1. role="textbox" + contenteditable="true" in a modal/overlay context
+#      (ARIA role is legally mandated for accessibility — stable).
+#   2. Sole visible contenteditable="true" element above the fold
+#      (compose modal is always the topmost layer).
+#   3. document.activeElement after programmatic focus into the compose
+#      area — completely framework-agnostic.
+#   4. Legacy data-lexical-editor attribute (lowest priority fallback).
+# ================================================================== #
+
+def _find_compose_textbox(driver, timeout: float = 10.0):
+    """Find the compose modal's text input using behavioral detection.
+
+    Returns the WebElement or None if no suitable textbox is found.
+    """
+    end = time.time() + timeout
+    while time.time() < end:
+        # Strategy 1: role="textbox" + contenteditable in modal context
+        try:
+            candidates = driver.find_elements(
+                By.CSS_SELECTOR,
+                '[contenteditable="true"][role="textbox"]',
+            )
+            for el in candidates:
+                if not el.is_displayed():
+                    continue
+                # Verify it's inside a modal/overlay (high z-index or dialog role)
+                is_compose = driver.execute_script("""
+                    var el = arguments[0];
+                    var r  = el.getBoundingClientRect();
+                    if (r.height === 0) return false;
+                    var node = el;
+                    for (var d = 0; d < 15; d++) {
+                        if (!node) break;
+                        var z = parseInt(window.getComputedStyle(node).zIndex);
+                        if (z > 100) return true;
+                        var role = node.getAttribute('role');
+                        if (role === 'dialog' || role === 'presentation') return true;
+                        node = node.parentElement;
+                    }
+                    return false;
+                """, el)
+                if is_compose:
+                    log.debug("[TEXTBOX]  found via role=textbox + contenteditable (modal context)")
+                    return el
+        except Exception:
+            pass
+
+        # Strategy 2: sole visible contenteditable element
+        try:
+            editables = driver.find_elements(
+                By.CSS_SELECTOR, '[contenteditable="true"]'
+            )
+            visible_editables = []
+            for el in editables:
+                try:
+                    if not el.is_displayed():
+                        continue
+                    r = driver.execute_script(
+                        "var r=arguments[0].getBoundingClientRect();"
+                        "return {h:r.height, top:r.top};", el)
+                    vh = driver.execute_script("return window.innerHeight")
+                    if r["h"] > 0 and r["top"] < vh:
+                        visible_editables.append(el)
+                except Exception:
+                    continue
+            if len(visible_editables) == 1:
+                log.debug("[TEXTBOX]  found via unique visible contenteditable")
+                return visible_editables[0]
+        except Exception:
+            pass
+
+        # Strategy 3: document.activeElement after focus attempt
+        try:
+            active = driver.execute_script("""
+                var editables = document.querySelectorAll('[contenteditable="true"]');
+                for (var i = 0; i < editables.length; i++) {
+                    var el = editables[i];
+                    if (el.offsetParent === null) continue;
+                    var r = el.getBoundingClientRect();
+                    if (r.height === 0) continue;
+                    el.focus();
+                    if (document.activeElement === el) return el;
+                }
+                return null;
+            """)
+            if active and active.is_displayed():
+                # Verify it's in a compose context (not a comment box)
+                is_modal = driver.execute_script("""
+                    var node = arguments[0];
+                    for (var d = 0; d < 15; d++) {
+                        if (!node) break;
+                        var z = parseInt(window.getComputedStyle(node).zIndex);
+                        if (z > 100) return true;
+                        var role = node.getAttribute('role');
+                        if (role === 'dialog' || role === 'presentation') return true;
+                        node = node.parentElement;
+                    }
+                    return false;
+                """, active)
+                if is_modal:
+                    log.debug("[TEXTBOX]  found via activeElement focus probe")
+                    return active
+        except Exception:
+            pass
+
+        # Strategy 4: legacy data-lexical-editor fallback
+        try:
+            legacy = driver.find_elements(
+                By.CSS_SELECTOR,
+                'div[data-lexical-editor="true"][contenteditable="true"]',
+            )
+            for el in legacy:
+                if el.is_displayed():
+                    log.debug("[TEXTBOX]  found via legacy data-lexical-editor fallback")
+                    return el
+        except Exception:
+            pass
+
+        precise_sleep(0.5)
+
+    log.debug("[TEXTBOX]  no compose textbox found within %.0fs", timeout)
+    return None
+
+
 def create_post(driver, profile_id: str) -> bool:
     """
     Create an original Threads post with a caption from POST_CAPTION_POOL
@@ -3576,21 +4030,10 @@ def create_post(driver, profile_id: str) -> bool:
             driver.execute_script("arguments[0].click();", compose_btn)
 
         # 3. Wait for the compose modal's contenteditable text area.
-        #    Use the compose-specific selector (data-lexical-editor + aria-placeholder)
-        #    so we never accidentally match a reply/comment box still in the DOM.
-        try:
-            text_box = WebDriverWait(driver, 10).until(
-                lambda d: next(
-                    (
-                        el for el in d.find_elements(By.CSS_SELECTOR, COMPOSE_TEXTBOX_CSS)
-                        if el.is_displayed()
-                    ),
-                    None,
-                )
-            )
-            if not text_box:
-                raise TimeoutException("compose textbox not visible")
-        except TimeoutException:
+        #    Uses behavioral detection (role=textbox, contenteditable, modal
+        #    context) rather than framework-specific data-lexical-editor.
+        text_box = _find_compose_textbox(driver, timeout=10.0)
+        if not text_box:
             log.debug("create_post: compose modal textarea did not appear")
             driver.execute_script(
                 "document.dispatchEvent(new KeyboardEvent('keydown',"
@@ -3695,26 +4138,15 @@ def create_post(driver, profile_id: str) -> bool:
         #    StaleElementReferenceException → the outer handler fires Escape
         #    and returns False, making the session loop retry indefinitely.
         if image_path:
-            try:
-                text_box = WebDriverWait(driver, 8).until(
-                    lambda d: next(
-                        (
-                            el for el in d.find_elements(By.CSS_SELECTOR, COMPOSE_TEXTBOX_CSS)
-                            if el.is_displayed()
-                        ),
-                        None,
-                    )
-                )
-                if not text_box:
-                    raise TimeoutException("compose textbox vanished after media attach")
-                log.debug("create_post: textbox re-queried after media attach")
-            except TimeoutException:
+            text_box = _find_compose_textbox(driver, timeout=8.0)
+            if not text_box:
                 log.debug("create_post: could not re-find textbox after media attach — aborting")
                 driver.execute_script(
                     "document.dispatchEvent(new KeyboardEvent('keydown',"
                     "{key:'Escape',keyCode:27,bubbles:true}));"
                 )
                 return False
+            log.debug("create_post: textbox re-queried after media attach")
 
         bezier_move(driver, text_box)
         precise_sleep(random.uniform(0.3, 0.7))
@@ -3843,15 +4275,27 @@ def create_post(driver, profile_id: str) -> bool:
         debug_cursor_state(driver, "post-submit-click")
 
         # 8. Wait for modal to close (compose textbox disappears on success)
+        #    Uses web-standards selectors for textbox detection.
         try:
             WebDriverWait(driver, 12).until(
-                lambda d: not d.find_elements(By.CSS_SELECTOR, COMPOSE_TEXTBOX_CSS)
+                lambda d: not [
+                    el for el in d.find_elements(
+                        By.CSS_SELECTOR,
+                        '[contenteditable="true"][role="textbox"]'
+                    ) if el.is_displayed()
+                ]
             )
         except TimeoutException:
             pass
         precise_sleep(random.uniform(1.5, 3.0))
+        _modal_still_open = bool([
+            el for el in driver.find_elements(
+                By.CSS_SELECTOR,
+                '[contenteditable="true"][role="textbox"]'
+            ) if el.is_displayed()
+        ])
         log.info("[POST FLOW]  step=modal_close  success=%s  duration=%.0fms  detail=compose_textbox_gone",
-                 not bool(driver.find_elements(By.CSS_SELECTOR, COMPOSE_TEXTBOX_CSS)),
+                 not _modal_still_open,
                  (time.perf_counter() - _pf_t0) * 1000)
 
         _record_post(profile_id, state)
@@ -3913,6 +4357,176 @@ def post_action(driver, profile_id: str) -> None:
     # ────────────────────────────────────────────────────────────────────
 
 
+# ================================================================== #
+#  MARKOV CHAIN ACTION DISPATCH ENGINE
+# ================================================================== #
+#
+# Replaces the flat i.i.d. random dispatch with a first-order Markov
+# chain where P(next_action | current_action) encodes real behavioral
+# autocorrelation patterns:
+#
+#   • After reading → scroll (30%) or like (25%), rarely search (5%)
+#   • After liking  → scroll (45%), read (20%), rarely like again (8%)
+#   • After comment → forced passive pause (55%), scroll down (12%)
+#   • After notify  → profile visit (15%) or scroll (40%)
+#   • After posting → passive scroll (60%), never immediate re-post
+#
+# Context modifiers layer on top of the base transition matrix:
+#   • Session phase: early=passive, mid=active peak, late=wind-down
+#   • Cumulative fatigue: engagement probability decays per action count
+#   • Consecutive suppression: geometric penalty on same-action repeats
+#   • Account maturity: young accounts heavily favour passive actions
+#
+# The transition matrix can evolve per-profile over time — a new account's
+# matrix heavily favours passive, while a mature account allows full range.
+# ================================================================== #
+
+_MARKOV_STATES = [
+    "passive", "active", "notify", "profile_view",
+    "read_post", "comment", "follow", "return_top",
+    "search", "post",
+]
+
+# Base transition matrix: P(next | current).
+# Columns: passive  active  notify  profile  read  comment  follow  top  search  post
+# Each row sums to ~1.0.
+_BASE_TRANSITION_MATRIX = {
+    "passive":      [0.35, 0.22, 0.03, 0.08, 0.14, 0.04, 0.03, 0.04, 0.05, 0.02],
+    "active":       [0.45, 0.08, 0.03, 0.06, 0.20, 0.05, 0.03, 0.04, 0.04, 0.02],
+    "notify":       [0.40, 0.10, 0.02, 0.15, 0.15, 0.03, 0.04, 0.03, 0.06, 0.02],
+    "profile_view": [0.45, 0.15, 0.03, 0.04, 0.15, 0.04, 0.03, 0.04, 0.05, 0.02],
+    "read_post":    [0.30, 0.25, 0.02, 0.06, 0.10, 0.12, 0.04, 0.04, 0.05, 0.02],
+    "comment":      [0.55, 0.08, 0.04, 0.05, 0.12, 0.02, 0.03, 0.04, 0.05, 0.02],
+    "follow":       [0.45, 0.12, 0.04, 0.08, 0.15, 0.03, 0.02, 0.04, 0.05, 0.02],
+    "return_top":   [0.40, 0.18, 0.04, 0.06, 0.15, 0.04, 0.03, 0.02, 0.06, 0.02],
+    "search":       [0.45, 0.12, 0.03, 0.08, 0.15, 0.04, 0.03, 0.03, 0.05, 0.02],
+    "post":         [0.60, 0.05, 0.04, 0.08, 0.10, 0.02, 0.02, 0.04, 0.04, 0.01],
+}
+
+
+def _apply_session_phase_modifier(probs: list, elapsed_frac: float) -> list:
+    """Shift transition probabilities based on session phase.
+
+    elapsed_frac  0.0 = session start, 1.0 = session end.
+      Early  (0-25%):  boost passive, suppress active engagement.
+      Mid    (25-75%): slight boost to active actions (peak engagement).
+      Late   (75-100%): wind down — boost passive, suppress active.
+    """
+    modified = probs[:]
+    n = len(modified)
+    if elapsed_frac < 0.25:
+        boost = 0.15 * (1.0 - elapsed_frac / 0.25)
+        modified[0] += boost
+        active_sum = sum(modified[1:]) or 1.0
+        for i in range(1, n):
+            modified[i] *= max(0.0, 1.0 - boost / active_sum)
+    elif elapsed_frac > 0.75:
+        wind = (elapsed_frac - 0.75) / 0.25
+        boost = 0.20 * wind
+        modified[0] += boost
+        modified[9] *= 0.1        # almost never post near session end
+        active_sum = sum(modified[1:]) or 1.0
+        for i in range(1, n):
+            modified[i] *= max(0.0, 1.0 - boost / active_sum)
+    else:
+        mid_boost = 0.05
+        modified[0] -= mid_boost
+        modified[1] += mid_boost * 0.4    # active (like)
+        modified[4] += mid_boost * 0.3    # read_post
+        modified[5] += mid_boost * 0.2    # comment
+        modified[3] += mid_boost * 0.1    # profile_view
+    return modified
+
+
+def _apply_fatigue_modifier(probs: list, metrics: dict) -> list:
+    """Diminish engagement actions that have been performed many times.
+
+    Uses exponential decay: P *= exp(-count / decay_constant).
+    """
+    modified = probs[:]
+    fatigue_map = {
+        1: ("likes",    8.0),          # active
+        5: ("comments", 4.0),          # comment
+        6: ("follows",  5.0),          # follow
+        9: ("posts",    2.0),          # post
+        3: ("profile_visits", 6.0),    # profile_view
+        8: ("searches", 5.0),          # search
+    }
+    for idx, (key, decay) in fatigue_map.items():
+        cnt = metrics.get(key, 0)
+        if cnt > 0:
+            modified[idx] *= math.exp(-cnt / decay)
+    return modified
+
+
+def _apply_consecutive_suppression(probs: list, current_state: str,
+                                    consecutive_count: int) -> list:
+    """Geometric penalty on repeating the same action: P *= 0.4^count."""
+    if consecutive_count <= 0:
+        return probs
+    try:
+        idx = _MARKOV_STATES.index(current_state)
+    except ValueError:
+        return probs
+    modified = probs[:]
+    modified[idx] *= 0.4 ** consecutive_count
+    return modified
+
+
+def _normalize_probs(probs: list) -> list:
+    """Normalize probabilities to sum to 1.0."""
+    total = sum(probs)
+    if total <= 0:
+        return [1.0 / len(probs)] * len(probs)
+    return [p / total for p in probs]
+
+
+def _markov_sample_next_action(
+    current_state: str,
+    session_elapsed_frac: float,
+    metrics: dict,
+    consecutive_same: int,
+    account_days_old: int = 15,
+) -> str:
+    """Sample the next action from the Markov chain with context modifiers.
+
+    Parameters
+    ----------
+    current_state         : what the bot just did
+    session_elapsed_frac  : 0.0 → 1.0 how far through the session
+    metrics               : _session_metrics accumulator
+    consecutive_same      : how many times current_state repeated in a row
+    account_days_old      : for account-maturity adjustment
+    """
+    base = list(_BASE_TRANSITION_MATRIX.get(
+        current_state, _BASE_TRANSITION_MATRIX["passive"]
+    ))
+
+    # Account maturity: young accounts heavily favour passive
+    if account_days_old < 7:
+        base[0] += 0.30
+        for i in range(1, len(base)):
+            base[i] *= 0.30
+    elif account_days_old < 14:
+        for i in [5, 6, 9]:           # comment, follow, post
+            base[i] *= 0.70
+
+    # Layer modifiers
+    probs = _apply_session_phase_modifier(base, session_elapsed_frac)
+    probs = _apply_fatigue_modifier(probs, metrics)
+    probs = _apply_consecutive_suppression(probs, current_state, consecutive_same)
+    probs = _normalize_probs(probs)
+
+    # Sample
+    r = random.random()
+    cumulative = 0.0
+    for i, p in enumerate(probs):
+        cumulative += p
+        if r < cumulative:
+            return _MARKOV_STATES[i]
+    return _MARKOV_STATES[0]
+
+
 def run_social_session(
     driver,
     session_seconds: float,
@@ -3928,15 +4542,23 @@ def run_social_session(
     profile_id: str = "",
 ) -> None:
     """
-    Session loop with:
-    - Per-session randomised passive/active split (truncated normal, not fixed 80/20).
-    - Engagement variety: occasional notification check or profile view.
-    - Guaranteed at least one active action per session (forced if < 60 s remain).
+    Session loop driven by a first-order Markov chain.
+
+    Each action is sampled from a transition matrix conditioned on the
+    previous action, with layered context modifiers:
+      - Session phase (early=passive, mid=active, late=wind-down)
+      - Cumulative fatigue (engagement probability decays with count)
+      - Consecutive suppression (geometric penalty on same-action repeats)
+      - Account maturity (young accounts favour passive actions)
+
+    The w_* weight parameters are kept for CLI backward compatibility
+    but no longer directly control dispatch.  They are used to scale
+    the base transition matrix when explicitly overridden by the user.
     """
     global _session_followed, _session_metrics
-    _session_followed = set()          # reset per-session seen-profile cache
+    _session_followed = set()
 
-    # ── DEBUG LOGGING: reset session metrics for this session ────────────────
+    # ── DEBUG LOGGING: reset session metrics ─────────────────────────────────
     _session_metrics = {
         "actions_dispatched": 0, "likes": 0, "comments": 0,
         "follows": 0, "posts": 0, "passive": 0, "reads": 0,
@@ -3945,25 +4567,60 @@ def run_social_session(
     }
     # ────────────────────────────────────────────────────────────────────
 
-    session_start_ts = time.time()     # used to enforce passive phase before posting
+    session_start_ts = time.time()
     deadline    = session_start_ts + session_seconds
     count       = 0
     active_done = False
 
-    # Draw per-session active probability from truncated normal (mean 0.22, SD 0.08)
-    # clamped to [0.20, 0.45] — sessions range from mostly-passive to moderately active.
-    active_prob = w_like if w_like is not None else max(0.20, min(0.45, random.gauss(0.22, 0.08)))
+    # Resolve account age for maturity modifier
+    _account_days = 15   # default: mature
+    try:
+        _post_state = _load_post_state()
+        _ensure_profile_in_state(profile_id, _post_state)
+        if profile_id in _post_state:
+            _first = _post_state[profile_id].get("first_seen", "")
+            if _first:
+                _account_days = (date.today() - date.fromisoformat(_first)).days
+    except Exception:
+        pass
+
+    # Current Markov state — start with passive (user just opened the feed)
+    current_state = "passive"
+
+    # CLI weight override: if user explicitly passed weights, scale the
+    # base transition probabilities so the Markov chain respects them.
+    _user_weights = {}
+    if w_like    is not None: _user_weights["active"]       = w_like
+    if w_notify  != 0.03:    _user_weights["notify"]        = w_notify
+    if w_profile != 0.06:    _user_weights["profile_view"]  = w_profile
+    if w_read    != 0.08:    _user_weights["read_post"]     = w_read
+    if w_comment != 0.05:    _user_weights["comment"]       = w_comment
+    if w_follow  != 0.03:    _user_weights["follow"]        = w_follow
+    if w_top     != 0.03:    _user_weights["return_top"]    = w_top
+    if w_search  != 0.06:    _user_weights["search"]        = w_search
+    if w_post    != 0.02:    _user_weights["post"]          = w_post
+
+    # If user overrides are present, patch every row of the base matrix
+    # so the Markov chain honours them while preserving transition structure.
+    if _user_weights:
+        for state_key in _BASE_TRANSITION_MATRIX:
+            row = list(_BASE_TRANSITION_MATRIX[state_key])
+            for action_name, desired_w in _user_weights.items():
+                try:
+                    idx = _MARKOV_STATES.index(action_name)
+                    row[idx] = desired_w
+                except ValueError:
+                    pass
+            total = sum(row)
+            if total > 0:
+                _BASE_TRANSITION_MATRIX[state_key] = [p / total for p in row]
+
     log.info(
-        "Session active probability this run: %.2f  (weights: notify=%.2f profile=%.2f "
-        "read=%.2f comment=%.2f follow=%.2f top=%.2f search=%.2f post=%.2f)",
-        active_prob, w_notify, w_profile, w_read, w_comment, w_follow, w_top, w_search, w_post,
+        "Session Markov chain  |  account_age=%d days  |  user_overrides=%s",
+        _account_days, _user_weights or "none",
     )
-    # ── DEBUG LOGGING: RISK WARN for high active_prob + STATE SNAPSHOT session_start ──
-    if active_prob > 0.45:
-        _dlog.warning(
-            "[RISK WARN]  active_prob=%.3f > 0.45 threshold — high engagement anomaly",
-            active_prob,
-        )
+
+    # ── STATE SNAPSHOT: session start ────────────────────────────────────────
     try:
         _snap_url = driver.current_url
         _snap_vp  = driver.execute_script("return [window.innerWidth, window.innerHeight]")
@@ -3971,91 +4628,77 @@ def run_social_session(
         _snap_url, _snap_vp = "unknown", [-1, -1]
     log.info(
         "[STATE SNAPSHOT]  event=session_start  profile=%s  session_sec=%.0f"
-        "  active_prob=%.3f  cursor_pos=(%d,%d)  viewport=(%dx%d)  page_url=%s",
-        profile_id, session_seconds, active_prob,
+        "  account_days=%d  cursor_pos=(%d,%d)  viewport=(%dx%d)  page_url=%s",
+        profile_id, session_seconds, _account_days,
         _cursor_pos[0], _cursor_pos[1], _snap_vp[0], _snap_vp[1], _snap_url[:80],
     )
     # ────────────────────────────────────────────────────────────────────
 
-    # Precompute cumulative dispatch thresholds from individual weights.
-    t_notify  = active_prob + w_notify
-    t_profile = t_notify   + w_profile
-    t_read    = t_profile  + w_read
-    t_comment = t_read     + w_comment
-    t_follow  = t_comment  + w_follow
-    t_top     = t_follow   + w_top
-    t_search  = t_top      + w_search
-    t_post    = t_search   + w_post
+    # Action dispatch map — maps Markov state names to callables.
+    def _dispatch(action: str) -> None:
+        nonlocal active_done
+        if action == "passive":
+            passive_action(driver)
+        elif action == "active":
+            active_action(driver)
+            active_done = True
+        elif action == "notify":
+            check_notifications_action(driver)
+        elif action == "profile_view":
+            view_profile_from_feed(driver)
+            _session_metrics["profile_visits"] += 1
+        elif action == "read_post":
+            read_post_action(driver)
+        elif action == "comment":
+            comment_on_post(driver)
+        elif action == "follow":
+            follow_from_feed(driver)
+        elif action == "return_top":
+            return_to_top_action(driver)
+        elif action == "search":
+            visit_search_action(driver)
+            _session_metrics["searches"] += 1
+        elif action == "post":
+            passive_elapsed = time.time() - session_start_ts
+            if passive_elapsed >= POST_PASSIVE_PHASE_SEC:
+                post_action(driver, profile_id)
+            else:
+                wait_min = (POST_PASSIVE_PHASE_SEC - passive_elapsed) / 60
+                log.info(
+                    "[ POST ]  passive phase not complete (%.1f min remaining) "
+                    "-- deferring post to scroll", wait_min,
+                )
+                passive_action(driver)
+        else:
+            passive_action(driver)
 
     while time.time() < deadline:
         time_left = deadline - time.time()
-        roll = 0.0            # sentinel; overwritten in the else branch below
-        selected_action = "passive"
+        elapsed_frac = min(1.0, (time.time() - session_start_ts) / max(1, session_seconds))
 
         # Force active if we haven't done one yet and time is almost up
         if not active_done and time_left < 60:
             log.info("Forcing active action (session guarantee).")
-            selected_action = "active_forced"
-            active_action(driver)
+            selected_action = "active"
+            _dispatch(selected_action)
             active_done = True
         else:
-            roll = random.random()
-            if roll < active_prob:
-                selected_action = "active"
-                active_action(driver)
+            # Sample from the Markov chain
+            selected_action = _markov_sample_next_action(
+                current_state=current_state,
+                session_elapsed_frac=elapsed_frac,
+                metrics=_session_metrics,
+                consecutive_same=_session_metrics["consecutive_same"],
+                account_days_old=_account_days,
+            )
+            _dispatch(selected_action)
+            if selected_action == "active":
                 active_done = True
-            elif roll < t_notify:
-                selected_action = "notify"
-                # notify weight (default ~3 %): check notifications
-                check_notifications_action(driver)
-            elif roll < t_profile:
-                selected_action = "profile_view"
-                # profile weight (default ~6 %): click feed author link, browse profile
-                view_profile_from_feed(driver)
-                _session_metrics["profile_visits"] += 1
-            elif roll < t_read:
-                selected_action = "read_post"
-                # read weight (default ~8 %): click into a thread, read reply chain, go back
-                read_post_action(driver)
-            elif roll < t_comment:
-                selected_action = "comment"
-                # comment weight (default ~5 %): leave a short comment on a feed post
-                comment_on_post(driver)
-            elif roll < t_follow:
-                selected_action = "follow"
-                # follow weight (default ~3 %): quick-follow from feed (+) button
-                follow_from_feed(driver)
-            elif roll < t_top:
-                selected_action = "return_top"
-                # top weight (default ~3 %): return to top via logo
-                return_to_top_action(driver)
-            elif roll < t_search:
-                selected_action = "search"
-                # search weight (default ~6 %): open search page, dwell, return home
-                visit_search_action(driver)
-                _session_metrics["searches"] += 1
-            elif roll < t_post:
-                selected_action = "post"
-                # post weight (default ~2 %): create a new original post
-                # Gate: only after a meaningful passive phase so the session
-                # pattern is scroll->read->decide-to-post, never post-immediately.
-                passive_elapsed = time.time() - session_start_ts
-                if passive_elapsed >= POST_PASSIVE_PHASE_SEC:
-                    post_action(driver, profile_id)
-                else:
-                    wait_min = (POST_PASSIVE_PHASE_SEC - passive_elapsed) / 60
-                    log.info(
-                        "[ POST ]  passive phase not complete (%.1f min remaining) "
-                        "-- deferring post to scroll",
-                        wait_min,
-                    )
-                    selected_action = "passive"
-                    passive_action(driver)
-            else:
-                selected_action = "passive"
-                passive_action(driver)
 
-        # ── DEBUG LOGGING: [SESSION TICK] + consecutive-action RISK WARN ──────────
+        # Update Markov state
+        current_state = selected_action
+
+        # ── DEBUG LOGGING: [SESSION TICK] + consecutive-action tracking ───────
         _sess_elapsed = time.time() - session_start_ts
         if _session_metrics["last_action"] == selected_action:
             _session_metrics["consecutive_same"] += 1
@@ -4063,31 +4706,31 @@ def run_social_session(
             _session_metrics["consecutive_same"] = 0
         _session_metrics["last_action"] = selected_action
         log.info(
-            "[SESSION TICK]  iteration=%d  roll=%.4f  selected_action=%s"
-            "  session_elapsed=%.0fs  session_deadline=%.0fs"
-            "  active_done=%s  actions_this_session=%d"
-            "  weights=active:%.2f notify:%.2f profile:%.2f read:%.2f"
-            "         comment:%.2f follow:%.2f top:%.2f search:%.2f post:%.2f",
-            count + 1, roll, selected_action,
-            _sess_elapsed, session_seconds,
+            "[SESSION TICK]  iteration=%d  markov_state=%s  selected=%s"
+            "  session_elapsed=%.0fs  elapsed_frac=%.2f"
+            "  active_done=%s  actions=%d  consecutive_same=%d"
+            "  account_days=%d",
+            count + 1, current_state, selected_action,
+            _sess_elapsed, elapsed_frac,
             active_done, _session_metrics["actions_dispatched"],
-            active_prob, w_notify, w_profile, w_read,
-            w_comment, w_follow, w_top, w_search, w_post,
+            _session_metrics["consecutive_same"], _account_days,
         )
         if _session_metrics["consecutive_same"] >= 2:
             _dlog.warning(
-                "[RISK WARN]  consecutive_same=%d  action=%s -- periodic pattern detected",
+                "[RISK WARN]  consecutive_same=%d  action=%s -- "
+                "Markov suppression should reduce this",
                 _session_metrics["consecutive_same"] + 1, selected_action,
             )
-        # ────────────────────────────────────────────────────────────────────
+        # ───────────────────────────────────────────────────────────────────
 
         count += 1
         precise_sleep(random.uniform(1, 3))
 
-    # ── DEBUG LOGGING: post-session RISK WARNs + STATE SNAPSHOT session_end ────
+    # ── POST-SESSION DIAGNOSTICS ─────────────────────────────────────────────
     if _session_metrics["passive"] == 0:
         _dlog.warning(
-            "[RISK WARN]  session ended with 0 passive actions -- pure engagement bot pattern"
+            "[RISK WARN]  session ended with 0 passive actions "
+            "-- pure engagement bot pattern"
         )
     try:
         _end_url = driver.current_url
@@ -4095,11 +4738,11 @@ def run_social_session(
         _end_url = "unknown"
     log.info(
         "[STATE SNAPSHOT]  event=session_end  profile=%s  session_sec=%.0f"
-        "  active_prob=%.3f  cursor_pos=(%d,%d)"
+        "  account_days=%d  cursor_pos=(%d,%d)"
         "  session_followed=%d  actions_dispatched=%d"
         "  likes=%d  comments=%d  follows=%d  posts=%d  passive=%d  reads=%d"
         "  profile_visits=%d  searches=%d  page_url=%s",
-        profile_id, session_seconds, active_prob,
+        profile_id, session_seconds, _account_days,
         _cursor_pos[0], _cursor_pos[1],
         len(_session_followed), _session_metrics["actions_dispatched"],
         _session_metrics["likes"], _session_metrics["comments"],
@@ -4475,7 +5118,384 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    p.add_argument(
+        "--test-actions",
+        nargs="?",
+        const="__all__",
+        default=None,
+        metavar="ACTION",
+        help=(
+            "Run a single-pass diagnostic session.  Without a value, executes "
+            "every action exactly once.  With an action name (e.g. "
+            "--test-actions post, --test-actions like, --test-actions comment) "
+            "runs only that single action.  Valid names: passive, like, "
+            "notifications, profile, follow, read, comment, post, search, "
+            "home, top.  Results are written to both console and test_actions.log."
+        ),
+    )
+
     return p
+
+
+# ================================================================== #
+#  TEST-ACTIONS DIAGNOSTIC RUNNER
+# ================================================================== #
+
+_TEST_LOG_FILE = "test_actions.log"
+
+
+def _setup_test_logger() -> logging.Logger:
+    """Create a dedicated logger that writes to both console and test_actions.log."""
+    tlog = logging.getLogger("test_actions")
+    tlog.setLevel(logging.DEBUG)
+    tlog.propagate = False
+    # Remove stale handlers from a previous invocation in the same process
+    tlog.handlers.clear()
+    fmt = logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s")
+    fh = logging.FileHandler(_TEST_LOG_FILE, mode="w", encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fmt)
+    sh = logging.StreamHandler()
+    sh.setLevel(logging.INFO)
+    sh.setFormatter(fmt)
+    if hasattr(sh.stream, "reconfigure"):
+        try:
+            sh.stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    tlog.addHandler(fh)
+    tlog.addHandler(sh)
+    return tlog
+
+
+def _dom_health_check(driver, tlog: logging.Logger) -> bool:
+    """Lightweight DOM health check between test actions.
+
+    Verifies:
+      1. Page is still on a valid Threads URL.
+      2. Feed or current page is still rendering content.
+      3. No login/challenge redirect has occurred.
+    Returns True if healthy.
+    """
+    try:
+        url = driver.current_url
+    except Exception as exc:
+        tlog.error("[HEALTH FAIL]  driver.current_url raised: %s", exc)
+        return False
+
+    on_threads = "threads.net" in url or "threads.com" in url
+    if not on_threads:
+        tlog.warning("[HEALTH FAIL]  URL is not on threads: %s", url[:120])
+        return False
+
+    # Login / challenge redirect detection
+    if "/login" in url or "/challenge" in url or "/accounts/" in url:
+        tlog.warning("[HEALTH FAIL]  login/challenge redirect detected: %s", url[:120])
+        return False
+
+    # Check for visible content
+    try:
+        articles = len(driver.find_elements(
+            By.CSS_SELECTOR, "article, div[data-pressable-container='true']"
+        ))
+        body_len = driver.execute_script(
+            "return (document.body && document.body.innerText) ? document.body.innerText.length : 0;"
+        )
+    except Exception as exc:
+        tlog.warning("[HEALTH FAIL]  DOM query error: %s", exc)
+        return False
+
+    if articles == 0 and body_len < 200:
+        tlog.warning(
+            "[HEALTH FAIL]  page appears empty  articles=%d  body_text_len=%d  url=%s",
+            articles, body_len, url[:120],
+        )
+        return False
+
+    tlog.debug(
+        "[HEALTH OK]  url=%s  articles=%d  body_text_len=%d",
+        url[:80], articles, body_len,
+    )
+    return True
+
+
+def _browser_is_alive(driver) -> bool:
+    """Return True if the browser session is still responsive."""
+    try:
+        _ = driver.current_url
+        return True
+    except Exception:
+        return False
+
+
+def run_test_actions(driver, profile_id: str = "test",
+                     filter_action: str | None = None) -> None:
+    """Execute every action exactly once in isolation with full diagnostics.
+
+    Designed for the ``--test-actions`` CLI flag.  Skips normal session loop,
+    daily quotas, probability gates, and session time limits.
+
+    Parameters
+    ----------
+    filter_action : str or None
+        If provided, only the action whose name or short alias matches this
+        string will be executed.  None (or ``"__all__"``) runs all actions.
+    """
+    import traceback as _tb
+
+    tlog = _setup_test_logger()
+
+    # ── Define the ordered list of actions to test ────────────────────────────
+    # Each entry: (action_name, callable_that_returns_something)
+    # We create wrapper lambdas so every action has a uniform call signature.
+
+    def _test_passive_scroll():
+        # Cap scroll time to 30 s max in test mode (normal range is 25-75 s)
+        scroll_time = random.uniform(10, 30)
+        log.info("[ PASSIVE TEST ]  capped scroll %.0fs", scroll_time)
+        _FEED_ROOTS = ("https://www.threads.com/", "https://www.threads.net/")
+        try:
+            current = driver.current_url
+            on_feed = any(current.rstrip("/") + "/" == root or current == root
+                          for root in _FEED_ROOTS)
+            if not on_feed:
+                if not click_home_button(driver):
+                    navigate_to(driver, TARGET_SOCIAL_URL)
+                precise_sleep(random.uniform(1.2, 2.5))
+        except WebDriverException:
+            pass
+        stochastic_scroll(driver, total_seconds=scroll_time)
+        precise_sleep(random.uniform(1.0, 3.0))
+        return True
+
+    def _test_active_like():
+        active_action(driver)
+        return True
+
+    def _test_check_notifications():
+        check_notifications_action(driver)
+        return True
+
+    def _test_view_profile():
+        return view_profile_from_feed(driver)
+
+    def _test_follow_from_feed():
+        return follow_from_feed(driver)
+
+    def _test_read_post():
+        return read_post_action(driver)
+
+    def _test_comment_on_post():
+        return comment_on_post(driver)
+
+    def _test_create_post():
+        # Bypass _can_post_now by temporarily monkey-patching it
+        original_can_post = globals().get("_can_post_now")
+        # Replace with a lambda that always returns True
+        globals()["_can_post_now"] = lambda pid, state: True
+        # Also monkey-patch _record_post to skip persisting state
+        original_record_post = globals().get("_record_post")
+        def _noop_record(pid, state):
+            tlog.info("[TEST]  _record_post SKIPPED — test post not recorded in %s", POST_STATE_FILE)
+        globals()["_record_post"] = _noop_record
+        try:
+            result = create_post(driver, profile_id)
+            return result
+        finally:
+            # Restore originals
+            if original_can_post is not None:
+                globals()["_can_post_now"] = original_can_post
+            if original_record_post is not None:
+                globals()["_record_post"] = original_record_post
+
+    def _test_visit_search():
+        visit_search_action(driver)
+        return True
+
+    def _test_click_home():
+        return click_home_button(driver)
+
+    def _test_return_to_top():
+        return_to_top_action(driver)
+        return True
+
+    # Full action list with short aliases for --test-actions <name> filtering
+    _all_actions = [
+        ("passive_scroll",        _test_passive_scroll,       {"passive", "scroll"}),
+        ("active_like",           _test_active_like,          {"like", "active"}),
+        ("check_notifications",   _test_check_notifications,  {"notifications", "notify"}),
+        ("view_profile_from_feed", _test_view_profile,        {"profile", "view_profile"}),
+        ("follow_from_feed",      _test_follow_from_feed,     {"follow"}),
+        ("read_post",             _test_read_post,            {"read", "read_post"}),
+        ("comment_on_post",       _test_comment_on_post,      {"comment"}),
+        ("create_post",           _test_create_post,          {"post", "create_post"}),
+        ("visit_search",          _test_visit_search,         {"search"}),
+        ("click_home",            _test_click_home,           {"home", "click_home"}),
+        ("return_to_top",         _test_return_to_top,        {"top", "return_to_top"}),
+    ]
+
+    # Filter to a single action if requested
+    if filter_action and filter_action != "__all__":
+        needle = filter_action.lower().strip()
+        matched = [
+            (name, fn, aliases) for name, fn, aliases in _all_actions
+            if needle == name.lower() or needle in aliases
+        ]
+        if not matched:
+            valid = ", ".join(
+                sorted({a for _, _, aliases in _all_actions for a in aliases})
+            )
+            tlog.error(
+                "Unknown action '%s'.  Valid names: %s", filter_action, valid,
+            )
+            return
+        _all_actions = matched
+        tlog.info("Filtering to single action: %s", matched[0][0])
+
+    actions = [(name, fn) for name, fn, _ in _all_actions]
+    total = len(actions)
+    results = []  # list of dicts: {index, name, status, duration_ms, note}
+    overall_t0 = time.perf_counter()
+    cursor_drift_actions = []
+
+    tlog.info("=" * 72)
+    tlog.info("  TEST-ACTIONS DIAGNOSTIC SESSION")
+    tlog.info("  Profile : %s", profile_id)
+    tlog.info("  Actions : %d", total)
+    tlog.info("  Started : %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    tlog.info("=" * 72)
+
+    for idx, (name, fn) in enumerate(actions, start=1):
+        # ── Check if browser is alive before each action ──────────────────
+        if not _browser_is_alive(driver):
+            tlog.error("BROWSER UNRESPONSIVE — aborting test run at action %d/%d (%s)", idx, total, name)
+            # Record remaining actions as ERROR
+            for j in range(idx, total + 1):
+                remaining_name = actions[j - 1][0] if j <= total else "?"
+                results.append({
+                    "index": j, "name": remaining_name,
+                    "status": "ERROR", "duration_ms": 0,
+                    "note": "BROWSER UNRESPONSIVE — aborted",
+                })
+            break
+
+        header = f"[TEST {idx}/{total}] {name}"
+        tlog.info("")
+        tlog.info("-" * 60)
+        tlog.info("%s", header)
+        tlog.info("-" * 60)
+
+        t0 = time.perf_counter()
+        status = "PASS"
+        note = ""
+        return_value = None
+
+        try:
+            return_value = fn()
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+
+            if return_value is False:
+                status = "FAIL"
+                note = "returned False"
+            else:
+                note = f"returned {return_value!r}" if return_value is not True else ""
+
+            tlog.info(
+                "%s  status=%s  duration=%.0fms  return=%r",
+                header, status, elapsed_ms, return_value,
+            )
+
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            status = "ERROR"
+            note = f"{type(exc).__name__}: {exc}"
+            tlog.error(
+                "%s  status=ERROR  duration=%.0fms  exception=%s: %s",
+                header, elapsed_ms, type(exc).__name__, exc,
+            )
+            tlog.error("Full traceback:\n%s", _tb.format_exc())
+
+        results.append({
+            "index": idx,
+            "name": name,
+            "status": status,
+            "duration_ms": round(elapsed_ms),
+            "note": note[:120],
+        })
+
+        # ── Cursor drift check ────────────────────────────────────────────
+        try:
+            debug_cursor_state(driver, f"test-{name}")
+        except Exception:
+            pass
+        # A simplistic drift detection: if _cursor_pos is at (0,0) after an
+        # action that should have moved it, record a warning.
+        if _cursor_pos[0] == 0 and _cursor_pos[1] == 0:
+            cursor_drift_actions.append(name)
+            tlog.warning("[CURSOR DRIFT]  cursor at (0,0) after action %s", name)
+
+        # ── DOM health check ──────────────────────────────────────────────
+        if _browser_is_alive(driver):
+            healthy = _dom_health_check(driver, tlog)
+            if not healthy:
+                tlog.warning("[HEALTH FAIL]  after action %s — continuing to next action", name)
+        else:
+            tlog.error("[HEALTH FAIL]  browser unresponsive after action %s", name)
+
+        # ── Human-like pause between actions (3–8 s) ─────────────────────
+        if idx < total:
+            pause = random.uniform(3.0, 8.0)
+            tlog.debug("Inter-action pause: %.1fs", pause)
+            precise_sleep(pause)
+
+    overall_elapsed_ms = (time.perf_counter() - overall_t0) * 1000
+
+    # ── Build the summary report ─────────────────────────────────────────────
+    pass_count  = sum(1 for r in results if r["status"] == "PASS")
+    fail_count  = sum(1 for r in results if r["status"] == "FAIL")
+    error_count = sum(1 for r in results if r["status"] == "ERROR")
+
+    # Column widths
+    col_idx  = 5
+    col_name = max(len(r["name"]) for r in results) if results else 20
+    col_stat = 6
+    col_dur  = 10
+    col_note = 50
+    row_w = col_idx + col_name + col_stat + col_dur + col_note + 16  # separators + padding
+
+    border = "+" + "-" * (row_w - 2) + "+"
+    hdr_fmt = "| {:<{idx}}  {:<{nm}}  {:<{st}}  {:>{dur}}  {:<{nt}} |"
+    row_fmt = "| {:<{idx}}  {:<{nm}}  {:<{st}}  {:>{dur}}  {:<{nt}} |"
+
+    lines = []
+    lines.append("")
+    lines.append(border)
+    lines.append("| {:^{w}} |".format("TEST-ACTIONS SUMMARY REPORT", w=row_w - 4))
+    lines.append(border)
+    lines.append(hdr_fmt.format(
+        "#", "ACTION", "STATUS", "DURATION", "NOTE",
+        idx=col_idx, nm=col_name, st=col_stat, dur=col_dur, nt=col_note,
+    ))
+    lines.append(border)
+    for r in results:
+        dur_str = f"{r['duration_ms']}ms"
+        lines.append(row_fmt.format(
+            r["index"], r["name"], r["status"], dur_str,
+            (r["note"][:col_note] if r["note"] else ""),
+            idx=col_idx, nm=col_name, st=col_stat, dur=col_dur, nt=col_note,
+        ))
+    lines.append(border)
+    lines.append(f"| PASS: {pass_count}   FAIL: {fail_count}   ERROR: {error_count}")
+    lines.append(f"| Total elapsed: {overall_elapsed_ms:.0f}ms ({overall_elapsed_ms / 1000:.1f}s)")
+    if cursor_drift_actions:
+        lines.append(f"| Cursor drift warnings: {', '.join(cursor_drift_actions)}")
+    lines.append(border)
+    lines.append("")
+
+    report = "\n".join(lines)
+    tlog.info(report)
+    # Also push to the main log so it persists in nstbrowser_warmer.log
+    log.info(report)
 
 
 # ================================================================== #
@@ -4523,6 +5543,43 @@ def main() -> None:
             label   = args.label or address
             log.info("Attach mode  |  address=%s", address)
 
+        # ── TEST-ACTIONS diagnostic mode ─────────────────────────────────
+        if args.test_actions:
+            log.info("--test-actions mode: running single-pass diagnostic session")
+            driver = None
+            addr = address.replace("ws://", "").split("/")[0]
+            ws_url = f"ws://{addr}"
+            try:
+                driver = connect_selenium(ws_url)
+                driver.set_page_load_timeout(30)
+                init_cursor_pos(driver)
+
+                if not args.no_preflight:
+                    run_preflight(driver)
+
+                log.info("Navigating to %s", TARGET_SOCIAL_URL)
+                navigate_to(driver, TARGET_SOCIAL_URL)
+                precise_sleep(random.uniform(2, 5))
+
+                if not check_login_status(driver):
+                    log.error("Profile '%s' appears logged out -- cannot run test-actions.", label)
+                    return
+
+                _filter = args.test_actions if args.test_actions != "__all__" else None
+                run_test_actions(driver, profile_id=label, filter_action=_filter)
+            except (TimeoutException, RuntimeError, WebDriverException) as exc:
+                log.error("test-actions error on '%s': %s", label, exc)
+            finally:
+                if driver and args.close:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+            log.info("=" * 60)
+            log.info("Done (test-actions).")
+            return
+        # ─────────────────────────────────────────────────────────────────
+
         warm_profile_attached(
             debugger_address=address,
             profile_id=label,
@@ -4537,6 +5594,50 @@ def main() -> None:
     # ---------------------------------------------------------------- #
     #  NORMAL MODE  — open every profile via the API
     # ---------------------------------------------------------------- #
+
+    # --test-actions in normal mode: skip inactive-day / time-of-day guards,
+    # open the first profile via the API, run the diagnostic, then close it.
+    if args.test_actions:
+        pid = PROFILE_IDS[0] if PROFILE_IDS else None
+        if not pid:
+            log.error("No profiles configured in PROFILE_IDS — cannot run test-actions.")
+            return
+        log.info("--test-actions (normal mode): testing profile %s", pid)
+        driver = None
+        launched = False
+        try:
+            info = start_profile(pid)
+            launched = True
+            driver = connect_selenium(info["webSocketDebuggerUrl"])
+            driver.set_page_load_timeout(30)
+            init_cursor_pos(driver)
+
+            if not args.no_preflight:
+                run_preflight(driver)
+
+            log.info("Navigating to %s", TARGET_SOCIAL_URL)
+            navigate_to(driver, TARGET_SOCIAL_URL)
+            precise_sleep(random.uniform(2, 5))
+
+            if not check_login_status(driver):
+                log.error("Profile '%s' appears logged out -- cannot run test-actions.", pid)
+                return
+
+            _filter = args.test_actions if args.test_actions != "__all__" else None
+            run_test_actions(driver, profile_id=pid, filter_action=_filter)
+        except (TimeoutException, RuntimeError, WebDriverException) as exc:
+            log.error("test-actions error on '%s': %s", pid, exc)
+        finally:
+            if driver:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+            if launched:
+                stop_profile(pid)
+        log.info("=" * 60)
+        log.info("Done (test-actions).")
+        return
 
     # Inactive-day simulation — models days when a real user never opens Threads.
     if random.random() < INACTIVE_DAY_PROB:
