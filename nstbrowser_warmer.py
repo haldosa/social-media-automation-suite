@@ -143,7 +143,7 @@ POST_STATE_FILE       = "post_state.json"
 
 # Minimum elapsed session time (seconds) before a post action is allowed.
 # Ensures the bot scrolls/reads for a meaningful passive phase first.
-POST_PASSIVE_PHASE_SEC = random.uniform(5 * 60, 10 * 60)   # 5–10 min, re-drawn each run
+POST_PASSIVE_PHASE_SEC = 0 #random.uniform(5 * 60, 10 * 60)   # 5–10 min, re-drawn each run
 
 # Absolute floor between any two posts per profile (seconds).
 # Poisson sampling can occasionally produce very short gaps; this guards them.
@@ -1092,6 +1092,10 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
                 break
             if random.random() < 0.5:
                 try:
+                    # Close any media overlay that was accidentally opened before
+                    # firing the cursor drift — avoids moving the cursor on top of
+                    # the overlay's fixed-position elements.
+                    _close_media_overlay(driver)
                     vw_r = driver.execute_script("return window.innerWidth")
                     vh_r = driver.execute_script("return window.innerHeight")
                     # Local drift — stays near current position, Gaussian spread
@@ -1126,6 +1130,9 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
             _chunk_count = 0
             _nudge_after = random.randint(3, 5)
             try:
+                # Close any media overlay before shifting the cursor between
+                # scroll chunks — prevents the drift arc landing on overlay UI.
+                _close_media_overlay(driver)
                 vw_n = driver.execute_script("return window.innerWidth")
                 vh_n = driver.execute_script("return window.innerHeight")
                 nx = max(int(vw_n * 0.08), min(int(vw_n * 0.92),
@@ -2016,6 +2023,127 @@ def visit_search_action(driver) -> None:
 #  PASSIVE / ACTIVE ACTIONS  +  SESSION LOOP
 # ================================================================== #
 
+_MEDIA_URL_RE = re.compile(
+    r"https?://(?:www\.)?threads\.(?:com|net)/@[^/]+/post/[^/]+/media",
+    re.IGNORECASE,
+)
+
+
+def _close_media_overlay(driver) -> bool:
+    """
+    Detect and dismiss an accidental media-viewer overlay
+    (URL pattern: /@<user>/post/<id>/media).
+
+    Strategy:
+      1. Check the current URL against the media-viewer pattern.
+      2. Find the Close button via JS: locate ALL svg[aria-label="Close"]
+         elements, filter to those that are visible AND positioned in the
+         top-left quadrant of the viewport (top < 30 % vh, left < 30 % vw),
+         then walk up to the nearest div[role="button"] ancestor.
+         This avoids matching other Close SVGs (reply boxes, modals, etc.)
+         that may also appear on the page.
+      3. Bezier-arc to the button and click using ActionChains; JS .click()
+         is NOT used as it bypasses the real pointer event the overlay needs.
+      4. Wait up to 5 s for the URL to leave the /media path.
+         Returns True ONLY when the URL has actually changed; returns False
+         (so the caller can fall back to home nav) if the click had no effect.
+
+    Returns True if the overlay was successfully dismissed, False otherwise.
+    """
+    try:
+        current = driver.current_url
+    except WebDriverException:
+        return False
+
+    if not _MEDIA_URL_RE.match(current):
+        return False
+
+    log.info("[ PASSIVE ]  media overlay detected (%s) — closing", current[:80])
+
+    # Locate the Close button that is visible AND in the top-left corner of the
+    # viewport (where the media viewer's X lives).  Iterates all Close SVGs and
+    # picks the topmost-leftmost one so we never confuse it with inline close
+    # buttons inside the feed or comment modals.
+    close_btn = driver.execute_script("""
+        var vw = window.innerWidth;
+        var vh = window.innerHeight;
+        var svgs = document.querySelectorAll('svg[aria-label="Close"]');
+        var best = null;
+        var bestScore = Infinity;   // lower (top-left) wins
+        for (var i = 0; i < svgs.length; i++) {
+            var svg = svgs[i];
+            var rect = svg.getBoundingClientRect();
+            // Must be visible
+            if (rect.width === 0 || rect.height === 0) continue;
+            if (rect.top < 0 || rect.left < 0) continue;
+            // Must be in the top-left 30% of viewport
+            if (rect.top  > vh * 0.30) continue;
+            if (rect.left > vw * 0.30) continue;
+            // Walk up to nearest div[role="button"]
+            var node = svg.parentElement;
+            for (var d = 0; d < 6; d++) {
+                if (!node) break;
+                if (node.getAttribute('role') === 'button') {
+                    var score = rect.top + rect.left;
+                    if (score < bestScore) {
+                        bestScore = score;
+                        best = node;
+                    }
+                    break;
+                }
+                node = node.parentElement;
+            }
+        }
+        return best;
+    """)
+
+    if close_btn is None:
+        log.debug("[ PASSIVE ]  Close button not found in media overlay top-left — skipping")
+        return False
+
+    try:
+        # Brief pause — user realises they're in the media viewer
+        time.sleep(random.uniform(0.6, 1.4))
+        bezier_move(driver, close_btn)
+        time.sleep(random.uniform(0.2, 0.5))
+        # Use ActionChains only — the overlay listens for real pointer events;
+        # JS .click() does not fire the pointer / mouse events the React handler needs.
+        ActionChains(driver).click().perform()
+        debug_cursor_state(driver, "media-overlay-close")
+
+        # Wait for URL to actually leave the /media path (up to 5 s).
+        url_changed = False
+        try:
+            WebDriverWait(driver, 5).until(
+                lambda d: not _MEDIA_URL_RE.match(d.current_url)
+            )
+            url_changed = True
+        except TimeoutException:
+            log.debug("[ PASSIVE ]  URL did not change after Close click — trying Escape")
+
+        # Human fallback: press Escape (natural dismissal for any modal/overlay)
+        if not url_changed:
+            try:
+                ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+                WebDriverWait(driver, 3).until(
+                    lambda d: not _MEDIA_URL_RE.match(d.current_url)
+                )
+                url_changed = True
+                log.debug("[ PASSIVE ]  Escape dismissed the media overlay")
+            except (TimeoutException, WebDriverException):
+                log.debug("[ PASSIVE ]  Escape also failed — deferring to home nav")
+
+        if not url_changed:
+            return False   # let caller fall back to home nav
+
+        time.sleep(random.uniform(0.8, 1.6))  # settle on the post/feed page
+        log.info("[ PASSIVE ]  media overlay closed — back on feed/post")
+        return True
+    except WebDriverException as exc:
+        log.debug("[ PASSIVE ]  Close button click failed: %s", exc)
+        return False
+
+
 def passive_action(driver) -> None:
     """
     Passive action: scroll, with occasional browser back/forward
@@ -2030,6 +2158,11 @@ def passive_action(driver) -> None:
     _FEED_ROOTS = ("https://www.threads.com/", "https://www.threads.net/")
     try:
         current = driver.current_url
+
+        # ── Media-viewer overlay: close with the X button, then re-check URL ─
+        if _close_media_overlay(driver):
+            current = driver.current_url   # refresh after close
+
         on_feed = any(current.rstrip("/") + "/" == root or current == root
                       for root in _FEED_ROOTS)
         if not on_feed:
@@ -2920,7 +3053,35 @@ def create_post(driver, profile_id: str) -> bool:
                 log.debug("create_post: media attach failed (%s) — text-only fallback", exc)
                 image_path = None
 
-        # 5. Type caption
+        # 5. Re-query the compose textbox before typing.
+        #    The OS file dialog interaction (pyautogui paste + Enter) causes
+        #    React to re-render the compose modal, which invalidates the
+        #    WebElement reference captured before the dialog was opened.
+        #    Using a stale reference in human_type() raises
+        #    StaleElementReferenceException → the outer handler fires Escape
+        #    and returns False, making the session loop retry indefinitely.
+        if image_path:
+            try:
+                text_box = WebDriverWait(driver, 8).until(
+                    lambda d: next(
+                        (
+                            el for el in d.find_elements(By.CSS_SELECTOR, COMPOSE_TEXTBOX_CSS)
+                            if el.is_displayed()
+                        ),
+                        None,
+                    )
+                )
+                if not text_box:
+                    raise TimeoutException("compose textbox vanished after media attach")
+                log.debug("create_post: textbox re-queried after media attach")
+            except TimeoutException:
+                log.debug("create_post: could not re-find textbox after media attach — aborting")
+                driver.execute_script(
+                    "document.dispatchEvent(new KeyboardEvent('keydown',"
+                    "{key:'Escape',keyCode:27,bubbles:true}));"
+                )
+                return False
+
         bezier_move(driver, text_box)
         time.sleep(random.uniform(0.3, 0.7))
         human_type(text_box, caption)
@@ -2930,24 +3091,105 @@ def create_post(driver, profile_id: str) -> bool:
         log.info("[ POST ]  re-reading before submit (%.1fs)…", reread_s)
         time.sleep(reread_s)
 
-        # 7. Find the Post button in the modal (reuses COMMENT_POST_XPATH)
+        # 7. Find the Post submit button scoped to the compose modal.
+        #
+        #    Confirmed DOM (from live inspection):
+        #      <div role="button"><div>Post</div></div>
+        #
+        #    IMPORTANT: identical Post buttons exist in every visible comment
+        #    reply form in the feed behind the modal.  A global XPath therefore
+        #    returns the wrong element.  Instead we walk UP from text_box to
+        #    find the modal's own container, then search within it.
+        #
+        #    Strategy:
+        #      Pass A — JS ancestor walk from text_box (most reliable, scoped).
+        #      Pass B — JS global scan as last resort, logging all visible
+        #               button texts as a diagnostic if it also fails.
+        #    Each pass is retried up to 3 times (2 s apart) so React has time
+        #    to activate the button after processing the typed text.
         post_btn = None
-        try:
-            post_btn = WebDriverWait(driver, 8).until(
-                lambda d: next(
-                    (
-                        el
-                        for el in d.find_elements(By.XPATH, COMMENT_POST_XPATH)
-                        if el.is_displayed() and el.is_enabled()
-                    ),
-                    None,
-                )
-            )
-        except TimeoutException:
-            pass
+
+        for _attempt in range(3):
+            # Pass A: walk up from text_box → find Post button in same container
+            post_btn = driver.execute_script("""
+                var textbox = arguments[0];
+                // Walk up ancestors looking for a container that owns a Post button
+                var node = textbox.parentElement;
+                for (var depth = 0; depth < 20; depth++) {
+                    if (!node) break;
+                    // Look for a direct-child-div Post button within this ancestor
+                    var btns = node.querySelectorAll('div[role="button"]');
+                    for (var i = 0; i < btns.length; i++) {
+                        var btn = btns[i];
+                        if (btn.offsetParent === null) continue;  // not visible
+                        // Direct child <div> whose sole text is "Post"
+                        var kids = btn.children;
+                        for (var k = 0; k < kids.length; k++) {
+                            if (kids[k].tagName === 'DIV' &&
+                                (kids[k].innerText || '').trim() === 'Post') {
+                                return btn;
+                            }
+                        }
+                        // Also accept aria-label="Post" directly on the button
+                        if ((btn.getAttribute('aria-label') || '').trim() === 'Post') {
+                            return btn;
+                        }
+                    }
+                    node = node.parentElement;
+                }
+                return null;
+            """, text_box)
+
+            if post_btn:
+                log.debug("create_post: Post button found via modal-scoped ancestor walk (attempt %d)", _attempt + 1)
+                break
+
+            # Pass B: global scan as fallback
+            log.debug("create_post: ancestor walk attempt %d missed — global JS scan", _attempt + 1)
+            post_btn = driver.execute_script("""
+                var btns = document.querySelectorAll('div[role="button"]');
+                for (var i = 0; i < btns.length; i++) {
+                    var btn = btns[i];
+                    if (btn.offsetParent === null) continue;
+                    var kids = btn.children;
+                    for (var k = 0; k < kids.length; k++) {
+                        if (kids[k].tagName === 'DIV' &&
+                            (kids[k].innerText || '').trim() === 'Post') {
+                            return btn;
+                        }
+                    }
+                    if ((btn.getAttribute('aria-label') || '').trim() === 'Post') {
+                        return btn;
+                    }
+                }
+                return null;
+            """)
+            if post_btn:
+                log.debug("create_post: Post button found via global JS scan (attempt %d)", _attempt + 1)
+                break
+
+            time.sleep(2.0)   # let React activate the button after text entry
 
         if not post_btn:
-            log.debug("create_post: Post button not found in modal")
+            try:
+                btn_texts = driver.execute_script("""
+                    var els = document.querySelectorAll('div[role="button"], button');
+                    var out = [];
+                    for (var i = 0; i < els.length; i++) {
+                        var el = els[i];
+                        if (el.offsetParent !== null) {
+                            out.push((el.innerText || el.getAttribute('aria-label') || '')
+                                     .trim().replace(/\\n/g,' ').slice(0,40));
+                        }
+                    }
+                    return out;
+                """)
+                log.warning(
+                    "create_post: Post button NOT found after 3 attempts — "
+                    "visible buttons in DOM: %s", btn_texts[:25],
+                )
+            except Exception:
+                log.warning("create_post: Post button NOT found and diagnostic also failed")
             driver.execute_script(
                 "document.dispatchEvent(new KeyboardEvent('keydown',"
                 "{key:'Escape',keyCode:27,bubbles:true}));"
