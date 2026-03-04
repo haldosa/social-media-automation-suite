@@ -171,7 +171,7 @@ SCREENSHOT_DIR      = "screenshots"
 LOG_FILE            = "nstbrowser_warmer.log"
 MOUSE_LOG_FILE      = "mouse_moves.log"  # dedicated cursor movement log
 MOUSE_TRACE         = False             # True = log every Bezier step (verbose)
-DEBUG_CURSOR_OVERLAY= True             # True = inject red dot overlay to visualise cursor movement
+DEBUG_CURSOR_OVERLAY= False             # True = inject red dot overlay to visualise cursor movement
 
 # ── Selector constants ─────────────────────────────────────────────────────── #
 # Profile link in post header — href="/@username"
@@ -218,7 +218,10 @@ if hasattr(_stream_h.stream, "reconfigure"):
         _stream_h.stream.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-logging.basicConfig(level=logging.INFO, handlers=[_file_h, _stream_h])
+# Main log file captures everything down to DEBUG; console stays at INFO.
+_file_h.setLevel(logging.DEBUG)
+_stream_h.setLevel(logging.INFO)
+logging.basicConfig(level=logging.DEBUG, handlers=[_file_h, _stream_h])
 log = logging.getLogger(__name__)
 
 # Dedicated mouse-movement logger — writes to its own file at DEBUG level.
@@ -229,6 +232,155 @@ _mlog = logging.getLogger("mouse")
 _mlog.setLevel(logging.DEBUG)
 _mlog.addHandler(_mouse_fh)
 _mlog.propagate = False  # keep mouse events out of the main log
+
+# ── DEBUG LOGGING: audit logger — writes into the same log file as `log` ─────
+# All [TIMING], [ELEMENT], [MOUSE ARC], [CLICK], [CURSOR MOVE] etc. go to
+# nstbrowser_warmer.log at DEBUG level.  The console handler is not attached
+# so verbose debug lines don't clutter the terminal.
+_dlog = logging.getLogger("audit")
+_dlog.setLevel(logging.DEBUG)
+_dlog.addHandler(_file_h)     # same file handler as main log
+_dlog.propagate = False       # prevent double-printing via root logger
+# ─────────────────────────────────────────────────────────────────────────────#
+
+# ── DEBUG LOGGING: session metrics accumulator ───────────────────────────────
+# Reset by run_social_session() at the start of every session.
+_session_metrics: dict = {
+    "actions_dispatched": 0,
+    "likes":    0,
+    "comments": 0,
+    "follows":  0,
+    "posts":    0,
+    "passive":  0,
+    "reads":    0,
+    "profile_visits": 0,
+    "searches": 0,
+    "last_action": None,          # used for consecutive-action RISK WARN
+    "consecutive_same": 0,
+}
+# ─────────────────────────────────────────────────────────────────────────────#
+
+
+# ── DEBUG LOGGING: timing check helper ───────────────────────────────────────
+def _timing_check(context: str, sampled_s: float,
+                  expected_min_s: float, expected_max_s: float) -> float:
+    """Log a timing sample to nstbrowser_warmer.log; emit WARN if outside expected range.
+
+    Uses a z-score approximation: if sampled_s is more than 2 SD outside the
+    expected range (treating the range as ±2 SD from the midpoint), emit WARN.
+    Returns sampled_s unchanged so callers can inline the call.
+    """
+    mid  = (expected_min_s + expected_max_s) / 2.0
+    sd   = (expected_max_s - expected_min_s) / 4.0  # range ≈ 4 SD
+    within = expected_min_s <= sampled_s <= expected_max_s
+    z_lo = (expected_min_s - sampled_s) / sd if sd > 0 else 0.0
+    z_hi = (sampled_s - expected_max_s) / sd if sd > 0 else 0.0
+    z_score = max(0.0, z_lo, z_hi)
+    msg = (
+        f"[TIMING]  context={context}  sampled={sampled_s*1000:.1f}ms"
+        f"  expected_range={expected_min_s*1000:.0f}-{expected_max_s*1000:.0f}ms"
+        f"  within_bounds={within}  z_score={z_score:.2f}"
+    )
+    if z_score > 2.0:
+        _dlog.warning("[TIMING WARN]  z=%.2f  %s", z_score, msg)
+    else:
+        _dlog.debug(msg)
+    return sampled_s
+
+
+# ── DEBUG LOGGING: element interaction auditor ───────────────────────────────
+def _log_element_interaction(driver, element, action: str) -> None:
+    """Query element geometry + visibility via JS; emit [ELEMENT] log line.
+
+    All execute_script calls are guarded so a JS error never crashes automation.
+    Routes to nstbrowser_warmer.log (DEBUG) on success; emits [ELEMENT WARN] to the
+    main log if element is invisible or off-viewport.
+    """
+    try:
+        info = driver.execute_script("""
+            var el = arguments[0];
+            try {
+                var r  = el.getBoundingClientRect();
+                var cs = window.getComputedStyle(el);
+                var vw = window.innerWidth;
+                var vh = window.innerHeight;
+                var inVp = r.width > 0 && r.height > 0
+                           && r.right > 0 && r.bottom > 0
+                           && r.left < vw && r.top < vh;
+                var visible = cs.display     !== 'none'
+                           && cs.visibility  !== 'hidden'
+                           && parseFloat(cs.opacity || '1') > 0
+                           && r.width  > 0 && r.height > 0;
+                return {
+                    tag:        el.tagName ? el.tagName.toLowerCase() : '?',
+                    role:       el.getAttribute('role') || '',
+                    aria_label: el.getAttribute('aria-label') || '',
+                    visible:    visible,
+                    in_viewport: inVp,
+                    rect: [Math.round(r.left), Math.round(r.top),
+                           Math.round(r.width), Math.round(r.height)]
+                };
+            } catch(e) {
+                return {error: e.toString()};
+            }
+        """, element)
+        if not info or "error" in info:
+            _dlog.debug("[ELEMENT]  action=%s  query_error=%s", action,
+                        info.get("error") if info else "null")
+            return
+        base_msg = (
+            f"[ELEMENT]  action={action}  tag={info['tag']}"
+            f"  role={info['role'] or 'n/a'}  aria_label={info['aria_label'] or 'n/a'!r}"
+            f"  visible={info['visible']}  in_viewport={info['in_viewport']}"
+            f"  rect={tuple(info['rect'])}"
+        )
+        if not info["visible"] or not info["in_viewport"]:
+            _dlog.warning("[ELEMENT WARN]  %s", base_msg)
+            log.warning("[ELEMENT WARN]  action=%s  tag=%s  visible=%s  in_viewport=%s",
+                        action, info["tag"], info["visible"], info["in_viewport"])
+        else:
+            _dlog.debug(base_msg)
+    except Exception as exc:
+        _dlog.debug("[ELEMENT]  action=%s  exception=%s", action, exc)
+# ─────────────────────────────────────────────────────────────────────────────#
+
+
+# ── DEBUG LOGGING: element tag helper ────────────────────────────────────────
+def _safe_tag(element) -> str:
+    """Return element.tag_name without raising on stale references."""
+    try:
+        return element.tag_name
+    except Exception:
+        return "?"
+
+
+# ── DEBUG LOGGING: page-state snapshot ───────────────────────────────────────
+def _log_page_state(driver, context: str) -> None:
+    """Emit a snapshot of the current browser state to the main INFO log.
+
+    Reports URL, page title, scrollY, scroll percentage, and visible feed-item
+    count so a reader of the log can reconstruct exactly what was on screen at
+    every action boundary without opening the browser.
+    """
+    try:
+        url   = driver.current_url
+        title = driver.title
+        scroll_y = driver.execute_script("return window.scrollY")
+        scroll_pct = driver.execute_script(
+            "var h=document.body.scrollHeight-window.innerHeight;"
+            "return h>0?Math.round(window.scrollY/h*100):0;"
+        )
+        articles = len(driver.find_elements(
+            By.CSS_SELECTOR, "article, div[data-pressable-container='true']"
+        ))
+        log.info(
+            "[PAGE STATE]  context=%s  url=%s  title=%r"
+            "  scrollY=%dpx  scroll_pct=%d%%  feed_items=%d",
+            context, url[:80], title[:40], scroll_y, scroll_pct, articles,
+        )
+    except Exception as exc:
+        log.debug("[PAGE STATE]  context=%s  error=%s", context, exc)
+# ─────────────────────────────────────────────────────────────────────────────#
 
 
 # ================================================================== #
@@ -532,6 +684,12 @@ def human_type(element, text: str, driver=None) -> None:
     current _cursor_pos (where bezier_move left the cursor), so the click
     lands at the natural offset rather than snapping to the element centre.
     """
+    # ── DEBUG LOGGING: typing audit ────────────────────────────────────────
+    _type_t0 = time.perf_counter()
+    log.info("[TYPE]  chars=%d  preview=%r  element_tag=%s",
+             len(text), text[:30], _safe_tag(element))
+    _dlog.debug("[TYPE START]  full_text=%r  chars=%d", text, len(text))
+    # ────────────────────────────────────────────────────────────────────────
     if driver is not None:
         # CDP click at wherever the bezier arc landed — no centre-snap.
         _cdp_click(driver)
@@ -572,9 +730,26 @@ def human_type(element, text: str, driver=None) -> None:
             base += random.uniform(0.06, 0.20)
             burst_rem = random.randint(3, 7)
 
+        # ── DEBUG LOGGING: keystroke timing audit ────────────────────────────
+        _timing_check("human_type_key", base, 0.040, 0.600)
+        if base < 0.030:
+            _dlog.warning(
+                "[RISK WARN]  keystroke interval %.1fms < 30ms floor — unnatural speed",
+                base * 1000,
+            )
+        elif base > 0.700:
+            _dlog.warning(
+                "[RISK WARN]  keystroke interval %.1fms > 700ms ceiling — outside corpus range",
+                base * 1000,
+            )
+        # ─────────────────────────────────────────────────────────────────────
         element.send_keys(char)
         precise_sleep(base)
         prev = char
+    # ── DEBUG LOGGING: type complete ─────────────────────────────────────────
+    log.info("[TYPE END]  chars=%d  duration=%.1fs",
+             len(text), time.perf_counter() - _type_t0)
+    # ────────────────────────────────────────────────────────────────────────
 
 
 def _bezier_point(p0, p1, p2, t):
@@ -597,6 +772,7 @@ def _ease_in_out_sine(t: float) -> float:
 # ever starts from a hard-coded corner; every arc begins from wherever the
 # cursor realistically last rested.
 _cursor_pos: list = [0, 0]
+_last_bezier_end_ts: float = 0.0   # perf_counter timestamp of last arc; read by _cdp_click RISK WARN
 
 
 def _set_cursor(x: int, y: int, tag: str = "") -> None:
@@ -628,7 +804,7 @@ _session_followed: set = set()
 # Responds to real DOM mousemove events fired by Selenium’s ActionChains,
 # so it follows every bezier step in real time.
 # Injected via execute_script after each page load — safe, no fingerprint risk.
-
+'''
 _CURSOR_OVERLAY_JS = """
 (function () {
     var ID  = '__cursor_debug_dot';
@@ -703,7 +879,7 @@ def inject_cursor_overlay(driver) -> None:
                      (result.get('cspMeta') or 'none')[:120])
     except WebDriverException as exc:
         log.debug("Cursor overlay injection failed: %s", exc)
-
+'''
 # ------------------------------------------------------------------ #
 #  SHARED BÉZIER PATH ENGINE
 # ------------------------------------------------------------------ #
@@ -876,6 +1052,26 @@ def _fire_bezier_arc(
         "ARC  from=(%d,%d)  cp=(%d,%d)  to=(%d,%d)  steps=%d  ms/step=%.1f  dur=%.0fms",
         x0, y0, cp[0], cp[1], x1, y1, steps, step_ms, cum_ms,
     )
+    # ── DEBUG LOGGING: MOUSE ARC structured audit ─────────────────────────────
+    _cp_offset = int(math.hypot(cp[0] - _mid_x, cp[1] - _mid_y))
+    _dlog.debug(
+        "[MOUSE ARC]  from=(%d,%d)  to=(%d,%d)  arc_dist=%.0fpx"
+        "  steps=%d  duration_ms=%.0f  cp_offset=%dpx  step_ms=%.1f  exact_end=%s",
+        x0, y0, x1, y1, _arc_dist, steps, cum_ms, _cp_offset, step_ms, exact_end,
+    )
+    if _arc_dist > 300 and cum_ms < 150:
+        _dlog.warning(
+            "[RISK WARN]  unnatural arc speed  dist=%.0fpx  duration=%.0fms"
+            " — human minimum ~150ms for 300px+",
+            _arc_dist, cum_ms,
+        )
+    _timing_check("bezier_arc", cum_ms / 1000.0,
+                  max(0.10, _arc_dist / 4000.0), max(1.0, _arc_dist / 500.0))
+    # ─────────────────────────────────────────────────────────────────────────
+    # ── DEBUG LOGGING: update arc-completion timestamp for _cdp_click RISK WARN ──
+    global _last_bezier_end_ts
+    _last_bezier_end_ts = time.perf_counter()
+    # ─────────────────────────────────────────────────────────────────────────
     if MOUSE_TRACE:
         for i, ((nx, ny, dx, dy), t_ms) in enumerate(zip(points, step_times), 1):
             _mlog.debug("STEP  i=%02d  t=+%.0fms  pos=(%d,%d)  delta=(%+d,%+d)",
@@ -906,6 +1102,10 @@ def _cdp_click(driver, x: int = None, y: int = None) -> None:
     """
     cx = x if x is not None else _cursor_pos[0]
     cy = y if y is not None else _cursor_pos[1]
+    # ── DEBUG LOGGING: every click ───────────────────────────────────────────
+    log.info("[CLICK]  pos=(%d,%d)  source=%s", cx, cy,
+             "explicit" if x is not None else "cursor_pos")
+    # ────────────────────────────────────────────────────────────────────────
     driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
         "type": "mousePressed",
         "x": cx, "y": cy,
@@ -919,6 +1119,20 @@ def _cdp_click(driver, x: int = None, y: int = None) -> None:
         "button": "left",
         "clickCount": 1,
     })
+    # ── DEBUG LOGGING: RISK WARN — click within 50ms of bezier completion ────
+    try:
+        gap_ms = (time.perf_counter() - _last_bezier_end_ts) * 1000
+        if 0 < gap_ms < 50:
+            _dlog.warning(
+                "[RISK WARN]  cdp_click fired %.1fms after bezier arc end"
+                " — unnaturally fast (threshold 50ms)  pos=(%d,%d)",
+                gap_ms, cx, cy,
+            )
+        else:
+            _dlog.debug("[CLICK]  pos=(%d,%d)  gap_from_arc=%.1fms", cx, cy, gap_ms)
+    except Exception:
+        pass
+    # ────────────────────────────────────────────────────────────────────────
 
 def init_cursor_pos(driver) -> None:
     """
@@ -953,6 +1167,12 @@ def bezier_move(driver, target_element) -> None:
     after each call so every arc begins from where the cursor last rested.
     """
     global _cursor_pos
+    # ── DEBUG LOGGING: element interaction audit ──────────────────────────────
+    try:
+        _log_element_interaction(driver, target_element, "hover")
+    except Exception:
+        pass
+    # ─────────────────────────────────────────────────────────────────────────
     try:
         vw   = driver.execute_script("return window.innerWidth")
         vh   = driver.execute_script("return window.innerHeight")
@@ -1022,6 +1242,18 @@ def bezier_move(driver, target_element) -> None:
                     "SNAP GAP  last_synthetic=(%d,%d)  snap_target=(%d,%d)  gap=%.1fpx",
                     last_syn_x, last_syn_y, snap_x, snap_y, snap_gap,
                 )
+            # ── DEBUG LOGGING: MOUSE SNAP structured audit ────────────────────
+            _dlog.debug(
+                "[MOUSE SNAP]  python_pos=(%d,%d)  snap_target=(%d,%d)  drift=%.1fpx",
+                last_syn_x, last_syn_y, snap_x, snap_y, snap_gap,
+            )
+            if snap_gap > 15:
+                _dlog.warning(
+                    "[MOUSE SNAP]  WARN drift=%.1fpx > 15px threshold"
+                    "  python=(%d,%d)  target=(%d,%d)",
+                    snap_gap, last_syn_x, last_syn_y, snap_x, snap_y,
+                )
+            # ──────────────────────────────────────────────────────────────────
         # CDP dispatch already produced trusted events at the exact
         # endpoint — no Phase 2 ActionChains snap needed.
         _set_cursor(snap_x, snap_y, "elem-hover")
@@ -1056,6 +1288,10 @@ def bezier_move_to_coords(driver, x1: int, y1: int, tag: str = "arc-end") -> Non
         y1 = max(0, min(y1, int(vh) - 1))
         if x0 == x1 and y0 == y1:
             return
+        # ── DEBUG LOGGING ──────────────────────────────────────────────────
+        _dlog.debug("[CURSOR MOVE]  tag=%s  from=(%d,%d)  to=(%d,%d)  dist=%.0fpx",
+                    tag, x0, y0, x1, y1, math.hypot(x1 - x0, y1 - y0))
+        # ──────────────────────────────────────────────────────────────────
         _fire_bezier_arc(driver, x0, y0, x1, y1, vw, vh, exact_end=True)
         _set_cursor(x1, y1, tag)
         debug_cursor_state(driver, f"bezier-coords/{tag}")
@@ -1090,6 +1326,9 @@ def _navigate_and_settle(driver, action) -> None:
 
     # 2. Navigate
     action()
+    # ── DEBUG LOGGING: NAV timing markers ────────────────────────────────────
+    _nav_t0 = time.perf_counter()
+    # ─────────────────────────────────────────────────────────────────────────
     # Phase 1 — wait for the browser's resource-load signal.
     try:
         WebDriverWait(driver, 20).until(
@@ -1097,10 +1336,12 @@ def _navigate_and_settle(driver, action) -> None:
         )
     except TimeoutException:
         pass
+    _nav_readystate_ms = (time.perf_counter() - _nav_t0) * 1000
     # Phase 2 — SPA content check: wait for a feed article or pressable
     # container to appear.  readyState fires before React has rendered any
     # feed cards, so without this the settle pause and idle-settle drift
     # happen against a blank loading screen.
+    _nav_spa_t0 = time.perf_counter()
     try:
         WebDriverWait(driver, 15).until(
             lambda d: d.find_elements(
@@ -1110,9 +1351,11 @@ def _navigate_and_settle(driver, action) -> None:
         )
     except TimeoutException:
         pass  # fall through — page may still be partially usable
+    _nav_spa_ms = (time.perf_counter() - _nav_spa_t0) * 1000
 
     # 3. Overlay — inject after readyState complete, then verify it survives
     #    React's next reconcile pass (1 s later).
+    '''
     inject_cursor_overlay(driver)
     if DEBUG_CURSOR_OVERLAY:
         exists_now = driver.execute_script(
@@ -1127,7 +1370,7 @@ def _navigate_and_settle(driver, action) -> None:
         if exists_now and not exists_1s:
             log.warning("React wiped the overlay — re-injecting into documentElement")
             inject_cursor_overlay(driver)
-
+        '''
     # 4. Silent position set — fresh page has no cursor history.
     #    Cursor was at (park_x, 0) before navigation; it's still conceptually
     #    there.  No dispatch needed — the drift arc below is the first event
@@ -1136,7 +1379,24 @@ def _navigate_and_settle(driver, action) -> None:
 
     # 5. Settle — 1.5–3.5 s to mimic a real user visually orienting
     #    after a full page navigation before moving the mouse.
-    precise_sleep(random.uniform(1.5, 3.5))
+    _nav_settle_s = random.uniform(1.5, 3.5)
+    precise_sleep(_nav_settle_s)
+
+    # ── DEBUG LOGGING: [NAV] summary ─────────────────────────────────────────
+    _overlay_present = False
+    try:
+        _overlay_present = bool(driver.execute_script(
+            "return document.getElementById('__cursor_debug_dot') !== null;"
+        ))
+    except Exception:
+        pass
+    log.info(
+        "[NAV]  readystate_wait=%.0fms  spa_wait=%.0fms  settle_wait=%.0fms"
+        "  overlay_present=%s  cursor_seeded=(%d,%d)",
+        _nav_readystate_ms, _nav_spa_ms, _nav_settle_s * 1000,
+        _overlay_present, _cursor_pos[0], _cursor_pos[1],
+    )
+    # ─────────────────────────────────────────────────────────────────────────
 
     # 6. Drift into content — first synthetic event on the new page,
     #    starting from (park_x, 0) and moving naturally into the feed area.
@@ -1152,15 +1412,33 @@ def _navigate_and_settle(driver, action) -> None:
 
 def navigate_to(driver, url: str) -> None:
     """Navigate to url with human-like cursor park → restore → drift."""
-    log.info("[ NAV ]  → %s", url)
+    try:
+        _from = driver.current_url
+    except Exception:
+        _from = "unknown"
+    log.info("[NAV]  type=goto  from=%s  to=%s", _from[:80], url[:80])
     _navigate_and_settle(driver, lambda: driver.get(url))
+    try:
+        log.info("[NAV]  landed_url=%s  title=%r",
+                 driver.current_url[:80], driver.title[:40])
+    except Exception:
+        pass
 
 
 def navigate_history(driver, direction: str = "back") -> None:
     """Go back or forward in history with human-like cursor park → restore → drift."""
-    log.info("[ NAV ]  %s", direction)
+    try:
+        _from = driver.current_url
+    except Exception:
+        _from = "unknown"
+    log.info("[NAV]  type=%s  from=%s", direction, _from[:80])
     fn = driver.back if direction == "back" else driver.forward
     _navigate_and_settle(driver, fn)
+    try:
+        log.info("[NAV]  landed_url=%s  title=%r",
+                 driver.current_url[:80], driver.title[:40])
+    except Exception:
+        pass
 
 
 # ------------------------------------------------------------------ #
@@ -1187,6 +1465,10 @@ def smooth_scroll_chunk(driver, distance_px: int,
     step_px      pixels per step at peak velocity
     tick_ms      base milliseconds between steps
     """
+    # ── DEBUG LOGGING: SCROLL CHUNK tracking ──────────────────────────────────
+    _sc_t0    = time.perf_counter()
+    _sc_dir   = "down" if distance_px >= 0 else "up"
+    # ────────────────────────────────────────────────────────────────────
     total     = abs(distance_px)
     direction = 1 if distance_px >= 0 else -1
     steps     = int(max(1, total // max(1, step_px)))
@@ -1223,6 +1505,14 @@ def smooth_scroll_chunk(driver, distance_px: int,
             "deltaX": 0,
             "deltaY": direction * remainder,
         })
+    # ── DEBUG LOGGING: [SCROLL CHUNK] summary ──────────────────────────────────
+    _dlog.debug(
+        "[SCROLL CHUNK]  distance=%dpx  direction=%s  step_px=%d  tick_ms=%d"
+        "  steps=%d  actual_duration=%.0fms",
+        total, _sc_dir, step_px, tick_ms, steps,
+        (time.perf_counter() - _sc_t0) * 1000,
+    )
+    # ────────────────────────────────────────────────────────────────────
 
 
 def stochastic_scroll(driver, total_seconds: float) -> None:
@@ -1282,14 +1572,33 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
     log.info("[ SCROLL ]  scrolling for %.0fs", total_seconds)
     # Scroll-chunk nudge counter — fire a small cursor shift every 3-5 chunks
     # to model the hand resting on the desk and shifting while scrolling.
-    _nudge_after = random.randint(3, 5)
-    _chunk_count = 0
+    _nudge_after  = random.randint(3, 5)
+    _chunk_count  = 0
+    _total_chunks = 0   # ─ DEBUG: cumulative chunk counter for progress logs
     while time.time() < deadline:
         distance = random.randint(280, 650)
         step_px  = random.randint(4, 9)
         tick_ms  = random.randint(12, 20)
         smooth_scroll_chunk(driver, distance, step_px, tick_ms)
-        _chunk_count += 1
+        _chunk_count  += 1
+        _total_chunks += 1
+
+        # ── DEBUG LOGGING: scroll progress every 5 chunks ─────────────────────
+        if _total_chunks % 5 == 0:
+            try:
+                _sy  = driver.execute_script("return window.scrollY")
+                _pct = driver.execute_script(
+                    "var h=document.body.scrollHeight-window.innerHeight;"
+                    "return h>0?Math.round(window.scrollY/h*100):0;"
+                )
+                log.info(
+                    "[SCROLL PROGRESS]  chunks=%d  scrollY=%dpx  page_pct=%d%%"
+                    "  time_left=%.0fs",
+                    _total_chunks, _sy, _pct, deadline - time.time(),
+                )
+            except Exception:
+                pass
+        # ───────────────────────────────────────────────────────────────────────
 
         # brief pause after scroll lands (hand leaving wheel)
         precise_sleep(random.uniform(0.15, 0.45))
@@ -1317,13 +1626,27 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
         # 4-tier reading pause — cursor drifts throughout via _reading_pause()
         tier = random.random()
         if tier < 0.03:
-            _reading_pause(random.uniform(8.0, 15.0))   # distraction
+            _pause_tier = "distraction"
+            _pause_s    = random.uniform(8.0, 15.0)
         elif tier < 0.18:
-            _reading_pause(random.uniform(4.5, 9.0))    # long read
+            _pause_tier = "long"
+            _pause_s    = random.uniform(4.5, 9.0)
         elif tier < 0.35:
-            _reading_pause(random.uniform(0.3, 1.2))    # quick skim
+            _pause_tier = "skim"
+            _pause_s    = random.uniform(0.3, 1.2)
         else:
-            _reading_pause(random.uniform(1.5, 4.0))    # normal read
+            _pause_tier = "normal"
+            _pause_s    = random.uniform(1.5, 4.0)
+        # ── DEBUG LOGGING: [SCROLL CHUNK] with tier info ────────────────────────
+        _dlog.debug(
+            "[SCROLL CHUNK]  pause_tier=%s  pause_duration=%.1fs",
+            _pause_tier, _pause_s,
+        )
+        _timing_check(f"reading_pause_{_pause_tier}", _pause_s,
+                      {"distraction": 8.0, "long": 4.5, "skim": 0.3, "normal": 1.5}[_pause_tier],
+                      {"distraction": 15.0, "long": 9.0, "skim": 1.2, "normal": 4.0}[_pause_tier])
+        # ────────────────────────────────────────────────────────────────────
+        _reading_pause(_pause_s)
         # occasional upward drift — small (re-reading) or large (going back to a post)
         if random.random() < 0.22:
             # 20 % of drift events scroll back a large amount (really went too far)
@@ -1641,12 +1964,12 @@ def check_login_status(driver) -> bool:
 
         # Definite logged-out
         if any(s in url for s in ("/login", "/accounts/login")):
-            log.warning("Login redirect detected: %s", url)
+            log.warning("[LOGIN]  status=logged_out  reason=login_redirect  url=%s", url[:80])
             return False
 
         # URL-based challenge detection — specific paths only
         if any(s in url for s in CHALLENGE_URL_PATHS):
-            log.warning("Challenge URL detected: %s", url)
+            log.warning("[LOGIN]  status=challenge  reason=challenge_url  url=%s", url[:80])
             return False
 
         # DOM-based challenge detection — structural elements only
@@ -1654,7 +1977,7 @@ def check_login_status(driver) -> bool:
             try:
                 el = driver.find_element(By.CSS_SELECTOR, sel)
                 if el.is_displayed():
-                    log.warning("Challenge DOM element detected: %s", sel)
+                    log.warning("[LOGIN]  status=challenge  reason=dom_element  selector=%s", sel)
                     return False
             except NoSuchElementException:
                 continue
@@ -1665,10 +1988,13 @@ def check_login_status(driver) -> bool:
             "article, div[data-pressable-container='true']",
         )
         if articles:
+            log.info("[LOGIN]  status=logged_in  feed_items=%d  url=%s",
+                     len(articles), url[:80])
             return True
 
         # Fallback: on threads domain with no challenge signals
         if "threads.net" in url or "threads.com" in url:
+            log.info("[LOGIN]  status=logged_in(presumed)  url=%s", url[:80])
             return True
 
     except WebDriverException:
@@ -1748,6 +2074,8 @@ def view_profile_from_feed(driver) -> bool:
 
     Has a 15 % probabilistic gate for calling follow_from_profile_page().
     """
+    _action_t0 = time.perf_counter()
+    log.info("[ACTION START]  action=profile_view")
     try:
         own_href = _get_own_profile_href(driver)
         candidates = []
@@ -1772,7 +2100,7 @@ def view_profile_from_feed(driver) -> bool:
                 continue
 
         if not candidates:
-            log.debug("No feed profile links found")
+            log.info("[ACTION SKIP]  action=profile_view  reason=no_feed_profile_links")
             return False
 
         target = random.choice(candidates[:15])
@@ -1796,6 +2124,8 @@ def view_profile_from_feed(driver) -> bool:
         scroll_element_into_loose_view(driver, target)
 
         _session_followed.add(profile_url.rstrip("/"))
+        log.info("[PROFILE VIEW]  candidates=%d  target=%s",
+                 len(candidates[:15]), profile_url[:60])
         log.info("Viewing profile from feed: %s", profile_url[:60])
         bezier_move(driver, target)
         precise_sleep(random.uniform(0.5, 1.5))
@@ -1814,7 +2144,7 @@ def view_profile_from_feed(driver) -> bool:
                 WebDriverWait(driver, 10).until(lambda d: "/@" in d.current_url)
             except TimeoutException:
                 pass
-            inject_cursor_overlay(driver)
+            #inject_cursor_overlay(driver)
             init_cursor_pos(driver)
         else:
             _cdp_click(driver)
@@ -1845,10 +2175,12 @@ def view_profile_from_feed(driver) -> bool:
                 log.debug("view_profile_from_feed: home button not found — back fallback")
                 navigate_history(driver, "back")
             precise_sleep(random.uniform(1.0, 2.5))
+        log.info("[ACTION END]  action=profile_view  result=success  duration=%.1fs",
+                 time.perf_counter() - _action_t0)
         return True
 
     except (TimeoutException, WebDriverException) as exc:
-        log.debug("View profile from feed failed: %s", exc)
+        log.warning("[ACTION END]  action=profile_view  result=failure  error=%s", exc)
         try:
             if not click_home_button(driver):
                 navigate_to(driver, TARGET_SOCIAL_URL)
@@ -1870,6 +2202,8 @@ def follow_from_feed(driver) -> bool:
       5. Move the cursor back to a neutral mid-feed position so the hover
          card dismisses naturally and scrolling can continue.
     """
+    _action_t0 = time.perf_counter()
+    log.info("[ACTION START]  action=follow_feed")
     try:
         # ── 1. Collect visible, non-timestamp feed profile links ──────────────
         own_href = _get_own_profile_href(driver)
@@ -1909,9 +2243,10 @@ def follow_from_feed(driver) -> bool:
                 continue
 
         if not candidates:
-            log.debug("follow_from_feed: no visible feed profile links")
+            log.info("[ACTION SKIP]  action=follow_feed  reason=no_visible_feed_profile_links")
             return False
 
+        log.info("[FOLLOW FEED]  candidates=%d", len(candidates))
         username_el = random.choice(candidates[:10])
 
         # ── 2. Scroll username into view, then hover (no click) ───────────────
@@ -1964,6 +2299,12 @@ def follow_from_feed(driver) -> bool:
         log.info("follow_from_feed: follow clicked via hover card")
         _session_followed.add((username_el.get_attribute("href") or "").rstrip("/"))
 
+        # ── DEBUG LOGGING: ACTION END (success) ──────────────────────────────────
+        _session_metrics["follows"] += 1
+        _session_metrics["actions_dispatched"] += 1
+        log.info("[ACTION END]  action=follow_feed  result=success")
+        # ────────────────────────────────────────────────────────────────────
+
         # ── 5. Drift cursor to mid-feed + scroll to guarantee card dismissal ──
         try:
             vw_e = driver.execute_script("return window.innerWidth")
@@ -1984,7 +2325,7 @@ def follow_from_feed(driver) -> bool:
         return True
 
     except (NoSuchElementException, WebDriverException) as exc:
-        log.debug("follow_from_feed failed: %s", exc)
+        log.warning("[ACTION END]  action=follow_feed  result=failure  error=%s", exc)
         return False
 
 def follow_from_profile_page(driver) -> bool:
@@ -2338,6 +2679,10 @@ def passive_action(driver) -> None:
                       for root in _FEED_ROOTS)
         if not on_feed:
             log.info(
+                "[ACTION SKIP]  action=passive  reason=off_feed  recovered=True  url=%s",
+                current[:80],
+            )
+            log.info(
                 "[ PASSIVE ]  off-feed URL detected (%s) — returning to feed",
                 current[:80],
             )
@@ -2350,11 +2695,22 @@ def passive_action(driver) -> None:
     # ─────────────────────────────────────────────────────────────────
 
     scroll_time = random.uniform(25, 75)
+    # ── DEBUG LOGGING: ACTION START ────────────────────────────────────────────
+    _action_t0 = time.perf_counter()
+    _session_metrics["actions_dispatched"] += 1
+    log.info("[ACTION START]  action=passive")
+    # ────────────────────────────────────────────────────────────────────
     log.info("[ PASSIVE ]  scroll %.0fs", scroll_time)
     stochastic_scroll(driver, total_seconds=scroll_time)
 
     # Pause after scrolling stops — user finishes reading the post
     precise_sleep(random.uniform(1.0, 3.0))
+    # ── DEBUG LOGGING: ACTION END ────────────────────────────────────────────
+    _session_metrics["passive"] += 1
+    _log_page_state(driver, "passive_end")
+    log.info("[ACTION END]  action=passive  result=success  duration=%.1fs",
+             time.perf_counter() - _action_t0)
+    # ────────────────────────────────────────────────────────────────────
 
 
 def active_action(driver) -> None:
@@ -2371,6 +2727,10 @@ def active_action(driver) -> None:
     on_threads = "threads.net" in current_url or "threads.com" in current_url
     if not on_threads:
         log.info(
+            "[ACTION SKIP]  action=active  reason=not_on_threads  url=%s",
+            current_url[:60],
+        )
+        log.info(
             "[ ACTIVE ]  not on threads (%s) — passive scroll instead",
             current_url[:60],
         )
@@ -2378,6 +2738,12 @@ def active_action(driver) -> None:
         return
 
     log.info("[ ACTIVE ]  scanning for likes  url=%s", current_url[:60])
+    # ── DEBUG LOGGING: ACTION START ────────────────────────────────────────────
+    _action_t0 = time.perf_counter()
+    _session_metrics["actions_dispatched"] += 1
+    _log_page_state(driver, "active_start")
+    log.info("[ACTION START]  action=active  url=%s", current_url[:60])
+    # ────────────────────────────────────────────────────────────────────
     liked = 0
     try:
         # Stochastic pre-scroll — 50% short, 30% medium, 20% skip entirely
@@ -2393,7 +2759,10 @@ def active_action(driver) -> None:
             precise_sleep(random.uniform(0.5, 1.5))
 
         candidates = _find_unliked_buttons(driver)
+        log.info("[ACTIVE]  unliked_buttons_found=%d", len(candidates))
         if not candidates:
+            log.info("[ACTION SKIP]  action=active  reason=no_likeable_posts"
+                     "  fallback=passive_scroll")
             log.info("No unliked posts in viewport — passive scroll instead")
             stochastic_scroll(driver, total_seconds=random.uniform(15, 30))
             return
@@ -2422,8 +2791,14 @@ def active_action(driver) -> None:
             precise_sleep(random.uniform(1.0, 2.0))
 
     except (NoSuchElementException, WebDriverException) as exc:
-        log.debug("Active action error: %s", exc)
+        log.warning("[ACTIVE]  error: %s", exc)
 
+    # ── DEBUG LOGGING: ACTION END ────────────────────────────────────────────
+    _session_metrics["likes"] += liked
+    _log_page_state(driver, "active_end")
+    log.info("[ACTION END]  action=active  result=success  likes=%d  duration=%.1fs",
+             liked, time.perf_counter() - _action_t0)
+    # ────────────────────────────────────────────────────────────────────
     log.info("Active action complete. Likes delivered: %d", liked)
 
 
@@ -2450,8 +2825,14 @@ def read_post_action(driver) -> bool:
     try:
         current_url = driver.current_url
         if "threads.net" not in current_url and "threads.com" not in current_url:
-            log.debug("read_post_action: not on Threads — skipping")
+            log.info("[ACTION SKIP]  action=read_post  reason=not_on_threads  url=%s",
+                     current_url[:60])
             return False
+        # ── DEBUG LOGGING: ACTION START ─────────────────────────────────────────
+        _action_t0 = time.perf_counter()
+        _session_metrics["actions_dispatched"] += 1
+        log.info("[ACTION START]  action=read_post")
+        # ────────────────────────────────────────────────────────────────────
 
         # Collect visible post links
         links = driver.find_elements(
@@ -2473,8 +2854,9 @@ def read_post_action(driver) -> bool:
             except Exception:
                 continue
 
+        log.info("[READ POST]  visible_post_links=%d", len(visible))
         if not visible:
-            log.debug("read_post_action: no visible post links found")
+            log.info("[ACTION SKIP]  action=read_post  reason=no_visible_post_links")
             return False
 
         target = random.choice(visible[:10])
@@ -2492,7 +2874,7 @@ def read_post_action(driver) -> bool:
             )
         except TimeoutException:
             pass
-        inject_cursor_overlay(driver)
+        #inject_cursor_overlay(driver)
         init_cursor_pos(driver)
 
         dwell = random.uniform(5.0, 18.0)
@@ -2508,10 +2890,15 @@ def read_post_action(driver) -> bool:
             navigate_history(driver, "back")
         precise_sleep(random.uniform(1.0, 2.5))
         log.info("[ READ POST ]  returned to feed")
+        # ── DEBUG LOGGING: ACTION END (success) ──────────────────────────────────
+        _session_metrics["reads"] += 1
+        log.info("[ACTION END]  action=read_post  result=success  duration=%.1fs",
+                 time.perf_counter() - _action_t0)
+        # ────────────────────────────────────────────────────────────────────
         return True
 
     except (NoSuchElementException, TimeoutException, WebDriverException) as exc:
-        log.debug("read_post_action failed: %s", exc)
+        log.warning("[ACTION END]  action=read_post  result=failure  error=%s", exc)
         try:
             if driver.current_url != current_url:
                 if not click_home_button(driver):
@@ -2547,8 +2934,14 @@ def comment_on_post(driver) -> bool:
         current_url = driver.current_url
         on_threads  = "threads.net" in current_url or "threads.com" in current_url
         if not on_threads:
-            log.debug("comment_on_post: not on Threads — skipping")
+            log.info("[ACTION SKIP]  action=comment  reason=not_on_threads  url=%s",
+                     current_url[:60])
             return False
+        # ── DEBUG LOGGING: ACTION START ─────────────────────────────────────────
+        _action_t0 = time.perf_counter()
+        _session_metrics["actions_dispatched"] += 1
+        log.info("[ACTION START]  action=comment")
+        # ────────────────────────────────────────────────────────────────────
 
         # 1. Collect visible Reply buttons
         reply_btns = driver.find_elements(By.CSS_SELECTOR, REPLY_BTN_CSS)
@@ -2566,8 +2959,9 @@ def comment_on_post(driver) -> bool:
             except Exception:
                 continue
 
+        log.info("[COMMENT]  visible_reply_buttons=%d", len(visible))
         if not visible:
-            log.debug("comment_on_post: no visible reply buttons found")
+            log.info("[ACTION SKIP]  action=comment  reason=no_visible_reply_buttons")
             return False
 
         target_btn = random.choice(visible[:8])
@@ -2649,10 +3043,15 @@ def comment_on_post(driver) -> bool:
         # 8. Post-click pause — watching the reply appear
         precise_sleep(random.uniform(1.5, 3.5))
         log.info("[ COMMENT ]  comment posted successfully")
+        # ── DEBUG LOGGING: ACTION END (success) ──────────────────────────────────
+        _session_metrics["comments"] += 1
+        log.info("[ACTION END]  action=comment  result=success  duration=%.1fs",
+                 time.perf_counter() - _action_t0)
+        # ────────────────────────────────────────────────────────────────────
         return True
 
     except (NoSuchElementException, TimeoutException, WebDriverException) as exc:
-        log.debug("comment_on_post failed: %s", exc)
+        log.warning("[ACTION END]  action=comment  result=failure  error=%s", exc)
         return False
 
 
@@ -2749,11 +3148,35 @@ def _can_post_now(profile_id: str, state: dict) -> bool:
     next_ts = entry.get("next_post_ts", 0.0)
     if now < next_ts:
         wait_min = (next_ts - now) / 60
+        # ── DEBUG LOGGING: [POST GATE] blocked by Poisson ────────────────────
+        days_old_pg = (date.fromisoformat(today) - date.fromisoformat(entry["first_seen"])).days
+        log.info(
+            "[POST GATE]  profile=%s  days_old=%d  quota=%d  today_count=%d"
+            "  last_post_ago=%.1fh  next_post_in=%.1fh  poisson_gate=block"
+            "  result=blocked_cooldown",
+            profile_id, days_old_pg, _post_daily_quota(days_old_pg),
+            entry.get("daily_counts", {}).get(today, 0),
+            (now - entry.get("last_post_ts", now)) / 3600,
+            wait_min / 60,
+        )
+        # ────────────────────────────────────────────────────────────────────
         log.info("[ POST ]  skipping — next post allowed in %.0f min (Poisson gate)", wait_min)
         return False
     # Always enforce hard floor as well
     elapsed = now - entry.get("last_post_ts", 0.0)
     if elapsed < POST_MIN_GAP_SEC:
+        days_old_pg2 = (date.fromisoformat(today) - date.fromisoformat(entry["first_seen"])).days
+        # ── DEBUG LOGGING: [POST GATE] hard floor ─────────────────────────────
+        log.info(
+            "[POST GATE]  profile=%s  days_old=%d  quota=%d  today_count=%d"
+            "  last_post_ago=%.1fh  next_post_in=%.1fh  poisson_gate=pass"
+            "  result=blocked_cooldown",
+            profile_id, days_old_pg2, _post_daily_quota(days_old_pg2),
+            entry.get("daily_counts", {}).get(today, 0),
+            elapsed / 3600,
+            max(0, (entry.get("next_post_ts", 0) - now)) / 3600,
+        )
+        # ────────────────────────────────────────────────────────────────────
         log.info(
             "[ POST ]  skipping — %.0f min since last post (hard floor)",
             elapsed / 60,
@@ -2766,6 +3189,16 @@ def _can_post_now(profile_id: str, state: dict) -> bool:
     ).days
     quota = _post_daily_quota(days_old)
     if quota == 0:
+        # ── DEBUG LOGGING: [POST GATE] ramp-up block ───────────────────────────
+        log.info(
+            "[POST GATE]  profile=%s  days_old=%d  quota=0  today_count=%d"
+            "  last_post_ago=%.1fh  next_post_in=n/a  poisson_gate=pass"
+            "  result=blocked_rampup",
+            profile_id, days_old,
+            entry.get("daily_counts", {}).get(today, 0),
+            (now - entry.get("last_post_ts", now)) / 3600,
+        )
+        # ────────────────────────────────────────────────────────────────────
         log.info(
             "[ POST ]  skipping — account age %d day(s), quota=0 during ramp-up",
             days_old,
@@ -2775,12 +3208,32 @@ def _can_post_now(profile_id: str, state: dict) -> bool:
     # Daily cap
     today_count = entry.get("daily_counts", {}).get(today, 0)
     if today_count >= quota:
+        # ── DEBUG LOGGING: [POST GATE] daily quota exhausted ──────────────────────
+        log.info(
+            "[POST GATE]  profile=%s  days_old=%d  quota=%d  today_count=%d"
+            "  last_post_ago=%.1fh  next_post_in=%.1fh  poisson_gate=pass"
+            "  result=blocked_quota",
+            profile_id, days_old, quota, today_count,
+            (now - entry.get("last_post_ts", now)) / 3600,
+            max(0, (entry.get("next_post_ts", 0) - now)) / 3600,
+        )
+        # ────────────────────────────────────────────────────────────────────
         log.info(
             "[ POST ]  skipping — daily quota %d reached (%d posted today)",
             quota, today_count,
         )
         return False
 
+    # ── DEBUG LOGGING: [POST GATE] allowed ────────────────────────────────────
+    log.info(
+        "[POST GATE]  profile=%s  days_old=%d  quota=%d  today_count=%d"
+        "  last_post_ago=%.1fh  next_post_in=%.1fh  poisson_gate=pass"
+        "  result=allowed",
+        profile_id, days_old, quota, today_count,
+        (now - entry.get("last_post_ts", now)) / 3600,
+        max(0, (entry.get("next_post_ts", 0) - now)) / 3600,
+    )
+    # ────────────────────────────────────────────────────────────────────
     return True
 
 
@@ -3046,6 +3499,10 @@ def create_post(driver, profile_id: str) -> bool:
     if not _can_post_now(profile_id, state):
         return False
 
+    # ── DEBUG LOGGING: POST FLOW timer ────────────────────────────────────────
+    _pf_t0 = time.perf_counter()
+    # ──────────────────────────────────────────────────────────────────────────
+
     if not POST_CAPTION_POOL:
         log.warning("create_post: POST_CAPTION_POOL is empty — cannot post")
         return False
@@ -3143,6 +3600,8 @@ def create_post(driver, profile_id: str) -> bool:
 
         # Brief settle — SPA modal animation
         precise_sleep(random.uniform(0.6, 1.2))
+        log.info("[POST FLOW]  step=compose_open  success=True  duration=%.0fms  detail=textbox_visible",
+                 (time.perf_counter() - _pf_t0) * 1000)
 
         # 4. Attach image — click the Attach-media button (opens OS file dialog),
         #    simulate human file-locate time, then dismiss the dialog by pasting
@@ -3191,6 +3650,8 @@ def create_post(driver, profile_id: str) -> bool:
                     _pag.press("enter")                       # confirm → dialog closes
                     log.info("[ POST ]  media attached via OS dialog: %s",
                              os.path.basename(image_path))
+                    log.info("[POST FLOW]  step=media_attach  success=True  detail=%s",
+                             os.path.basename(image_path))
                     # Allow SPA to receive the file-change event and start upload
                     precise_sleep(random.uniform(1.5, 2.5))
 
@@ -3211,6 +3672,8 @@ def create_post(driver, profile_id: str) -> bool:
                         )
                         fi.send_keys(image_path)
                         log.info("[ POST ]  media attached (fallback): %s",
+                                 os.path.basename(image_path))
+                        log.info("[POST FLOW]  step=media_attach  success=True  detail=%s(fallback)",
                                  os.path.basename(image_path))
                     else:
                         log.debug("create_post: no file input found — text-only")
@@ -3256,6 +3719,8 @@ def create_post(driver, profile_id: str) -> bool:
         bezier_move(driver, text_box)
         precise_sleep(random.uniform(0.3, 0.7))
         human_type(text_box, caption, driver)
+        log.info("[POST FLOW]  step=caption_type  success=True  detail=%r",
+                 caption[:40])
 
         # 6. Re-read pause — mimics proof-reading before hitting Post
         reread_s = random.uniform(1.5, 4.0)
@@ -3374,6 +3839,7 @@ def create_post(driver, profile_id: str) -> bool:
             _cdp_click(driver)
         except WebDriverException:
             driver.execute_script("arguments[0].click();", post_btn)
+        log.info("[POST FLOW]  step=submit_click  success=True  detail=post_btn_clicked")
         debug_cursor_state(driver, "post-submit-click")
 
         # 8. Wait for modal to close (compose textbox disappears on success)
@@ -3384,6 +3850,9 @@ def create_post(driver, profile_id: str) -> bool:
         except TimeoutException:
             pass
         precise_sleep(random.uniform(1.5, 3.0))
+        log.info("[POST FLOW]  step=modal_close  success=%s  duration=%.0fms  detail=compose_textbox_gone",
+                 not bool(driver.find_elements(By.CSS_SELECTOR, COMPOSE_TEXTBOX_CSS)),
+                 (time.perf_counter() - _pf_t0) * 1000)
 
         _record_post(profile_id, state)
         log.info("[ POST ]  new post published successfully")
@@ -3429,8 +3898,19 @@ def create_post(driver, profile_id: str) -> bool:
 
 def post_action(driver, profile_id: str) -> None:
     """Session-loop dispatch wrapper for create_post."""
+    # ── DEBUG LOGGING: ACTION START ────────────────────────────────────────────
+    _action_t0 = time.perf_counter()
+    _session_metrics["actions_dispatched"] += 1
+    log.info("[ACTION START]  action=post")
+    # ────────────────────────────────────────────────────────────────────
     log.info("[ POST ACTION ]  creating a new post")
-    create_post(driver, profile_id)
+    result = create_post(driver, profile_id)
+    # ── DEBUG LOGGING: ACTION END ────────────────────────────────────────────
+    if result:
+        _session_metrics["posts"] += 1
+    log.info("[ACTION END]  action=post  result=%s  duration=%.1fs",
+             "success" if result else "failure", time.perf_counter() - _action_t0)
+    # ────────────────────────────────────────────────────────────────────
 
 
 def run_social_session(
@@ -3453,8 +3933,17 @@ def run_social_session(
     - Engagement variety: occasional notification check or profile view.
     - Guaranteed at least one active action per session (forced if < 60 s remain).
     """
-    global _session_followed
+    global _session_followed, _session_metrics
     _session_followed = set()          # reset per-session seen-profile cache
+
+    # ── DEBUG LOGGING: reset session metrics for this session ────────────────
+    _session_metrics = {
+        "actions_dispatched": 0, "likes": 0, "comments": 0,
+        "follows": 0, "posts": 0, "passive": 0, "reads": 0,
+        "profile_visits": 0, "searches": 0,
+        "last_action": None, "consecutive_same": 0,
+    }
+    # ────────────────────────────────────────────────────────────────────
 
     session_start_ts = time.time()     # used to enforce passive phase before posting
     deadline    = session_start_ts + session_seconds
@@ -3469,6 +3958,24 @@ def run_social_session(
         "read=%.2f comment=%.2f follow=%.2f top=%.2f search=%.2f post=%.2f)",
         active_prob, w_notify, w_profile, w_read, w_comment, w_follow, w_top, w_search, w_post,
     )
+    # ── DEBUG LOGGING: RISK WARN for high active_prob + STATE SNAPSHOT session_start ──
+    if active_prob > 0.45:
+        _dlog.warning(
+            "[RISK WARN]  active_prob=%.3f > 0.45 threshold — high engagement anomaly",
+            active_prob,
+        )
+    try:
+        _snap_url = driver.current_url
+        _snap_vp  = driver.execute_script("return [window.innerWidth, window.innerHeight]")
+    except Exception:
+        _snap_url, _snap_vp = "unknown", [-1, -1]
+    log.info(
+        "[STATE SNAPSHOT]  event=session_start  profile=%s  session_sec=%.0f"
+        "  active_prob=%.3f  cursor_pos=(%d,%d)  viewport=(%dx%d)  page_url=%s",
+        profile_id, session_seconds, active_prob,
+        _cursor_pos[0], _cursor_pos[1], _snap_vp[0], _snap_vp[1], _snap_url[:80],
+    )
+    # ────────────────────────────────────────────────────────────────────
 
     # Precompute cumulative dispatch thresholds from individual weights.
     t_notify  = active_prob + w_notify
@@ -3482,42 +3989,56 @@ def run_social_session(
 
     while time.time() < deadline:
         time_left = deadline - time.time()
+        roll = 0.0            # sentinel; overwritten in the else branch below
+        selected_action = "passive"
 
-        # Force active if we haven’t done one yet and time is almost up
+        # Force active if we haven't done one yet and time is almost up
         if not active_done and time_left < 60:
             log.info("Forcing active action (session guarantee).")
+            selected_action = "active_forced"
             active_action(driver)
             active_done = True
         else:
             roll = random.random()
             if roll < active_prob:
+                selected_action = "active"
                 active_action(driver)
                 active_done = True
             elif roll < t_notify:
+                selected_action = "notify"
                 # notify weight (default ~3 %): check notifications
                 check_notifications_action(driver)
             elif roll < t_profile:
+                selected_action = "profile_view"
                 # profile weight (default ~6 %): click feed author link, browse profile
                 view_profile_from_feed(driver)
+                _session_metrics["profile_visits"] += 1
             elif roll < t_read:
+                selected_action = "read_post"
                 # read weight (default ~8 %): click into a thread, read reply chain, go back
                 read_post_action(driver)
             elif roll < t_comment:
+                selected_action = "comment"
                 # comment weight (default ~5 %): leave a short comment on a feed post
                 comment_on_post(driver)
             elif roll < t_follow:
+                selected_action = "follow"
                 # follow weight (default ~3 %): quick-follow from feed (+) button
                 follow_from_feed(driver)
             elif roll < t_top:
+                selected_action = "return_top"
                 # top weight (default ~3 %): return to top via logo
                 return_to_top_action(driver)
             elif roll < t_search:
+                selected_action = "search"
                 # search weight (default ~6 %): open search page, dwell, return home
                 visit_search_action(driver)
+                _session_metrics["searches"] += 1
             elif roll < t_post:
+                selected_action = "post"
                 # post weight (default ~2 %): create a new original post
                 # Gate: only after a meaningful passive phase so the session
-                # pattern is scroll→read→decide-to-post, never post-immediately.
+                # pattern is scroll->read->decide-to-post, never post-immediately.
                 passive_elapsed = time.time() - session_start_ts
                 if passive_elapsed >= POST_PASSIVE_PHASE_SEC:
                     post_action(driver, profile_id)
@@ -3525,15 +4046,69 @@ def run_social_session(
                     wait_min = (POST_PASSIVE_PHASE_SEC - passive_elapsed) / 60
                     log.info(
                         "[ POST ]  passive phase not complete (%.1f min remaining) "
-                        "— deferring post to scroll",
+                        "-- deferring post to scroll",
                         wait_min,
                     )
+                    selected_action = "passive"
                     passive_action(driver)
             else:
+                selected_action = "passive"
                 passive_action(driver)
+
+        # ── DEBUG LOGGING: [SESSION TICK] + consecutive-action RISK WARN ──────────
+        _sess_elapsed = time.time() - session_start_ts
+        if _session_metrics["last_action"] == selected_action:
+            _session_metrics["consecutive_same"] += 1
+        else:
+            _session_metrics["consecutive_same"] = 0
+        _session_metrics["last_action"] = selected_action
+        log.info(
+            "[SESSION TICK]  iteration=%d  roll=%.4f  selected_action=%s"
+            "  session_elapsed=%.0fs  session_deadline=%.0fs"
+            "  active_done=%s  actions_this_session=%d"
+            "  weights=active:%.2f notify:%.2f profile:%.2f read:%.2f"
+            "         comment:%.2f follow:%.2f top:%.2f search:%.2f post:%.2f",
+            count + 1, roll, selected_action,
+            _sess_elapsed, session_seconds,
+            active_done, _session_metrics["actions_dispatched"],
+            active_prob, w_notify, w_profile, w_read,
+            w_comment, w_follow, w_top, w_search, w_post,
+        )
+        if _session_metrics["consecutive_same"] >= 2:
+            _dlog.warning(
+                "[RISK WARN]  consecutive_same=%d  action=%s -- periodic pattern detected",
+                _session_metrics["consecutive_same"] + 1, selected_action,
+            )
+        # ────────────────────────────────────────────────────────────────────
 
         count += 1
         precise_sleep(random.uniform(1, 3))
+
+    # ── DEBUG LOGGING: post-session RISK WARNs + STATE SNAPSHOT session_end ────
+    if _session_metrics["passive"] == 0:
+        _dlog.warning(
+            "[RISK WARN]  session ended with 0 passive actions -- pure engagement bot pattern"
+        )
+    try:
+        _end_url = driver.current_url
+    except Exception:
+        _end_url = "unknown"
+    log.info(
+        "[STATE SNAPSHOT]  event=session_end  profile=%s  session_sec=%.0f"
+        "  active_prob=%.3f  cursor_pos=(%d,%d)"
+        "  session_followed=%d  actions_dispatched=%d"
+        "  likes=%d  comments=%d  follows=%d  posts=%d  passive=%d  reads=%d"
+        "  profile_visits=%d  searches=%d  page_url=%s",
+        profile_id, session_seconds, active_prob,
+        _cursor_pos[0], _cursor_pos[1],
+        len(_session_followed), _session_metrics["actions_dispatched"],
+        _session_metrics["likes"], _session_metrics["comments"],
+        _session_metrics["follows"], _session_metrics["posts"],
+        _session_metrics["passive"], _session_metrics["reads"],
+        _session_metrics["profile_visits"], _session_metrics["searches"],
+        _end_url[:80],
+    )
+    # ────────────────────────────────────────────────────────────────────
 
     log.info("Session complete. Total actions: %d", count)
 
