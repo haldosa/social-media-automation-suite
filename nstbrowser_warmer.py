@@ -19,6 +19,8 @@ import time
 import logging
 import math
 import os
+import sys
+import ctypes
 import glob as _glob
 import re
 import textwrap
@@ -230,6 +232,108 @@ _mlog.propagate = False  # keep mouse events out of the main log
 
 
 # ================================================================== #
+#  HIGH-PRECISION TIMER  (Windows 15.625 ms fix)
+# ================================================================== #
+# Windows default timer resolution is ~15.6 ms.  All short sleeps
+# (keystrokes, mouse steps, scroll ticks) snap to this grid, creating
+# a detectable 64 Hz spike in inter-event timestamps.  We raise the
+# resolution to 1 ms at startup and use a busy-wait tail for sub-ms
+# precision.
+
+if sys.platform == "win32":
+    try:
+        _winmm = ctypes.windll.winmm
+        _winmm.timeBeginPeriod(1)
+        import atexit as _atexit
+        _atexit.register(_winmm.timeEndPeriod, 1)
+        log.info("Windows timer resolution raised to 1 ms (timeBeginPeriod)")
+    except Exception:
+        log.debug("Could not raise Windows timer resolution")
+
+
+def precise_sleep(seconds: float) -> None:
+    """High-precision sleep: kernel sleep for bulk, busy-wait for the tail.
+
+    On Windows with timeBeginPeriod(1), kernel sleep resolution is ~1 ms.
+    The last 2 ms are consumed by a busy-wait loop on perf_counter to
+    eliminate jitter from the kernel scheduler.
+    """
+    if seconds <= 0:
+        return
+    if seconds <= 0.002:
+        end = time.perf_counter() + seconds
+        while time.perf_counter() < end:
+            pass
+        return
+    end = time.perf_counter() + seconds
+    kernel_sleep = seconds - 0.002
+    if kernel_sleep > 0:
+        time.sleep(kernel_sleep)
+    while time.perf_counter() < end:
+        pass
+
+
+# ================================================================== #
+#  CHROMEDRIVER $cdc_ VARIABLE DEFENCE
+# ================================================================== #
+# ChromeDriver injects $cdc_asdjflasutopfhvcZLmcfl_ (or similarly named)
+# properties into every document context.  Meta's JS can enumerate
+# document properties and detect these.  Multi-layered defence:
+#   Layer 1 — Pre-page JS mask (Page.addScriptToEvaluateOnNewDocument)
+#   Layer 2 — Binary-patch ChromeDriver (build-time, cached)
+#   Layer 3 — Runtime verification
+
+_CDC_MASK_JS = """
+(function() {
+    const re = /\\$[a-z]dc_/;
+    const names = Object.getOwnPropertyNames(document);
+    for (const p of names) {
+        if (re.test(p)) {
+            delete document[p];
+            Object.defineProperty(document, p, {
+                get: function() { return undefined; },
+                configurable: false,
+            });
+        }
+    }
+})();
+"""
+
+
+def _patch_chromedriver_binary(path: str) -> str:
+    """Binary-patch ChromeDriver to replace $cdc_ variable name.
+
+    Replaces all occurrences of the $cdc_ diagnostic property
+    with a benign string of equal length.  The patch is idempotent —
+    a .patched marker file prevents re-patching on subsequent runs.
+    """
+    patched_marker = path + ".patched"
+    if os.path.exists(patched_marker):
+        return path
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        pattern = re.compile(rb'\$cdc_[a-zA-Z0-9]{22}_')
+        matches = list(pattern.finditer(data))
+        if not matches:
+            log.info("ChromeDriver binary: no $cdc_ pattern found (already clean or new version)")
+            open(patched_marker, "w").close()
+            return path
+        for m in reversed(matches):
+            replacement = b'$xxx_' + b'a' * (len(m.group()) - 5)
+            data = data[:m.start()] + replacement + data[m.end():]
+        with open(path, "wb") as f:
+            f.write(data)
+        open(patched_marker, "w").close()
+        log.info("ChromeDriver binary patched: %d $cdc_ occurrence(s) replaced", len(matches))
+    except PermissionError:
+        log.warning("ChromeDriver binary patch failed: permission denied (file in use?)")
+    except Exception as exc:
+        log.warning("ChromeDriver binary patch failed: %s", exc)
+    return path
+
+
+# ================================================================== #
 #  NSTBROWSER API v2
 # ================================================================== #
 
@@ -322,14 +426,14 @@ def _get_chromedriver_path(major: int) -> str:
             hits = _glob.glob(pat, recursive=True)
             if hits:
                 log.info("Using bundled chromedriver: %s", hits[0])
-                return hits[0]
+                return _patch_chromedriver_binary(hits[0])
 
     # 2. webdriver-manager
     try:
         from webdriver_manager.chrome import ChromeDriverManager
         path = ChromeDriverManager(driver_version=str(major)).install()
         log.info("webdriver-manager chromedriver: %s", path)
-        return path
+        return _patch_chromedriver_binary(path)
     except ImportError:
         log.warning("webdriver-manager not installed — run: pip install webdriver-manager")
     except Exception as e:
@@ -370,6 +474,31 @@ def connect_selenium(ws_debugger_url: str) -> webdriver.Chrome:
     # and trust the profile's built-in fingerprint configuration.
     driver.execute_cdp_cmd("Network.enable", {})
 
+    # Layer 1 — Pre-page JS mask for $cdc_ ChromeDriver variable.
+    # This runs before every page load to intercept the variable injection.
+    # Unlike navigator.webdriver patching (handled by Orbita), this targets
+    # ChromeDriver's diagnostic property which Orbita does not mask.
+    try:
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": _CDC_MASK_JS,
+        })
+    except WebDriverException as exc:
+        log.debug("$cdc_ pre-page mask injection failed: %s", exc)
+
+    # Layer 3 — Runtime verification on the current page context.
+    try:
+        _cdc_found = driver.execute_script(
+            "return Object.getOwnPropertyNames(document)"
+            ".filter(function(p){return /\\$[a-z]dc_/.test(p)});"
+        )
+        if _cdc_found:
+            log.warning("$cdc_ variables still present — force-removing: %s", _cdc_found)
+            driver.execute_script(_CDC_MASK_JS)
+        else:
+            log.info("$cdc_ mask verified: no ChromeDriver variables detected")
+    except WebDriverException:
+        pass
+
     log.info("Selenium attached successfully.")
     return driver
 
@@ -384,7 +513,7 @@ _SLOW_BIGRAMS = {
     'qu', 'wr', 'xc', 'zx', 'bv', 'vb', 'pq', 'yw', 'wq', 'xz',
 }
 
-def human_type(element, text: str) -> None:
+def human_type(element, text: str, driver=None) -> None:
     """
     Type text with a realistic keystroke timing model.
 
@@ -398,9 +527,17 @@ def human_type(element, text: str) -> None:
     - Burst pattern: 3–7 characters are typed in rapid succession, then a
       brief burst-gap (60–200 ms extra) before the next burst begins — matching
       the way humans type in phrases rather than character-by-character.
+
+    When driver is supplied the focus click is dispatched via CDP at the
+    current _cursor_pos (where bezier_move left the cursor), so the click
+    lands at the natural offset rather than snapping to the element centre.
     """
-    element.click()
-    time.sleep(random.uniform(0.08, 0.25))   # focus-settle after click
+    if driver is not None:
+        # CDP click at wherever the bezier arc landed — no centre-snap.
+        _cdp_click(driver)
+    else:
+        element.click()   # fallback when driver is unavailable
+    precise_sleep(random.uniform(0.08, 0.25))   # focus-settle after click
     prev      = ''
     word_len  = 0
     burst_rem = random.randint(3, 7)          # characters left in current burst
@@ -436,7 +573,7 @@ def human_type(element, text: str) -> None:
             burst_rem = random.randint(3, 7)
 
         element.send_keys(char)
-        time.sleep(base)
+        precise_sleep(base)
         prev = char
 
 
@@ -743,9 +880,45 @@ def _fire_bezier_arc(
         for i, ((nx, ny, dx, dy), t_ms) in enumerate(zip(points, step_times), 1):
             _mlog.debug("STEP  i=%02d  t=+%.0fms  pos=(%d,%d)  delta=(%+d,%+d)",
                         i, t_ms, nx, ny, dx, dy)
-    driver.execute_script(_BEZIER_DISPATCH_JS, points, delays)
-    time.sleep(sum(d / 1000.0 for d in delays) + 0.05)
+    # Dispatch via CDP Input.dispatchMouseEvent — produces isTrusted:true
+    # events with the full pointermove → mousemove chain that real input
+    # produces.  Per-step round-trips are ~1 ms over localhost, well within
+    # the 8–22 ms inter-step budget.
+    for pt, d_ms in zip(points, delays):
+        try:
+            driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                "type": "mouseMoved",
+                "x": pt[0],
+                "y": pt[1],
+            })
+        except WebDriverException:
+            pass
+        precise_sleep(d_ms / 1000.0)
     return points, delays
+
+
+def _cdp_click(driver, x: int = None, y: int = None) -> None:
+    """Dispatch a trusted click via CDP Input.dispatchMouseEvent.
+
+    If x, y are omitted, clicks at the current _cursor_pos.
+    Produces mousePressed + mouseReleased with a realistic inter-event
+    gap drawn from a human-like distribution.
+    """
+    cx = x if x is not None else _cursor_pos[0]
+    cy = y if y is not None else _cursor_pos[1]
+    driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+        "type": "mousePressed",
+        "x": cx, "y": cy,
+        "button": "left",
+        "clickCount": 1,
+    })
+    precise_sleep(random.uniform(0.04, 0.11))
+    driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+        "type": "mouseReleased",
+        "x": cx, "y": cy,
+        "button": "left",
+        "clickCount": 1,
+    })
 
 def init_cursor_pos(driver) -> None:
     """
@@ -770,20 +943,11 @@ def init_cursor_pos(driver) -> None:
 def bezier_move(driver, target_element) -> None:
     """
     Move the mouse to target_element along a randomised quadratic Bezier curve
-    at a true 60 fps frame rate.
+    at ~60 fps using CDP Input.dispatchMouseEvent for trusted events.
 
-    Two-phase approach:
-      Phase 1 — JS animation via _fire_bezier_arc(): all points are
-        pre-computed in Python and dispatched to the browser in ONE
-        execute_script call.  JS fires DOM mousemove events at the computed
-        per-step interval; Python sleeps for the arc duration.  No per-step
-        Python ↔ browser round-trips — genuine ~60 fps.
-
-      Phase 2 — CDP hover: a single ActionChains.move_to_element_with_offset()
-        fires the real browser hover events (CSS :hover, mouseenter, etc.).
-        The aim-offset scatter (off_dx/off_dy) is applied only here so the
-        DOM sees at most a few pixels' gap between the last JS event and the
-        real pointer.
+    All Bezier points are pre-computed in Python and dispatched via CDP,
+    producing isTrusted:true mouseMoved events with the full
+    pointermove → mousemove chain.
 
     Cursor continuity: _cursor_pos is used as the start point and updated
     after each call so every arc begins from where the cursor last rested.
@@ -811,10 +975,17 @@ def bezier_move(driver, target_element) -> None:
         y0 = max(0, min(_cursor_pos[1], int(vh)))
         # Proximity guard: cursor already within 25 px — treat as hovering.
         if math.hypot(x1 - x0, y1 - y0) < 25:
-            ActionChains(driver).move_to_element_with_offset(
-                target_element, off_dx, off_dy
-            ).perform()
-            _set_cursor(int(rect["x"]) + off_dx, int(rect["y"]) + off_dy, "hover-dwell")
+            _cdp_x = int(rect["x"]) + off_dx
+            _cdp_y = int(rect["y"]) + off_dy
+            try:
+                driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                    "type": "mouseMoved",
+                    "x": _cdp_x,
+                    "y": _cdp_y,
+                })
+            except WebDriverException:
+                pass
+            _set_cursor(_cdp_x, _cdp_y, "hover-dwell")
             _mlog.debug("DWELL  cursor within 25px of target  dist=%.1fpx",
                         math.hypot(x1 - x0, y1 - y0))
             debug_cursor_state(driver, "bezier-dwell")
@@ -825,7 +996,7 @@ def bezier_move(driver, target_element) -> None:
                 "arguments[0].scrollIntoView({behavior:'instant', block:'center'});",
                 target_element,
             )
-            time.sleep(random.uniform(0.3, 0.6))
+            precise_sleep(random.uniform(0.3, 0.6))
             rect = driver.execute_script(
                 "var r=arguments[0].getBoundingClientRect();"
                 "return {x:r.left+r.width/2, y:r.top+r.height/2, w:r.width, h:r.height};",
@@ -851,10 +1022,8 @@ def bezier_move(driver, target_element) -> None:
                     "SNAP GAP  last_synthetic=(%d,%d)  snap_target=(%d,%d)  gap=%.1fpx",
                     last_syn_x, last_syn_y, snap_x, snap_y, snap_gap,
                 )
-        # Phase 2 — CDP hover fires real browser hover/mouseenter events.
-        ActionChains(driver).move_to_element_with_offset(
-            target_element, off_dx, off_dy
-        ).perform()
+        # CDP dispatch already produced trusted events at the exact
+        # endpoint — no Phase 2 ActionChains snap needed.
         _set_cursor(snap_x, snap_y, "elem-hover")
         debug_cursor_state(driver, "bezier-snap")
 
@@ -873,10 +1042,9 @@ def bezier_move_to_coords(driver, x1: int, y1: int, tag: str = "arc-end") -> Non
       • hand-shift nudges between scroll chunks            ("scroll-drift")
       • pre-aim drifts toward a UI region                  ("nav-hover")
 
-    Phase 1: JS mousemove dispatch via _fire_bezier_arc() with exact_end=True
-             so the arc lands exactly on the target coordinate.
-    Phase 2: ActionBuilder.move_to_location() — absolute W3C pointer move
-             that corrects any drift between _cursor_pos and the real pointer.
+    CDP mouseMoved dispatch via _fire_bezier_arc() with exact_end=True
+    so the arc lands exactly on the target coordinate.  CDP produces
+    trusted events — no Phase 2 ActionBuilder snap needed.
     """
     global _cursor_pos
     try:
@@ -889,15 +1057,6 @@ def bezier_move_to_coords(driver, x1: int, y1: int, tag: str = "arc-end") -> Non
         if x0 == x1 and y0 == y1:
             return
         _fire_bezier_arc(driver, x0, y0, x1, y1, vw, vh, exact_end=True)
-        # Phase 2 — absolute pointer correction so real W3C pointer tracks
-        # with _cursor_pos instead of accumulating relative drift.
-        try:
-            ab = ActionBuilder(driver,
-                               mouse=PointerInput(interaction.POINTER_MOUSE, "mouse"))
-            ab.pointer_action.move_to_location(x1, y1)
-            ab.perform()
-        except WebDriverException:
-            pass
         _set_cursor(x1, y1, tag)
         debug_cursor_state(driver, f"bezier-coords/{tag}")
     except WebDriverException:
@@ -977,7 +1136,7 @@ def _navigate_and_settle(driver, action) -> None:
 
     # 5. Settle — 1.5–3.5 s to mimic a real user visually orienting
     #    after a full page navigation before moving the mouse.
-    time.sleep(random.uniform(1.5, 3.5))
+    precise_sleep(random.uniform(1.5, 3.5))
 
     # 6. Drift into content — first synthetic event on the new page,
     #    starting from (park_x, 0) and moving naturally into the feed area.
@@ -1042,16 +1201,28 @@ def smooth_scroll_chunk(driver, distance_px: int,
         move     = max(1, min(int(move_f), total - scrolled))
         if move <= 0:
             break
-        driver.execute_script("window.scrollBy(0, arguments[0]);", direction * move)
+        driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+            "type": "mouseWheel",
+            "x": _cursor_pos[0],
+            "y": _cursor_pos[1],
+            "deltaX": 0,
+            "deltaY": direction * move,
+        })
         scrolled += move
         # Tick duration varies inversely with velocity (slow ends, fast middle)
         delay = (tick_ms / 1000.0) * (0.5 + (1.0 - velocity) * 1.0)
-        time.sleep(delay + random.uniform(-0.003, 0.003))
+        precise_sleep(delay + random.uniform(-0.003, 0.003))
 
     # Flush any sub-step remainder
     remainder = total - scrolled
     if remainder > 0:
-        driver.execute_script("window.scrollBy(0, arguments[0]);", direction * remainder)
+        driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+            "type": "mouseWheel",
+            "x": _cursor_pos[0],
+            "y": _cursor_pos[1],
+            "deltaX": 0,
+            "deltaY": direction * remainder,
+        })
 
 
 def stochastic_scroll(driver, total_seconds: float) -> None:
@@ -1079,7 +1250,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
         of JS viewport queries on quick skims.
         """
         if seconds < 0.8:
-            time.sleep(seconds)
+            precise_sleep(seconds)
             return
         end = time.time() + seconds
         while True:
@@ -1087,7 +1258,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
             if remaining <= 0:
                 break
             sit = min(random.uniform(1.0, 3.0), remaining)
-            time.sleep(sit)
+            precise_sleep(sit)
             if end - time.time() <= 0.15:
                 break
             if random.random() < 0.5:
@@ -1121,7 +1292,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
         _chunk_count += 1
 
         # brief pause after scroll lands (hand leaving wheel)
-        time.sleep(random.uniform(0.15, 0.45))
+        precise_sleep(random.uniform(0.15, 0.45))
 
         # Occasional hand-shift nudge between scroll chunks.
         # Fires after every _nudge_after chunks; threshold is re-randomised
@@ -1162,7 +1333,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
             )
             smooth_scroll_chunk(driver, -up_px, step_px=5, tick_ms=18)
             dwell = random.uniform(1.5, 4.0) if up_px >= 200 else random.uniform(0.4, 1.2)
-            time.sleep(dwell)
+            precise_sleep(dwell)
 
         if time.time() >= deadline:
             break
@@ -1364,10 +1535,10 @@ def scroll_element_into_loose_view(driver, element) -> None:
             tick_ms=random.randint(13, 20),
         )
         # Brief inter-chunk pause — hand rests between flicks
-        time.sleep(random.uniform(0.08, 0.25))
+        precise_sleep(random.uniform(0.08, 0.25))
 
     # Imprecise final pause — not a fixed sleep
-    time.sleep(random.uniform(0.3, 0.7))
+    precise_sleep(random.uniform(0.3, 0.7))
 
 
 def _attempt_like(driver, element) -> bool:
@@ -1405,20 +1576,20 @@ def _attempt_like(driver, element) -> bool:
             pass
 
         # Reading pause before liking — humans read before they react
-        time.sleep(random.uniform(0.8, 2.5))
+        precise_sleep(random.uniform(0.8, 2.5))
 
         bezier_move(driver, element)
-        time.sleep(random.uniform(0.2, 0.6))   # hand settling on the button
+        precise_sleep(random.uniform(0.2, 0.6))   # hand settling on the button
 
         try:
-            ActionChains(driver).click().perform()
+            _cdp_click(driver)
         except WebDriverException:
             log.debug("Selenium click intercepted — JS click fallback")
             driver.execute_script("arguments[0].click();", element)
         debug_cursor_state(driver, "like-click")
 
         # Watch the heart animation
-        time.sleep(random.uniform(0.8, 2.0))
+        precise_sleep(random.uniform(0.8, 2.0))
         log.info("Like delivered successfully")
         return True
 
@@ -1627,7 +1798,7 @@ def view_profile_from_feed(driver) -> bool:
         _session_followed.add(profile_url.rstrip("/"))
         log.info("Viewing profile from feed: %s", profile_url[:60])
         bezier_move(driver, target)
-        time.sleep(random.uniform(0.5, 1.5))
+        precise_sleep(random.uniform(0.5, 1.5))
 
         # ~25 % of visits: open the profile in a new tab (mirrors Ctrl+click /
         # middle-click behaviour a real user exhibits occasionally).
@@ -1637,7 +1808,7 @@ def view_profile_from_feed(driver) -> bool:
         if use_new_tab:
             log.info("[ NAV ]  opening profile in new tab")
             driver.execute_script("window.open(arguments[0], '_blank');", profile_url)
-            time.sleep(random.uniform(0.4, 0.9))   # brief pause while tab opens
+            precise_sleep(random.uniform(0.4, 0.9))   # brief pause while tab opens
             driver.switch_to.window(driver.window_handles[-1])
             try:
                 WebDriverWait(driver, 10).until(lambda d: "/@" in d.current_url)
@@ -1646,14 +1817,14 @@ def view_profile_from_feed(driver) -> bool:
             inject_cursor_overlay(driver)
             init_cursor_pos(driver)
         else:
-            ActionChains(driver).click().perform()
+            _cdp_click(driver)
             debug_cursor_state(driver, "profile-nav-click")
             try:
                 WebDriverWait(driver, 10).until(lambda d: "/@" in d.current_url)
             except TimeoutException:
                 pass
 
-        time.sleep(random.uniform(1.5, 3.0))
+        precise_sleep(random.uniform(1.5, 3.0))
         stochastic_scroll(driver, total_seconds=random.uniform(2, 4))
 
         # Follow gate — 15 % probabilistic
@@ -1662,18 +1833,18 @@ def view_profile_from_feed(driver) -> bool:
 
         if use_new_tab:
             # Close the profile tab and return focus to the feed tab.
-            time.sleep(random.uniform(0.5, 1.2))
+            precise_sleep(random.uniform(0.5, 1.2))
             log.info("[ NAV ]  closing profile tab, returning to feed")
             driver.close()
             driver.switch_to.window(original_handle)
-            time.sleep(random.uniform(0.8, 1.8))
+            precise_sleep(random.uniform(0.8, 1.8))
         else:
             # Return via Home nav button — more human-like than the back button.
             # Falls back to navigate_history only if the nav icon is not found.
             if not click_home_button(driver):
                 log.debug("view_profile_from_feed: home button not found — back fallback")
                 navigate_history(driver, "back")
-            time.sleep(random.uniform(1.0, 2.5))
+            precise_sleep(random.uniform(1.0, 2.5))
         return True
 
     except (TimeoutException, WebDriverException) as exc:
@@ -1776,7 +1947,7 @@ def follow_from_feed(driver) -> bool:
                     random.randint(int(vh_e * 0.45), int(vh_e * 0.75)),
                     tag="idle-settle",
                 )
-                time.sleep(random.uniform(0.2, 0.4))
+                precise_sleep(random.uniform(0.2, 0.4))
                 # Small scroll to force any lingering hover card off the screen
                 smooth_scroll_chunk(driver, random.randint(60, 130), step_px=5, tick_ms=16)
             except Exception:
@@ -1784,12 +1955,12 @@ def follow_from_feed(driver) -> bool:
             return False
 
         # ── 4. Arc to the Follow button and click ─────────────────────────────
-        time.sleep(random.uniform(0.3, 0.7))      # eye settling on the card
+        precise_sleep(random.uniform(0.3, 0.7))      # eye settling on the card
         bezier_move(driver, follow_btn)
-        time.sleep(random.uniform(0.3, 0.8))
-        ActionChains(driver).click().perform()
+        precise_sleep(random.uniform(0.3, 0.8))
+        _cdp_click(driver)
         debug_cursor_state(driver, "follow-feed-click")
-        time.sleep(random.uniform(0.8, 1.5))
+        precise_sleep(random.uniform(0.8, 1.5))
         log.info("follow_from_feed: follow clicked via hover card")
         _session_followed.add((username_el.get_attribute("href") or "").rstrip("/"))
 
@@ -1803,7 +1974,7 @@ def follow_from_feed(driver) -> bool:
                 random.randint(int(vh_e * 0.45), int(vh_e * 0.75)),
                 tag="idle-settle",
             )
-            time.sleep(random.uniform(0.2, 0.4))
+            precise_sleep(random.uniform(0.2, 0.4))
             # Scroll down slightly — moves the hovered username off-screen so
             # the hover card closes even if cursor proximity keeps it open.
             smooth_scroll_chunk(driver, random.randint(80, 160), step_px=5, tick_ms=16)
@@ -1843,7 +2014,7 @@ def follow_from_profile_page(driver) -> bool:
             if current_scroll > 50:
                 # Scroll up in one smooth chunk
                 smooth_scroll_chunk(driver, -current_scroll, step_px=8, tick_ms=14)
-                time.sleep(random.uniform(0.4, 0.9))
+                precise_sleep(random.uniform(0.4, 0.9))
         except WebDriverException:
             pass
 
@@ -1869,12 +2040,12 @@ def follow_from_profile_page(driver) -> bool:
             pass
 
         # 4. Deliberate deciding pause + bezier arc to button + click.
-        time.sleep(random.uniform(2.0, 5.0))
+        precise_sleep(random.uniform(2.0, 5.0))
         bezier_move(driver, btn)
-        time.sleep(random.uniform(0.3, 0.8))
-        ActionChains(driver).click().perform()
+        precise_sleep(random.uniform(0.3, 0.8))
+        _cdp_click(driver)
         debug_cursor_state(driver, "follow-profile-click")
-        time.sleep(random.uniform(0.8, 1.5))
+        precise_sleep(random.uniform(0.8, 1.5))
 
         try:
             WebDriverWait(driver, 5).until(
@@ -1946,10 +2117,10 @@ def _click_nav_btn(driver, aria_label: str, label: str) -> bool:
             return False
         WebDriverWait(driver, 4).until(lambda d: btn.is_displayed())
         bezier_move(driver, btn)
-        time.sleep(random.uniform(0.3, 0.7))
-        ActionChains(driver).click().perform()
+        precise_sleep(random.uniform(0.3, 0.7))
+        _cdp_click(driver)
         debug_cursor_state(driver, f"nav-btn/{label}")
-        time.sleep(random.uniform(0.8, 1.8))   # SPA transition settle
+        precise_sleep(random.uniform(0.8, 1.8))   # SPA transition settle
         log.debug("_click_nav_btn: clicked '%s'", label)
         return True
     except WebDriverException as exc:
@@ -1982,12 +2153,12 @@ def check_notifications_action(driver) -> None:
         if not _click_nav_btn(driver, "Notifications", "Notifications"):
             log.debug("Notifications button not found — skipping")
             return
-        time.sleep(random.uniform(2.0, 5.0))
+        precise_sleep(random.uniform(2.0, 5.0))
         stochastic_scroll(driver, total_seconds=random.uniform(5, 15))
         # Return to feed by clicking the Home nav button
         if not click_home_button(driver):
             navigate_to(driver, TARGET_SOCIAL_URL)
-        time.sleep(random.uniform(1.0, 2.5))
+        precise_sleep(random.uniform(1.0, 2.5))
     except (TimeoutException, WebDriverException) as exc:
         log.debug("Notification check failed: %s", exc)
 
@@ -2010,11 +2181,11 @@ def visit_search_action(driver) -> None:
             log.debug("Search button not found — skipping")
             return
         # Dwell as if scanning the search page
-        time.sleep(random.uniform(3.0, 8.0))
+        precise_sleep(random.uniform(3.0, 8.0))
         # Return to feed
         if not click_home_button(driver):
             navigate_to(driver, TARGET_SOCIAL_URL)
-        time.sleep(random.uniform(1.0, 2.0))
+        precise_sleep(random.uniform(1.0, 2.0))
     except (TimeoutException, WebDriverException) as exc:
         log.debug("visit_search_action failed: %s", exc)
 
@@ -2103,12 +2274,12 @@ def _close_media_overlay(driver) -> bool:
 
     try:
         # Brief pause — user realises they're in the media viewer
-        time.sleep(random.uniform(0.6, 1.4))
+        precise_sleep(random.uniform(0.6, 1.4))
         bezier_move(driver, close_btn)
-        time.sleep(random.uniform(0.2, 0.5))
+        precise_sleep(random.uniform(0.2, 0.5))
         # Use ActionChains only — the overlay listens for real pointer events;
         # JS .click() does not fire the pointer / mouse events the React handler needs.
-        ActionChains(driver).click().perform()
+        _cdp_click(driver)
         debug_cursor_state(driver, "media-overlay-close")
 
         # Wait for URL to actually leave the /media path (up to 5 s).
@@ -2136,7 +2307,7 @@ def _close_media_overlay(driver) -> bool:
         if not url_changed:
             return False   # let caller fall back to home nav
 
-        time.sleep(random.uniform(0.8, 1.6))  # settle on the post/feed page
+        precise_sleep(random.uniform(0.8, 1.6))  # settle on the post/feed page
         log.info("[ PASSIVE ]  media overlay closed — back on feed/post")
         return True
     except WebDriverException as exc:
@@ -2173,7 +2344,7 @@ def passive_action(driver) -> None:
             if not click_home_button(driver):
                 log.debug("[ PASSIVE ]  home button not found — hard navigate fallback")
                 navigate_to(driver, TARGET_SOCIAL_URL)
-            time.sleep(random.uniform(1.2, 2.5))  # settle after nav
+            precise_sleep(random.uniform(1.2, 2.5))  # settle after nav
     except WebDriverException as exc:
         log.debug("[ PASSIVE ]  URL guard error: %s", exc)
     # ─────────────────────────────────────────────────────────────────
@@ -2183,7 +2354,7 @@ def passive_action(driver) -> None:
     stochastic_scroll(driver, total_seconds=scroll_time)
 
     # Pause after scrolling stops — user finishes reading the post
-    time.sleep(random.uniform(1.0, 3.0))
+    precise_sleep(random.uniform(1.0, 3.0))
 
 
 def active_action(driver) -> None:
@@ -2213,13 +2384,13 @@ def active_action(driver) -> None:
         pre_roll = random.random()
         if pre_roll < 0.50:
             smooth_scroll_chunk(driver, random.randint(150, 400), step_px=5)
-            time.sleep(random.uniform(1.0, 3.0))
+            precise_sleep(random.uniform(1.0, 3.0))
         elif pre_roll < 0.80:
             smooth_scroll_chunk(driver, random.randint(400, 800), step_px=6)
-            time.sleep(random.uniform(2.0, 4.0))
+            precise_sleep(random.uniform(2.0, 4.0))
         else:
             # No pre-scroll — cursor is already resting on feed content
-            time.sleep(random.uniform(0.5, 1.5))
+            precise_sleep(random.uniform(0.5, 1.5))
 
         candidates = _find_unliked_buttons(driver)
         if not candidates:
@@ -2242,13 +2413,13 @@ def active_action(driver) -> None:
                 liked += 1
                 if liked < len(targets):
                     # Pause between likes — user glances at feed between hearts
-                    time.sleep(random.uniform(2.0, 5.0))
+                    precise_sleep(random.uniform(2.0, 5.0))
 
         # After liking, scroll slightly to load fresh content
         if liked > 0:
-            time.sleep(random.uniform(0.5, 1.5))
+            precise_sleep(random.uniform(0.5, 1.5))
             smooth_scroll_chunk(driver, random.randint(250, 500), step_px=6)
-            time.sleep(random.uniform(1.0, 2.0))
+            precise_sleep(random.uniform(1.0, 2.0))
 
     except (NoSuchElementException, WebDriverException) as exc:
         log.debug("Active action error: %s", exc)
@@ -2311,9 +2482,9 @@ def read_post_action(driver) -> bool:
 
         # Deliberate hover pause — user deciding to click
         bezier_move(driver, target)
-        time.sleep(random.uniform(0.4, 1.2))
+        precise_sleep(random.uniform(0.4, 1.2))
 
-        ActionChains(driver).click().perform()
+        _cdp_click(driver)
         debug_cursor_state(driver, "read-post-click")
         try:
             WebDriverWait(driver, 15).until(
@@ -2326,7 +2497,7 @@ def read_post_action(driver) -> bool:
 
         dwell = random.uniform(5.0, 18.0)
         log.info("[ READ POST ]  reading thread for %.0fs", dwell)
-        time.sleep(random.uniform(1.0, 2.5))  # initial read of the post itself
+        precise_sleep(random.uniform(1.0, 2.5))  # initial read of the post itself
         stochastic_scroll(driver, total_seconds=dwell)
 
         # Return via Home nav button — clicking the logo is more natural than
@@ -2335,7 +2506,7 @@ def read_post_action(driver) -> bool:
         if not click_home_button(driver):
             log.debug("read_post_action: home button not found — back fallback")
             navigate_history(driver, "back")
-        time.sleep(random.uniform(1.0, 2.5))
+        precise_sleep(random.uniform(1.0, 2.5))
         log.info("[ READ POST ]  returned to feed")
         return True
 
@@ -2403,13 +2574,13 @@ def comment_on_post(driver) -> bool:
         scroll_element_into_loose_view(driver, target_btn)
 
         # 2. Read-pause — user reads the post before deciding to reply
-        time.sleep(random.uniform(2.5, 6.0))
+        precise_sleep(random.uniform(2.5, 6.0))
 
         # 3. Bezier-arc to Reply and click
         bezier_move(driver, target_btn)
-        time.sleep(random.uniform(0.3, 0.7))
+        precise_sleep(random.uniform(0.3, 0.7))
         try:
-            ActionChains(driver).click().perform()
+            _cdp_click(driver)
         except WebDriverException:
             driver.execute_script("arguments[0].click();", target_btn)
         debug_cursor_state(driver, "comment-reply-click")
@@ -2423,17 +2594,17 @@ def comment_on_post(driver) -> bool:
             log.debug("comment_on_post: comment box did not appear after Reply click")
             return False
 
-        time.sleep(random.uniform(0.5, 1.2))   # settle before moving to box
+        precise_sleep(random.uniform(0.5, 1.2))   # settle before moving to box
 
         # 5. Bezier-arc to text field, then type
         bezier_move(driver, comment_box)
-        time.sleep(random.uniform(0.3, 0.6))
+        precise_sleep(random.uniform(0.3, 0.6))
         comment = random.choice(COMMENT_POOL)
         log.info("[ COMMENT ]  typing reply: %r", comment)
-        human_type(comment_box, comment)
+        human_type(comment_box, comment, driver)
 
         # 6. Re-reading pause
-        time.sleep(random.uniform(1.2, 3.0))
+        precise_sleep(random.uniform(1.2, 3.0))
 
         # 7. Find the Post button.
         #    Multiple matches can exist (one per visible reply form).
@@ -2468,15 +2639,15 @@ def comment_on_post(driver) -> bool:
 
         scroll_element_into_loose_view(driver, post_btn)
         bezier_move(driver, post_btn)
-        time.sleep(random.uniform(0.3, 0.6))
+        precise_sleep(random.uniform(0.3, 0.6))
         try:
-            ActionChains(driver).click().perform()
+            _cdp_click(driver)
         except WebDriverException:
             driver.execute_script("arguments[0].click();", post_btn)
         debug_cursor_state(driver, "comment-post-click")
 
         # 8. Post-click pause — watching the reply appear
-        time.sleep(random.uniform(1.5, 3.5))
+        precise_sleep(random.uniform(1.5, 3.5))
         log.info("[ COMMENT ]  comment posted successfully")
         return True
 
@@ -2941,9 +3112,9 @@ def create_post(driver, profile_id: str) -> bool:
 
         scroll_element_into_loose_view(driver, compose_btn)
         bezier_move(driver, compose_btn)
-        time.sleep(random.uniform(0.4, 0.9))
+        precise_sleep(random.uniform(0.4, 0.9))
         try:
-            ActionChains(driver).click().perform()
+            _cdp_click(driver)
         except WebDriverException:
             driver.execute_script("arguments[0].click();", compose_btn)
 
@@ -2971,7 +3142,7 @@ def create_post(driver, profile_id: str) -> bool:
             return False
 
         # Brief settle — SPA modal animation
-        time.sleep(random.uniform(0.6, 1.2))
+        precise_sleep(random.uniform(0.6, 1.2))
 
         # 4. Attach image — click the Attach-media button (opens OS file dialog),
         #    simulate human file-locate time, then dismiss the dialog by pasting
@@ -2989,11 +3160,11 @@ def create_post(driver, profile_id: str) -> bool:
                     raise WebDriverException("Attach media button not found")
 
                 bezier_move(driver, attach_btns[0])
-                time.sleep(random.uniform(0.3, 0.6))
+                precise_sleep(random.uniform(0.3, 0.6))
 
                 # Click → OS file dialog opens
                 try:
-                    ActionChains(driver).click().perform()
+                    _cdp_click(driver)
                 except WebDriverException:
                     driver.execute_script("arguments[0].click();", attach_btns[0])
 
@@ -3006,29 +3177,29 @@ def create_post(driver, profile_id: str) -> bool:
                     # Truncated-normal centred at 5 s, clamped to [3, 9] s.
                     _locate_delay = max(3.0, min(9.0, random.gauss(5.0, 1.5)))
                     log.debug("create_post: OS dialog open — file-locate pause %.1fs", _locate_delay)
-                    time.sleep(_locate_delay)
+                    precise_sleep(_locate_delay)
 
                     # ── Type path via clipboard paste → Enter ────────────────────
                     # Copy the absolute path to the system clipboard so we don't
                     # have to deal with backslashes / special chars char-by-char.
                     _ppc.copy(os.path.abspath(image_path))
-                    time.sleep(random.uniform(0.10, 0.25))   # clipboard settle
+                    precise_sleep(random.uniform(0.10, 0.25))   # clipboard settle
                     _pag.hotkey("ctrl", "a")                  # select existing text in field
-                    time.sleep(random.uniform(0.06, 0.14))
+                    precise_sleep(random.uniform(0.06, 0.14))
                     _pag.hotkey("ctrl", "v")                  # paste absolute path
-                    time.sleep(random.uniform(0.15, 0.35))
+                    precise_sleep(random.uniform(0.15, 0.35))
                     _pag.press("enter")                       # confirm → dialog closes
                     log.info("[ POST ]  media attached via OS dialog: %s",
                              os.path.basename(image_path))
                     # Allow SPA to receive the file-change event and start upload
-                    time.sleep(random.uniform(1.5, 2.5))
+                    precise_sleep(random.uniform(1.5, 2.5))
 
                 except ImportError:
                     # ── Fallback: inject path into hidden <input type="file"> ────
                     log.debug("create_post: pyautogui/pyperclip missing — hidden-input fallback"
                               " (pip install pyautogui pyperclip to enable OS-dialog path)")
                     # Brief wait for the SPA to create / unhide the input
-                    time.sleep(random.uniform(0.4, 0.8))
+                    precise_sleep(random.uniform(0.4, 0.8))
                     file_inputs = driver.find_elements(By.CSS_SELECTOR, COMPOSE_FILE_INPUT_CSS)
                     if file_inputs:
                         fi = file_inputs[0]
@@ -3047,7 +3218,7 @@ def create_post(driver, profile_id: str) -> bool:
 
                 # Wait for upload thumbnail / preview to render
                 if image_path:
-                    time.sleep(random.uniform(2.0, 4.0))
+                    precise_sleep(random.uniform(2.0, 4.0))
 
             except WebDriverException as exc:
                 log.debug("create_post: media attach failed (%s) — text-only fallback", exc)
@@ -3083,13 +3254,13 @@ def create_post(driver, profile_id: str) -> bool:
                 return False
 
         bezier_move(driver, text_box)
-        time.sleep(random.uniform(0.3, 0.7))
-        human_type(text_box, caption)
+        precise_sleep(random.uniform(0.3, 0.7))
+        human_type(text_box, caption, driver)
 
         # 6. Re-read pause — mimics proof-reading before hitting Post
         reread_s = random.uniform(1.5, 4.0)
         log.info("[ POST ]  re-reading before submit (%.1fs)…", reread_s)
-        time.sleep(reread_s)
+        precise_sleep(reread_s)
 
         # 7. Find the Post submit button scoped to the compose modal.
         #
@@ -3168,7 +3339,7 @@ def create_post(driver, profile_id: str) -> bool:
                 log.debug("create_post: Post button found via global JS scan (attempt %d)", _attempt + 1)
                 break
 
-            time.sleep(2.0)   # let React activate the button after text entry
+            precise_sleep(2.0)   # let React activate the button after text entry
 
         if not post_btn:
             try:
@@ -3198,9 +3369,9 @@ def create_post(driver, profile_id: str) -> bool:
 
         scroll_element_into_loose_view(driver, post_btn)
         bezier_move(driver, post_btn)
-        time.sleep(random.uniform(0.4, 0.9))
+        precise_sleep(random.uniform(0.4, 0.9))
         try:
-            ActionChains(driver).click().perform()
+            _cdp_click(driver)
         except WebDriverException:
             driver.execute_script("arguments[0].click();", post_btn)
         debug_cursor_state(driver, "post-submit-click")
@@ -3212,7 +3383,7 @@ def create_post(driver, profile_id: str) -> bool:
             )
         except TimeoutException:
             pass
-        time.sleep(random.uniform(1.5, 3.0))
+        precise_sleep(random.uniform(1.5, 3.0))
 
         _record_post(profile_id, state)
         log.info("[ POST ]  new post published successfully")
@@ -3226,7 +3397,7 @@ def create_post(driver, profile_id: str) -> bool:
         while time.time() < _dwell_end:
             remaining = _dwell_end - time.time()
             sit = min(random.uniform(4.0, 12.0), remaining)
-            time.sleep(sit)
+            precise_sleep(sit)
             if time.time() >= _dwell_end:
                 break
             # Occasional small cursor drift — eye scanning caption / like count
@@ -3362,7 +3533,7 @@ def run_social_session(
                 passive_action(driver)
 
         count += 1
-        time.sleep(random.uniform(1, 3))
+        precise_sleep(random.uniform(1, 3))
 
     log.info("Session complete. Total actions: %d", count)
 
@@ -3392,7 +3563,7 @@ def warm_profile(profile_id: str, weights: dict | None = None) -> None:
         # 4. Navigate to Threads
         log.info("Navigating to %s", TARGET_SOCIAL_URL)
         navigate_to(driver, TARGET_SOCIAL_URL)
-        time.sleep(random.uniform(2, 5))
+        precise_sleep(random.uniform(2, 5))
 
         # 4b. Verify the profile is logged in before wasting a session
         if not check_login_status(driver):
@@ -3483,7 +3654,7 @@ def warm_profile_attached(
 
         log.info("Navigating to %s", TARGET_SOCIAL_URL)
         navigate_to(driver, TARGET_SOCIAL_URL)
-        time.sleep(random.uniform(2, 5))
+        precise_sleep(random.uniform(2, 5))
 
         if not check_login_status(driver):
             log.error("Profile '%s' appears logged out -- skipping session.",
