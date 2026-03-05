@@ -66,7 +66,6 @@ PREFLIGHT_SITES_POOL = [
     "https://www.bbc.com",
     "https://www.reddit.com",
     "https://www.youtube.com",
-    "https://www.nytimes.com",
     "https://www.theguardian.com",
     "https://www.espn.com",
     "https://news.ycombinator.com",
@@ -99,7 +98,7 @@ BUFFER_LONG_MAX     = 60    # extended break maximum (minutes)
 ACTIVE_HOURS_RANGE  = (8, 23)   # only run between 08:00 and 23:00 local time
 # Simulated inactive day — skip the entire run with this probability.
 # Models the natural days when a real user simply doesn't open Threads.
-INACTIVE_DAY_PROB   = 0.18
+INACTIVE_DAY_PROB   = 0 #0.18
 # Comment pool — short, natural-sounding replies that fit a wide range of posts.
 # Add / remove entries to tune the vocabulary used by the bot.
 COMMENT_POOL = [
@@ -214,12 +213,12 @@ COMMENT_BOX_CSS    = 'div[contenteditable="true"][role="textbox"]'
 COMMENT_POST_XPATH = '//div[@role="button" and .//div[normalize-space(text())="Post"]]'
 # Hidden file-upload input inside the compose modal
 COMPOSE_FILE_INPUT_CSS = 'input[type="file"][accept]'
-# Compose / New-post button in the nav sidebar (aria-label="Create")
+# Compose / New-post button in the nav sidebar (aria-label="Post")
 COMPOSE_BTN_SELECTORS = [
-    ("css", 'div[role="button"]:has(svg[aria-label="Create"])'),
-    ("css", 'a[role="link"]:has(svg[aria-label="Create"])'),
-    ("css", 'div[role="button"][aria-label="Create"]'),
-    ("xpath", '//div[@role="button" and .//*[local-name()="svg"][@aria-label="Create"]]'),
+    ("css", 'div[role="button"]:has(svg[aria-label="Post"])'),
+    ("css", 'a[role="link"]:has(svg[aria-label="Post"])'),
+    ("css", 'div[role="button"][aria-label="Post"]'),
+    ("xpath", '//div[@role="button" and .//*[local-name()="svg"][@aria-label="Post"]]'),
 ]
 # Compose modal textbox (new-post box, not the comment/reply box)
 COMPOSE_TEXTBOX_CSS = 'div[data-lexical-editor="true"][contenteditable="true"]'
@@ -274,6 +273,9 @@ if hasattr(_stream_h.stream, "reconfigure"):
 _file_h.setLevel(logging.DEBUG)
 _stream_h.setLevel(logging.INFO)
 logging.basicConfig(level=logging.DEBUG, handlers=[_file_h, _stream_h])
+# Suppress noisy HTTP debug lines from urllib3 / selenium remote connection
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("selenium.webdriver.remote.remote_connection").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 # Dedicated mouse-movement logger — writes to its own file at DEBUG level.
@@ -425,7 +427,7 @@ def _log_page_state(driver, context: str) -> None:
         articles = len(driver.find_elements(
             By.CSS_SELECTOR, "article, div[data-pressable-container='true']"
         ))
-        log.info(
+        log.debug(
             "[PAGE STATE]  context=%s  url=%s  title=%r"
             "  scrollY=%dpx  scroll_pct=%d%%  feed_items=%d",
             context, url[:80], title[:40], scroll_y, scroll_pct, articles,
@@ -450,7 +452,7 @@ if sys.platform == "win32":
         _winmm.timeBeginPeriod(1)
         import atexit as _atexit
         _atexit.register(_winmm.timeEndPeriod, 1)
-        log.info("Windows timer resolution raised to 1 ms (timeBeginPeriod)")
+        log.debug("Windows timer resolution raised to 1 ms (timeBeginPeriod)")
     except Exception:
         log.debug("Could not raise Windows timer resolution")
 
@@ -699,7 +701,7 @@ def connect_selenium(ws_debugger_url: str) -> webdriver.Chrome:
             log.warning("$cdc_ variables still present — force-removing: %s", _cdc_found)
             driver.execute_script(_CDC_MASK_JS)
         else:
-            log.info("$cdc_ mask verified: no ChromeDriver variables detected")
+            log.debug("$cdc_ mask verified: no ChromeDriver variables detected")
     except WebDriverException:
         pass
 
@@ -1211,7 +1213,6 @@ def _set_cursor(x: int, y: int, tag: str = "") -> None:
     _cursor_pos[0], _cursor_pos[1] = x, y
     label = f"  [{tag}]" if tag else ""
     _mlog.debug("CURSOR  (%d, %d)%s", x, y, label)
-    log.info("cursor  (%d, %d)%s", x, y, label)
 
 
 # Profiles interacted with (followed or visited) during this session.
@@ -1552,7 +1553,7 @@ def _cdp_click(driver, x: int = None, y: int = None) -> None:
     cx = x if x is not None else _cursor_pos[0]
     cy = y if y is not None else _cursor_pos[1]
     # ── DEBUG LOGGING: every click ───────────────────────────────────────────
-    log.info("[CLICK]  pos=(%d,%d)  source=%s", cx, cy,
+    log.debug("[CLICK]  pos=(%d,%d)  source=%s", cx, cy,
              "explicit" if x is not None else "cursor_pos")
     # ────────────────────────────────────────────────────────────────────────
     driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
@@ -1842,7 +1843,7 @@ def _navigate_and_settle(driver, action) -> None:
         ))
     except Exception:
         pass
-    log.info(
+    log.debug(
         "[NAV]  readystate_wait=%.0fms  spa_wait=%.0fms  settle_wait=%.0fms"
         "  overlay_present=%s  cursor_seeded=(%d,%d)",
         _nav_readystate_ms, _nav_spa_ms, _nav_settle_s * 1000,
@@ -2043,7 +2044,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
                     "var h=document.body.scrollHeight-window.innerHeight;"
                     "return h>0?Math.round(window.scrollY/h*100):0;"
                 )
-                log.info(
+                log.debug(
                     "[SCROLL PROGRESS]  chunks=%d  scrollY=%dpx  page_pct=%d%%"
                     "  time_left=%.0fs",
                     _total_chunks, _sy, _pct, deadline - time.time(),
@@ -2133,7 +2134,11 @@ def run_preflight(driver) -> None:
     for site in sites:
         dwell = random.uniform(PREFLIGHT_DWELL_MIN, PREFLIGHT_DWELL_MAX)
         log.info("Pre-flight: %s  (%.0fs)", site, dwell)
-        navigate_to(driver, site)
+        try:
+            navigate_to(driver, site)
+        except (TimeoutException, WebDriverException):
+            log.warning("Pre-flight: %s timed out — skipping", site)
+            continue
         stochastic_scroll(driver, total_seconds=dwell)
 
 
@@ -2655,7 +2660,6 @@ def _attempt_like(driver, element) -> bool:
 
         # Watch the heart animation
         precise_sleep(random.uniform(0.8, 2.0))
-        log.info("Like delivered successfully")
         return True
 
     except (NoSuchElementException, WebDriverException) as exc:
@@ -2887,7 +2891,6 @@ def view_profile_from_feed(driver) -> bool:
         _session_followed.add(profile_url.rstrip("/"))
         log.info("[PROFILE VIEW]  candidates=%d  target=%s",
                  len(candidates[:15]), profile_url[:60])
-        log.info("Viewing profile from feed: %s", profile_url[:60])
         bezier_move(driver, target)
         precise_sleep(random.uniform(0.5, 1.5))
 
@@ -3019,7 +3022,6 @@ def follow_from_feed(driver) -> bool:
         )
 
         bezier_move(driver, username_el)          # hover — ActionChains fires mouseenter
-        log.info("follow_from_feed: hovering username to trigger hover card")
 
         # ── 3. Wait for the hover card's Follow button to appear ──────────────
         follow_btn = None
@@ -3443,10 +3445,6 @@ def passive_action(driver) -> None:
                 "[ACTION SKIP]  action=passive  reason=off_feed  recovered=True  url=%s",
                 current[:80],
             )
-            log.info(
-                "[ PASSIVE ]  off-feed URL detected (%s) — returning to feed",
-                current[:80],
-            )
             if not click_home_button(driver):
                 log.debug("[ PASSIVE ]  home button not found — hard navigate fallback")
                 navigate_to(driver, TARGET_SOCIAL_URL)
@@ -3491,14 +3489,9 @@ def active_action(driver) -> None:
             "[ACTION SKIP]  action=active  reason=not_on_threads  url=%s",
             current_url[:60],
         )
-        log.info(
-            "[ ACTIVE ]  not on threads (%s) — passive scroll instead",
-            current_url[:60],
-        )
         stochastic_scroll(driver, total_seconds=random.uniform(15, 30))
         return
 
-    log.info("[ ACTIVE ]  scanning for likes  url=%s", current_url[:60])
     # ── DEBUG LOGGING: ACTION START ────────────────────────────────────────────
     _action_t0 = time.perf_counter()
     _session_metrics["actions_dispatched"] += 1
@@ -3524,7 +3517,6 @@ def active_action(driver) -> None:
         if not candidates:
             log.info("[ACTION SKIP]  action=active  reason=no_likeable_posts"
                      "  fallback=passive_scroll")
-            log.info("No unliked posts in viewport — passive scroll instead")
             stochastic_scroll(driver, total_seconds=random.uniform(15, 30))
             return
 
@@ -3560,7 +3552,6 @@ def active_action(driver) -> None:
     log.info("[ACTION END]  action=active  result=success  likes=%d  duration=%.1fs",
              liked, time.perf_counter() - _action_t0)
     # ────────────────────────────────────────────────────────────────────
-    log.info("Active action complete. Likes delivered: %d", liked)
 
 
 # ================================================================== #
@@ -4834,7 +4825,6 @@ def post_action(driver, profile_id: str) -> None:
     _session_metrics["actions_dispatched"] += 1
     log.info("[ACTION START]  action=post")
     # ────────────────────────────────────────────────────────────────────
-    log.info("[ POST ACTION ]  creating a new post")
     result = create_post(driver, profile_id)
     # ── DEBUG LOGGING: ACTION END ────────────────────────────────────────────
     if result:
@@ -5100,7 +5090,7 @@ def run_social_session(
     # Draw a fresh passive-phase duration for this specific session.
     # Previously a module-level constant shared across all profiles.
     _session_passive_phase_sec = _draw_passive_phase_sec()
-    log.info("[ SESSION ]  passive phase drawn: %.1f min", _session_passive_phase_sec / 60)
+    log.debug("[ SESSION ]  passive phase drawn: %.1f min", _session_passive_phase_sec / 60)
 
     # ── DEBUG LOGGING: reset session metrics ─────────────────────────────────
     _session_metrics = {
@@ -5170,7 +5160,7 @@ def run_social_session(
         _snap_vp  = driver.execute_script("return [window.innerWidth, window.innerHeight]")
     except Exception:
         _snap_url, _snap_vp = "unknown", [-1, -1]
-    log.info(
+    log.debug(
         "[STATE SNAPSHOT]  event=session_start  profile=%s  session_sec=%.0f"
         "  account_days=%d  cursor_pos=(%d,%d)  viewport=(%dx%d)  page_url=%s",
         profile_id, session_seconds, _account_days,
@@ -5315,10 +5305,15 @@ def run_social_session(
 #  SINGLE PROFILE WARM-UP ORCHESTRATOR
 # ================================================================== #
 
-def warm_profile(profile_id: str, weights: dict | None = None) -> None:
-    """Full end-to-end warm-up for one NstBrowser profile."""
-    driver   = None
-    launched = False
+def warm_profile(profile_id: str, weights: dict | None = None) -> bool:
+    """Full end-to-end warm-up for one NstBrowser profile.
+
+    Returns True if a Threads session was actually started, False if the
+    profile failed or was skipped before reaching Threads.
+    """
+    driver      = None
+    launched    = False
+    ran_session = False
 
     try:
         # 1. Launch browser via POST /api/v2/browsers/{profileId}
@@ -5344,9 +5339,10 @@ def warm_profile(profile_id: str, weights: dict | None = None) -> None:
                 "Profile %s appears logged out — skipping session for this profile.",
                 profile_id,
             )
-            return
+            return False
 
         # 5. Main activity session — smooth log-normal duration
+        ran_session = True
         session_sec = _sample_session_duration_sec()
         log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
         run_social_session(driver, session_sec, profile_id=profile_id, **(weights or {}))
@@ -5374,6 +5370,8 @@ def warm_profile(profile_id: str, weights: dict | None = None) -> None:
                 pass
         if launched:
             stop_profile(profile_id)
+
+    return ran_session
 
 
 def warm_profile_attached(
@@ -6223,16 +6221,19 @@ def main() -> None:
     for idx, profile_id in enumerate(profile_order):
         log.info("-" * 60)
         log.info("[%d/%d] Starting: %s", idx + 1, len(profile_order), profile_id)
-        warm_profile(profile_id, weights=weights or None)
+        ran_session = warm_profile(profile_id, weights=weights or None)
 
         if idx < len(profile_order) - 1:
-            if random.random() < BUFFER_LONG_PROB:
-                buf = random.uniform(BUFFER_LONG_MIN * 60, BUFFER_LONG_MAX * 60)
-                log.info("Extended buffer: %.1f min before next profile...", buf / 60)
+            if ran_session:
+                if random.random() < BUFFER_LONG_PROB:
+                    buf = random.uniform(BUFFER_LONG_MIN * 60, BUFFER_LONG_MAX * 60)
+                    log.info("Extended buffer: %.1f min before next profile...", buf / 60)
+                else:
+                    buf = random.uniform(BUFFER_MIN_MIN * 60, BUFFER_MAX_MIN * 60)
+                    log.info("Buffer: %.1f min before next profile...", buf / 60)
+                time.sleep(buf)
             else:
-                buf = random.uniform(BUFFER_MIN_MIN * 60, BUFFER_MAX_MIN * 60)
-                log.info("Buffer: %.1f min before next profile...", buf / 60)
-            time.sleep(buf)
+                log.info("Profile failed before reaching Threads — skipping inter-profile buffer.")
 
     log.info("=" * 60)
     log.info("All profiles warmed. Done.")
