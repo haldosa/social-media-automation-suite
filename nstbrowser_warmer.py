@@ -4558,16 +4558,40 @@ def create_post(driver, profile_id: str) -> bool:
                     import pyautogui as _pag
                     import pyperclip as _ppc
 
-                    # ── Simulate locating the file in the file manager ──────────
-                    # Dialog is open; human browses folders, scrolls, finds file.
-                    # Truncated-normal centred at 5 s, clamped to [3, 9] s.
+                    # ── Wait for the OS file dialog to appear ────────────────────
+                    # The dialog takes a moment to open; poll for it up to 8 s.
                     _locate_delay = max(3.0, min(9.0, random.gauss(5.0, 1.5)))
                     log.debug("create_post: OS dialog open — file-locate pause %.1fs", _locate_delay)
                     precise_sleep(_locate_delay)
 
+                    # ── Bring the file dialog to foreground ──────────────────────
+                    # pyautogui sends keystrokes to the focused window.  If the
+                    # browser lost focus or the dialog spawned behind it, Ctrl+V
+                    # and Enter go to the wrong window.  We find the Open/Save
+                    # dialog by its Win32 class (#32770 = standard dialog) and
+                    # force it to the foreground before typing.
+                    _dialog_hwnd = None
+                    try:
+                        _FindWindow  = ctypes.windll.user32.FindWindowW
+                        _SetFG       = ctypes.windll.user32.SetForegroundWindow
+                        _BringToTop  = ctypes.windll.user32.BringWindowToTop
+                        _ShowWindow  = ctypes.windll.user32.ShowWindow
+                        _SW_SHOW     = 5
+
+                        # #32770 is the Windows class for common file dialogs
+                        _dialog_hwnd = _FindWindow("#32770", None)
+                        if _dialog_hwnd:
+                            _ShowWindow(_dialog_hwnd, _SW_SHOW)
+                            _BringToTop(_dialog_hwnd)
+                            _SetFG(_dialog_hwnd)
+                            precise_sleep(0.3)  # let the OS finish the focus switch
+                            log.debug("create_post: file dialog brought to foreground (hwnd=%s)", _dialog_hwnd)
+                        else:
+                            log.debug("create_post: no #32770 dialog window found — assuming already focused")
+                    except Exception as _fg_exc:
+                        log.debug("create_post: SetForegroundWindow failed: %s", _fg_exc)
+
                     # ── Type path via clipboard paste → Enter ────────────────────
-                    # Copy the absolute path to the system clipboard so we don't
-                    # have to deal with backslashes / special chars char-by-char.
                     _ppc.copy(os.path.abspath(image_path))
                     precise_sleep(random.uniform(0.10, 0.25))   # clipboard settle
                     _pag.hotkey("ctrl", "a")                  # select existing text in field
@@ -4785,32 +4809,6 @@ def create_post(driver, profile_id: str) -> bool:
         _record_post(profile_id, state)
         _cleanup_post_scratch(profile_id)
         log.info("[ POST ]  new post published successfully")
-
-        # 9. Post-dwell: stay on own post watching for early reactions.
-        #    Real users re-read their caption, watch the like count, maybe
-        #    read the first comment.  30–65 s with organic cursor movement.
-        _dwell_secs = random.uniform(30.0, 65.0)
-        log.info("[ POST ]  post-dwell %.0fs — watching for reactions", _dwell_secs)
-        _dwell_end = time.time() + _dwell_secs
-        while time.time() < _dwell_end:
-            remaining = _dwell_end - time.time()
-            sit = min(random.uniform(4.0, 12.0), remaining)
-            precise_sleep(sit)
-            if time.time() >= _dwell_end:
-                break
-            # Occasional small cursor drift — eye scanning caption / like count
-            if random.random() < 0.55:
-                try:
-                    vw_d = driver.execute_script("return window.innerWidth")
-                    vh_d = driver.execute_script("return window.innerHeight")
-                    nx = max(int(vw_d * 0.10), min(int(vw_d * 0.90),
-                             _cursor_pos[0] + int(random.gauss(0, vw_d * 0.06))))
-                    ny = max(int(vh_d * 0.20), min(int(vh_d * 0.80),
-                             _cursor_pos[1] + int(random.gauss(0, vh_d * 0.06))))
-                    bezier_move_to_coords(driver, nx, ny, tag="post-dwell")
-                except Exception:
-                    pass
-        log.info("[ POST ]  post-dwell complete — returning to normal browse")
         return True
 
     except (NoSuchElementException, TimeoutException, WebDriverException) as exc:
