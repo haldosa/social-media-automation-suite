@@ -21,6 +21,10 @@ import math
 import os
 import sys
 import ctypes
+import threading
+import contextlib
+import dataclasses
+import unittest.mock
 import glob as _glob
 import re
 import textwrap
@@ -127,7 +131,10 @@ COMMENT_POOL = [
 # ── Content posting ────────────────────────────────────────────────────────── #
 # Set MEDIA_POOL_DIR to a local folder of images to attach to new posts.
 # Leave as None to post text-only captions.
-MEDIA_POOL_DIR        = "media"                               # e.g. "media_pool"
+# Relative paths are resolved against the directory that contains this script
+# so the bot works regardless of the working directory it is launched from.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MEDIA_POOL_DIR        = os.path.join(_SCRIPT_DIR, "media")   # e.g. "media_pool"
 POST_MEDIA_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 
 # Captions for original posts.  Add / remove entries freely.
@@ -215,10 +222,19 @@ COMMENT_POST_XPATH = '//div[@role="button" and .//div[normalize-space(text())="P
 COMPOSE_FILE_INPUT_CSS = 'input[type="file"][accept]'
 # Compose / New-post button in the nav sidebar (aria-label="Post")
 COMPOSE_BTN_SELECTORS = [
-    ("css", 'div[role="button"]:has(svg[aria-label="Post"])'),
-    ("css", 'a[role="link"]:has(svg[aria-label="Post"])'),
-    ("css", 'div[role="button"][aria-label="Post"]'),
-    ("xpath", '//div[@role="button" and .//*[local-name()="svg"][@aria-label="Post"]]'),
+    # aria-label="New post" — current Threads desktop nav (2025+)
+    ("css",   '[aria-label="New post"]'),
+    ("css",   '[aria-label="New Post"]'),
+    # aria-label on the SVG itself — older builds
+    ("css",   'div[role="button"]:has(svg[aria-label="Post"])'),
+    ("css",   'a[role="link"]:has(svg[aria-label="Post"])'),
+    ("css",   'div[role="button"][aria-label="Post"]'),
+    # aria-label variants seen across locales / A/B tests
+    ("css",   '[aria-label="Create"]'),
+    ("css",   '[aria-label="Compose"]'),
+    ("xpath", '//div[@role="button" and contains(translate(@aria-label,"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz"),"new post")]'),
+    ("xpath", '//*[@role="button" and .//*[local-name()="svg"][@aria-label="Post"]]'),
+    ("xpath", '//*[@role="button" and .//*[local-name()="svg"][@aria-label="New post"]]'),
 ]
 # Compose modal textbox (new-post box, not the comment/reply box)
 COMPOSE_TEXTBOX_CSS = 'div[data-lexical-editor="true"][contenteditable="true"]'
@@ -299,7 +315,9 @@ _dlog.propagate = False       # prevent double-printing via root logger
 
 # ── DEBUG LOGGING: session metrics accumulator ───────────────────────────────
 # Reset by run_social_session() at the start of every session.
-_session_metrics: dict = {
+# Default values kept here for reference only; live state lives in
+# SessionContext (see _get_ctx() below).
+_SESSION_METRICS_DEFAULTS: dict = {
     "actions_dispatched": 0,
     "likes":    0,
     "comments": 0,
@@ -312,6 +330,35 @@ _session_metrics: dict = {
     "last_action": None,          # used for consecutive-action RISK WARN
     "consecutive_same": 0,
 }
+# ─────────────────────────────────────────────────────────────────────────────#
+
+
+# ── Per-session mutable state: thread-local SessionContext ───────────────────
+# All state that was previously scattered across module-level globals is now
+# encapsulated here.  threading.local() ensures that concurrent sessions
+# running in separate threads each have their own independent copy.
+@dataclasses.dataclass
+class SessionContext:
+    """Isolated mutable state for a single social session."""
+    cursor_pos: list          = dataclasses.field(default_factory=lambda: [0, 0])
+    last_bezier_end_ts: float = 0.0
+    cdp_consecutive_failures: int = 0
+    session_followed: set     = dataclasses.field(default_factory=set)
+    session_metrics: dict     = dataclasses.field(
+        default_factory=lambda: dict(_SESSION_METRICS_DEFAULTS)
+    )
+    active_typing_dna: dict   = dataclasses.field(default_factory=dict)
+
+
+_session_local = threading.local()
+
+
+def _get_ctx() -> SessionContext:
+    """Return the SessionContext for the current thread, creating one if needed."""
+    ctx = getattr(_session_local, 'ctx', None)
+    if ctx is None:
+        _session_local.ctx = SessionContext()
+    return _session_local.ctx
 # ─────────────────────────────────────────────────────────────────────────────#
 
 
@@ -509,34 +556,45 @@ _CDC_MASK_JS = """
 def _patch_chromedriver_binary(path: str) -> str:
     """Binary-patch ChromeDriver to replace $cdc_ variable name.
 
-    Replaces all occurrences of the $cdc_ diagnostic property
-    with a benign string of equal length.  The patch is idempotent —
-    a .patched marker file prevents re-patching on subsequent runs.
+    Copies the binary to a stable per-original temp path before patching so
+    the original executable (potentially locked by the OS or used by other
+    runs) is never modified in-place.  The copy path is keyed to the original
+    path via its MD5 digest so the same original always maps to the same copy.
+    A .patched marker on the copy path makes the operation idempotent.
     """
-    patched_marker = path + ".patched"
-    if os.path.exists(patched_marker):
-        return path
+    _tmp_root = os.path.join(tempfile.gettempdir(), "nstbrowser_cd_patch")
+    os.makedirs(_tmp_root, exist_ok=True)
+    name_hash = hashlib.md5(os.path.abspath(path).encode()).hexdigest()[:12]
+    suffix = ".exe" if sys.platform == "win32" else ""
+    copy_path = os.path.join(_tmp_root, f"chromedriver_{name_hash}{suffix}")
+    patched_marker = copy_path + ".patched"
+    if os.path.exists(patched_marker) and os.path.exists(copy_path):
+        return copy_path
     try:
-        with open(path, "rb") as f:
+        shutil.copy2(path, copy_path)
+        with open(copy_path, "rb") as f:
             data = f.read()
         pattern = re.compile(rb'\$cdc_[a-zA-Z0-9]{22}_')
         matches = list(pattern.finditer(data))
         if not matches:
             log.info("ChromeDriver binary: no $cdc_ pattern found (already clean or new version)")
             open(patched_marker, "w").close()
-            return path
+            return copy_path
         for m in reversed(matches):
             replacement = b'$xxx_' + b'a' * (len(m.group()) - 5)
             data = data[:m.start()] + replacement + data[m.end():]
-        with open(path, "wb") as f:
+        with open(copy_path, "wb") as f:
             f.write(data)
         open(patched_marker, "w").close()
-        log.info("ChromeDriver binary patched: %d $cdc_ occurrence(s) replaced", len(matches))
+        log.info("ChromeDriver binary patched: %d $cdc_ occurrence(s) replaced → %s",
+                 len(matches), copy_path)
     except PermissionError:
-        log.warning("ChromeDriver binary patch failed: permission denied (file in use?)")
+        log.warning("ChromeDriver binary patch failed: permission denied — using original")
+        return path
     except Exception as exc:
-        log.warning("ChromeDriver binary patch failed: %s", exc)
-    return path
+        log.warning("ChromeDriver binary patch failed: %s — using original", exc)
+        return path
+    return copy_path
 
 
 # ================================================================== #
@@ -680,30 +738,39 @@ def connect_selenium(ws_debugger_url: str) -> webdriver.Chrome:
     # and trust the profile's built-in fingerprint configuration.
     driver.execute_cdp_cmd("Network.enable", {})
 
-    # Layer 1 — Pre-page JS mask for $cdc_ ChromeDriver variable.
-    # This runs before every page load to intercept the variable injection.
-    # Unlike navigator.webdriver patching (handled by Orbita), this targets
-    # ChromeDriver's diagnostic property which Orbita does not mask.
-    try:
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": _CDC_MASK_JS,
-        })
-    except WebDriverException as exc:
-        log.debug("$cdc_ pre-page mask injection failed: %s", exc)
-
-    # Layer 3 — Runtime verification on the current page context.
+    # Fix #14: run Layer 3 (runtime verification) FIRST.
+    # If the binary patch already removed all $cdc_ properties, skipping the
+    # Page.addScriptToEvaluateOnNewDocument injection avoids creating the
+    # non-configurable property-descriptor side-effects that Object.
+    # getOwnPropertyDescriptor() can expose as a bot-detection signal.
+    _cdc_found = []
     try:
         _cdc_found = driver.execute_script(
             "return Object.getOwnPropertyNames(document)"
             ".filter(function(p){return /\\$[a-z]dc_/.test(p)});"
-        )
-        if _cdc_found:
-            log.warning("$cdc_ variables still present — force-removing: %s", _cdc_found)
-            driver.execute_script(_CDC_MASK_JS)
-        else:
-            log.debug("$cdc_ mask verified: no ChromeDriver variables detected")
+        ) or []
     except WebDriverException:
         pass
+
+    if _cdc_found:
+        # Properties still present — fix the current context immediately
+        # and register the mask for all subsequent page loads (Layer 1).
+        log.warning("$cdc_ variables detected — applying runtime fix + pre-page mask: %s", _cdc_found)
+        try:
+            driver.execute_script(_CDC_MASK_JS)
+        except WebDriverException:
+            pass
+        try:
+            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": _CDC_MASK_JS,
+            })
+        except WebDriverException as exc:
+            log.debug("$cdc_ pre-page mask injection failed: %s", exc)
+    else:
+        # Binary patch succeeded — no $cdc_ properties exist.  Skipping the
+        # addScriptToEvaluateOnNewDocument injection entirely prevents the
+        # non-configurable getter side-effect that anti-bot probes look for.
+        log.debug("$cdc_ mask skipped: runtime verification confirms no ChromeDriver variables")
 
     log.info("Selenium attached successfully.")
     return driver
@@ -715,8 +782,20 @@ def connect_selenium(ws_debugger_url: str) -> webdriver.Chrome:
 
 # Bigram pairs that are naturally slow for most touch-typists — awkward
 # hand transitions that produce longer inter-key intervals in corpus data.
+# Fix #13: expanded from 10 to 50 bigrams.  The original 10 were all rare;
+# common high-frequency English bigrams also require slower transitions and
+# their absence means any corpus classifier will fail to reproduce the right
+# n-gram timing distribution across real captions.
 _SLOW_BIGRAMS = {
+    # Original rare/awkward bigrams
     'qu', 'wr', 'xc', 'zx', 'bv', 'vb', 'pq', 'yw', 'wq', 'xz',
+    # Common English bigrams with cross-hand or stretch transitions
+    'th', 'he', 'in', 'er', 'an', 're', 'on', 'en', 'at', 'es',
+    'ed', 'or', 'ti', 'hi', 'as', 'to', 'ou', 'ha', 'it', 'nd',
+    'st', 'ng', 'nt', 'is', 'le', 'al', 'ar', 'se', 'te', 've',
+    # Additional awkward index-to-pinky / same-hand stretch pairs
+    'br', 'cr', 'dr', 'fr', 'gr', 'pr', 'tr', 'bl', 'cl', 'pl',
+    'ct', 'ft', 'lt', 'pt', 'ny', 'ly', 'my', 'ry', 'ty', 'gy',
 }
 
 # QWERTY keyboard adjacency map for realistic typo generation.
@@ -740,9 +819,8 @@ _QWERTY_ADJACENCY = {
     'm': ['j', 'k', 'n'],
 }
 
-# Active typing DNA for the current session -- set by run_social_session();
-# used by human_type() as the default when no explicit DNA is passed.
-_active_typing_dna: dict = {}
+# Active typing DNA is now tracked per-thread in SessionContext.active_typing_dna.
+# See _get_ctx() and _get_typing_dna().
 
 
 def _generate_typing_dna() -> dict:
@@ -789,17 +867,18 @@ def _get_typing_dna(profile_id: str) -> dict:
     if not profile_id:
         return _generate_typing_dna()
 
-    state = _load_post_state()
-    _ensure_profile_in_state(profile_id, state)
+    with _post_state_locked():
+        state = _load_post_state()
+        _ensure_profile_in_state(profile_id, state)
 
-    profile = state.get(profile_id, {})
-    dna = profile.get("typing_dna")
-    if dna and isinstance(dna, dict) and "base_mu" in dna:
-        return dna
+        profile = state.get(profile_id, {})
+        dna = profile.get("typing_dna")
+        if dna and isinstance(dna, dict) and "base_mu" in dna:
+            return dna
 
-    dna = _generate_typing_dna()
-    state[profile_id]["typing_dna"] = dna
-    _save_post_state(state)
+        dna = _generate_typing_dna()
+        state[profile_id]["typing_dna"] = dna
+        _save_post_state(state)
     log.info("[ TYPING DNA ]  generated fingerprint for %s  "
              "mu=%.3f sigma=%.2f err=%.1f%%",
              profile_id[:8], dna["base_mu"], dna["base_sigma"],
@@ -920,24 +999,75 @@ def _build_typo_sequence(text: str, error_rate: float,
 # when React/Lexical re-renders the contenteditable <div> mid-typing.
 # Also produces isTrusted:true keyboard events.
 
+# Fix #13: mapping from printable ASCII char → (code, windowsVirtualKeyCode, modifiers).
+# `code` is the KeyboardEvent.code (physical key); `modifiers` bit 3 = Shift.
+# Absence of `code` causes KeyboardEvent.code to read as "" in JS — detectable.
+_ASCII_KEY_INFO: dict[str, tuple[str, int, int]] = {
+    # Lowercase letters — location 0, no shift
+    **{c: (f"Key{c.upper()}", ord(c.upper()), 0) for c in "abcdefghijklmnopqrstuvwxyz"},
+    # Uppercase letters — same physical key, shift modifier (bit 3 = 8)
+    **{c: (f"Key{c}", ord(c), 8) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"},
+    # Digits — no shift
+    "0": ("Digit0", 48, 0), "1": ("Digit1", 49, 0), "2": ("Digit2", 50, 0),
+    "3": ("Digit3", 51, 0), "4": ("Digit4", 52, 0), "5": ("Digit5", 53, 0),
+    "6": ("Digit6", 54, 0), "7": ("Digit7", 55, 0), "8": ("Digit8", 56, 0),
+    "9": ("Digit9", 57, 0),
+    # Space
+    " ": ("Space", 32, 0),
+    # Punctuation — unshifted
+    "`": ("Backquote", 192, 0), "-": ("Minus",     189, 0), "=": ("Equal",       187, 0),
+    "[": ("BracketLeft", 219, 0), "]": ("BracketRight", 221, 0), "\\": ("Backslash", 220, 0),
+    ";": ("Semicolon", 186, 0), "'": ("Quote",   222, 0), ",": ("Comma",  188, 0),
+    ".": ("Period",    190, 0), "/": ("Slash",   191, 0),
+    # Punctuation — shifted variants (+8 modifiers)
+    "~": ("Backquote", 192, 8), "_": ("Minus",     189, 8), "+": ("Equal",       187, 8),
+    "{": ("BracketLeft", 219, 8), "}": ("BracketRight", 221, 8), "|": ("Backslash", 220, 8),
+    ":": ("Semicolon", 186, 8), '"': ("Quote",   222, 8), "<": ("Comma",  188, 8),
+    ">": ("Period",    190, 8), "?": ("Slash",   191, 8),
+    "!": ("Digit1", 49, 8), "@": ("Digit2", 50, 8), "#": ("Digit3", 51, 8),
+    "$": ("Digit4", 52, 8), "%": ("Digit5", 53, 8), "^": ("Digit6", 54, 8),
+    "&": ("Digit7", 55, 8), "*": ("Digit8", 56, 8), "(": ("Digit9", 57, 8),
+    ")": ("Digit0", 48, 8),
+}
+
+
 def _cdp_type_key(driver, char: str) -> None:
     """Type a single character via CDP Input.dispatchKeyEvent / insertText.
 
     ASCII printable chars get full keyDown+keyUp so the browser generates
-    the complete keydown → beforeinput → input → keyup event chain.
+    the complete keydown → beforeinput → input → keyup event chain, with
+    all required KeyboardEvent fields populated (key, code,
+    windowsVirtualKeyCode, nativeVirtualKeyCode, location, modifiers).
     Non-ASCII (emoji, accented chars) use Input.insertText which fires
     beforeinput → input — matching real IME / emoji-picker behaviour.
     """
     if len(char) == 1 and 32 <= ord(char) < 127:
-        driver.execute_cdp_cmd("Input.dispatchKeyEvent", {
+        info = _ASCII_KEY_INFO.get(char)
+        if info:
+            code, vk, mods = info
+        else:
+            code, vk, mods = f"Key{char.upper()}", ord(char.upper()), 0
+        down: dict = {
             "type": "keyDown",
             "key": char,
+            "code": code,
             "text": char,
-        })
-        driver.execute_cdp_cmd("Input.dispatchKeyEvent", {
+            "windowsVirtualKeyCode": vk,
+            "nativeVirtualKeyCode": vk,
+            "location": 0,
+            "modifiers": mods,
+        }
+        up: dict = {
             "type": "keyUp",
             "key": char,
-        })
+            "code": code,
+            "windowsVirtualKeyCode": vk,
+            "nativeVirtualKeyCode": vk,
+            "location": 0,
+            "modifiers": mods,
+        }
+        driver.execute_cdp_cmd("Input.dispatchKeyEvent", down)
+        driver.execute_cdp_cmd("Input.dispatchKeyEvent", up)
     else:
         driver.execute_cdp_cmd("Input.insertText", {"text": char})
 
@@ -974,7 +1104,7 @@ def human_type(element, text: str, driver=None, typing_dna: dict = None) -> None
     3. Fatigue drift -- typing gradually slows over a long text.
 
     When typing_dna is None, falls back to the session-level
-    _active_typing_dna set by run_social_session(), or default mid-range
+    _get_ctx().active_typing_dna set by run_social_session(), or default mid-range
     parameters if neither exists.
     """
     # -- DEBUG LOGGING: typing audit ----------------------------------------
@@ -992,7 +1122,7 @@ def human_type(element, text: str, driver=None, typing_dna: dict = None) -> None
     precise_sleep(random.uniform(0.08, 0.25))   # focus-settle after click
 
     # Resolve typing DNA (session-level or defaults)
-    dna        = typing_dna or _active_typing_dna or {}
+    dna        = typing_dna or _get_ctx().active_typing_dna or {}
     _mu        = dna.get("base_mu",            math.log(0.08))
     _sigma     = dna.get("base_sigma",         0.40)
     _burst_min = dna.get("burst_min",          3)
@@ -1156,17 +1286,9 @@ def _make_tremor_components(n: int = 3) -> list:
     ]
 
 
-# Persistent cursor state — updated after every bezier_move and on each fresh
-# page load (via init_cursor_pos).  Using a tracked position means no movement
-# ever starts from a hard-coded corner; every arc begins from wherever the
-# cursor realistically last rested.
-_cursor_pos: list = [0, 0]
-_last_bezier_end_ts: float = 0.0   # perf_counter timestamp of last arc; read by _cdp_click RISK WARN
-
-# CDP circuit breaker — tracks consecutive CDP failures.  If the count
-# exceeds the threshold within a session, the session aborts immediately
-# rather than silently swallowing errors from a dead browser connection.
-_cdp_consecutive_failures: int = 0
+# Cursor pos, last bezier timestamp, and CDP failure count are now tracked
+# per-thread in SessionContext (see _get_ctx()).  Access them via
+# _get_ctx().cursor_pos / .last_bezier_end_ts / .cdp_consecutive_failures.
 _CDP_FAILURE_THRESHOLD: int = 5
 
 
@@ -1177,25 +1299,24 @@ class CDPConnectionDead(WebDriverException):
 
 def _cdp_record_success() -> None:
     """Reset the consecutive-failure counter on a successful CDP call."""
-    global _cdp_consecutive_failures
-    _cdp_consecutive_failures = 0
+    _get_ctx().cdp_consecutive_failures = 0
 
 
 def _cdp_record_failure(context: str, exc: Exception) -> None:
     """Record a CDP failure and trip the circuit breaker if threshold exceeded."""
-    global _cdp_consecutive_failures
-    _cdp_consecutive_failures += 1
+    ctx = _get_ctx()
+    ctx.cdp_consecutive_failures += 1
     log.warning(
         "[CDP CIRCUIT]  failure %d/%d  context=%s  error=%s",
-        _cdp_consecutive_failures, _CDP_FAILURE_THRESHOLD, context, exc,
+        ctx.cdp_consecutive_failures, _CDP_FAILURE_THRESHOLD, context, exc,
     )
-    if _cdp_consecutive_failures >= _CDP_FAILURE_THRESHOLD:
+    if ctx.cdp_consecutive_failures >= _CDP_FAILURE_THRESHOLD:
         log.error(
             "[CDP CIRCUIT]  TRIPPED — %d consecutive failures.  "
-            "Browser connection presumed dead.", _cdp_consecutive_failures,
+            "Browser connection presumed dead.", ctx.cdp_consecutive_failures,
         )
         raise CDPConnectionDead(
-            f"CDP circuit breaker tripped after {_cdp_consecutive_failures} "
+            f"CDP circuit breaker tripped after {ctx.cdp_consecutive_failures} "
             f"consecutive failures (last context: {context})"
         ) from exc
 
@@ -1209,16 +1330,13 @@ def _set_cursor(x: int, y: int, tag: str = "") -> None:
     Low-level arc detail (ARC / STEP lines) continues to go only to _mlog.
     This function covers the final settled position after each move.
     """
-    global _cursor_pos
-    _cursor_pos[0], _cursor_pos[1] = x, y
+    _get_ctx().cursor_pos[0], _get_ctx().cursor_pos[1] = x, y
     label = f"  [{tag}]" if tag else ""
     _mlog.debug("CURSOR  (%d, %d)%s", x, y, label)
 
 
-# Profiles interacted with (followed or visited) during this session.
-# Cleared at the start of each run_social_session call so the same person
-# is never followed / visited twice in one session.
-_session_followed: set = set()
+# Followed/visited profile tracking is now in SessionContext.session_followed.
+# See _get_ctx().
 
 
 # ------------------------------------------------------------------ #
@@ -1343,12 +1461,12 @@ def debug_cursor_state(driver, label: str = "") -> None:
         """)
         log.info("CURSOR SYNC CHECK [%s]  python=(%d,%d)  dom=(%d,%d)  overlay_exists=%s",
                  label,
-                 _cursor_pos[0], _cursor_pos[1],
+                 _get_ctx().cursor_pos[0], _get_ctx().cursor_pos[1],
                  dom_pos['x'], dom_pos['y'],
                  dom_pos['exists'])
         if dom_pos['exists']:
-            drift = math.hypot(dom_pos['x'] - _cursor_pos[0],
-                               dom_pos['y'] - _cursor_pos[1])
+            drift = math.hypot(dom_pos['x'] - _get_ctx().cursor_pos[0],
+                               dom_pos['y'] - _get_ctx().cursor_pos[1])
             if drift > 15:
                 log.warning("CURSOR DRIFT  %.1fpx between Python state and overlay DOM", drift)
     except Exception as e:
@@ -1518,8 +1636,7 @@ def _fire_bezier_arc(
                   max(0.10, _arc_dist / 4000.0), max(1.0, _arc_dist / 500.0))
     # ─────────────────────────────────────────────────────────────────────────
     # ── DEBUG LOGGING: update arc-completion timestamp for _cdp_click RISK WARN ──
-    global _last_bezier_end_ts
-    _last_bezier_end_ts = time.perf_counter()
+    _get_ctx().last_bezier_end_ts = time.perf_counter()
     # ─────────────────────────────────────────────────────────────────────────
     if MOUSE_TRACE:
         for i, ((nx, ny, dx, dy), t_ms) in enumerate(zip(points, step_times), 1):
@@ -1530,16 +1647,28 @@ def _fire_bezier_arc(
     # produces.  Per-step round-trips are ~1 ms over localhost, well within
     # the 8–22 ms inter-step budget.
     for pt, d_ms in zip(points, delays):
+        # Fix #6: measure CDP round-trip and subtract from sleep so the actual
+        # inter-step interval matches the biomechanical model rather than
+        # inflating it by the ~1-2 ms localhost RTT every step.
+        _step_t0 = time.perf_counter()
         try:
             driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
                 "type": "mouseMoved",
                 "x": pt[0],
                 "y": pt[1],
+                # Fix #5: pointer fields required for a fully-spec-compliant
+                # PointerEvent; absent fields default to undefined in Chrome's
+                # input pipeline, which is detectable via performance.getEntries.
+                "pointerType": "mouse",
+                "pressure": 0.0,
+                "tiltX": 0,
+                "tiltY": 0,
+                "twist": 0,
             })
             _cdp_record_success()
         except WebDriverException as exc:
             _cdp_record_failure("bezier_arc_step", exc)
-        precise_sleep(d_ms / 1000.0)
+        precise_sleep(max(0.0, d_ms / 1000.0 - (time.perf_counter() - _step_t0)))
     return points, delays
 
 
@@ -1550,8 +1679,8 @@ def _cdp_click(driver, x: int = None, y: int = None) -> None:
     Produces mousePressed + mouseReleased with a realistic inter-event
     gap drawn from a human-like distribution.
     """
-    cx = x if x is not None else _cursor_pos[0]
-    cy = y if y is not None else _cursor_pos[1]
+    cx = x if x is not None else _get_ctx().cursor_pos[0]
+    cy = y if y is not None else _get_ctx().cursor_pos[1]
     # ── DEBUG LOGGING: every click ───────────────────────────────────────────
     log.debug("[CLICK]  pos=(%d,%d)  source=%s", cx, cy,
              "explicit" if x is not None else "cursor_pos")
@@ -1561,6 +1690,11 @@ def _cdp_click(driver, x: int = None, y: int = None) -> None:
         "x": cx, "y": cy,
         "button": "left",
         "clickCount": 1,
+        "pointerType": "mouse",
+        "pressure": 0.5,
+        "tiltX": 0,
+        "tiltY": 0,
+        "twist": 0,
     })
     precise_sleep(random.uniform(0.04, 0.11))
     driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
@@ -1568,10 +1702,15 @@ def _cdp_click(driver, x: int = None, y: int = None) -> None:
         "x": cx, "y": cy,
         "button": "left",
         "clickCount": 1,
+        "pointerType": "mouse",
+        "pressure": 0.0,
+        "tiltX": 0,
+        "tiltY": 0,
+        "twist": 0,
     })
     # ── DEBUG LOGGING: RISK WARN — click within 50ms of bezier completion ────
     try:
-        gap_ms = (time.perf_counter() - _last_bezier_end_ts) * 1000
+        gap_ms = (time.perf_counter() - _get_ctx().last_bezier_end_ts) * 1000
         if 0 < gap_ms < 50:
             _dlog.warning(
                 "[RISK WARN]  cdp_click fired %.1fms after bezier arc end"
@@ -1593,7 +1732,6 @@ def init_cursor_pos(driver) -> None:
     page sees will be the drift arc from _navigate_and_settle or the first
     bezier_move call, both of which start from this seeded position.
     """
-    global _cursor_pos
     try:
         vw = driver.execute_script("return window.innerWidth")
         vh = driver.execute_script("return window.innerHeight")
@@ -1616,7 +1754,6 @@ def bezier_move(driver, target_element) -> None:
     Cursor continuity: _cursor_pos is used as the start point and updated
     after each call so every arc begins from where the cursor last rested.
     """
-    global _cursor_pos
     # ── DEBUG LOGGING: element interaction audit ──────────────────────────────
     try:
         _log_element_interaction(driver, target_element, "hover")
@@ -1641,8 +1778,8 @@ def bezier_move(driver, target_element) -> None:
         off_dx = int(max(-_ew * 0.35, min(random.gauss(0, max(2.0, _ew * 0.12)), _ew * 0.35)))
         off_dy = int(max(-_eh * 0.35, min(random.gauss(0, max(2.0, _eh * 0.12)), _eh * 0.35)))
         # Start from last known position, clamped to current viewport.
-        x0 = max(0, min(_cursor_pos[0], int(vw)))
-        y0 = max(0, min(_cursor_pos[1], int(vh)))
+        x0 = max(0, min(_get_ctx().cursor_pos[0], int(vw)))
+        y0 = max(0, min(_get_ctx().cursor_pos[1], int(vh)))
         # Proximity guard: cursor already within 25 px — treat as hovering.
         if math.hypot(x1 - x0, y1 - y0) < 25:
             _cdp_x = int(rect["x"]) + off_dx
@@ -1652,6 +1789,11 @@ def bezier_move(driver, target_element) -> None:
                     "type": "mouseMoved",
                     "x": _cdp_x,
                     "y": _cdp_y,
+                    "pointerType": "mouse",
+                    "pressure": 0.0,
+                    "tiltX": 0,
+                    "tiltY": 0,
+                    "twist": 0,
                 })
                 _cdp_record_success()
             except WebDriverException as exc:
@@ -1731,12 +1873,11 @@ def bezier_move_to_coords(driver, x1: int, y1: int, tag: str = "arc-end") -> Non
     so the arc lands exactly on the target coordinate.  CDP produces
     trusted events — no Phase 2 ActionBuilder snap needed.
     """
-    global _cursor_pos
     try:
         vw = driver.execute_script("return window.innerWidth")
         vh = driver.execute_script("return window.innerHeight")
-        x0 = max(0, min(_cursor_pos[0], int(vw) - 1))
-        y0 = max(0, min(_cursor_pos[1], int(vh) - 1))
+        x0 = max(0, min(_get_ctx().cursor_pos[0], int(vw) - 1))
+        y0 = max(0, min(_get_ctx().cursor_pos[1], int(vh) - 1))
         x1 = max(0, min(x1, int(vw) - 1))
         y1 = max(0, min(y1, int(vh) - 1))
         if x0 == x1 and y0 == y1:
@@ -1770,7 +1911,6 @@ def _navigate_and_settle(driver, action) -> None:
       7. Drift the cursor into the feed — the first synthetic event the new
          page sees, arcing naturally from the address-bar area down into content.
     """
-    global _cursor_pos
     # 1. Park at address-bar row
     try:
         vw = driver.execute_script("return window.innerWidth")
@@ -1847,7 +1987,7 @@ def _navigate_and_settle(driver, action) -> None:
         "[NAV]  readystate_wait=%.0fms  spa_wait=%.0fms  settle_wait=%.0fms"
         "  overlay_present=%s  cursor_seeded=(%d,%d)",
         _nav_readystate_ms, _nav_spa_ms, _nav_settle_s * 1000,
-        _overlay_present, _cursor_pos[0], _cursor_pos[1],
+        _overlay_present, _get_ctx().cursor_pos[0], _get_ctx().cursor_pos[1],
     )
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -1938,10 +2078,11 @@ def smooth_scroll_chunk(driver, distance_px: int,
             break
         driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
             "type": "mouseWheel",
-            "x": _cursor_pos[0],
-            "y": _cursor_pos[1],
+            "x": _get_ctx().cursor_pos[0],
+            "y": _get_ctx().cursor_pos[1],
             "deltaX": 0,
             "deltaY": direction * move,
+            "pointerType": "mouse",
         })
         scrolled += move
         # Tick duration varies inversely with velocity (slow ends, fast middle)
@@ -1953,10 +2094,11 @@ def smooth_scroll_chunk(driver, distance_px: int,
     if remainder > 0:
         driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
             "type": "mouseWheel",
-            "x": _cursor_pos[0],
-            "y": _cursor_pos[1],
+            "x": _get_ctx().cursor_pos[0],
+            "y": _get_ctx().cursor_pos[1],
             "deltaX": 0,
             "deltaY": direction * remainder,
+            "pointerType": "mouse",
         })
     # ── DEBUG LOGGING: [SCROLL CHUNK] summary ──────────────────────────────────
     _dlog.debug(
@@ -1966,6 +2108,81 @@ def smooth_scroll_chunk(driver, distance_px: int,
         (time.perf_counter() - _sc_t0) * 1000,
     )
     # ────────────────────────────────────────────────────────────────────
+
+
+def _sample_scroll_notches() -> int:
+    """
+    Fix #8: 3-component mixture distribution for scroll distance in wheel notches.
+    One notch = deltaY:100 deltaMode:1  ≈ 100-120 px at default browser line height.
+
+      40 % short   2–3 notches  (lazy one-finger flick)
+      40 % medium  4–7 notches  (normal reading scroll)
+      20 % long    8–14 notches (fast sweep / skipping section)
+    """
+    r = random.random()
+    if r < 0.40:
+        return random.randint(2, 3)
+    elif r < 0.80:
+        return random.randint(4, 7)
+    else:
+        return random.randint(8, 14)
+
+
+def _notched_scroll_burst(driver, n_notches: int, direction: int = 1) -> None:
+    """
+    Fix #7: Dispatch n_notches discrete mouse-wheel notches via CDP using
+    deltaMode:1 (line units, deltaY=±100) with natural burst-silence timing.
+
+    Real USB mice report wheel events in firmware-timed bursts of 1-4 notches
+    at the USB polling interval, followed by 80-800 ms of silence between
+    mechanical detents.  A uniform pixel-delta stream (deltaMode:0) at 12-20 ms
+    intervals matches no real input device and is a detectable fingerprint.
+
+    This model:
+      - fires 1-4 notches per burst (weighted toward smaller bursts)
+      - uses log-normal intra-burst gaps  (μ=25 ms, clamped 6-80 ms)
+      - uses log-normal inter-burst silences (μ=140 ms, clamped 80-250 ms)
+
+    direction: 1 = scroll down, -1 = scroll up
+    """
+    remaining = n_notches
+    while remaining > 0:
+        burst = min(remaining, random.choices(
+            [1, 2, 3, 4], weights=[40, 30, 20, 10]
+        )[0])
+
+        for i in range(burst):
+            try:
+                driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                    "type":        "mouseWheel",
+                    "x":           _get_ctx().cursor_pos[0],
+                    "y":           _get_ctx().cursor_pos[1],
+                    "deltaX":      0,
+                    "deltaY":      direction * 100,
+                    "deltaMode":   1,
+                    "pointerType": "mouse",
+                })
+                _cdp_record_success()
+            except WebDriverException as exc:
+                _cdp_record_failure("notched_scroll", exc)
+
+            if i < burst - 1:
+                # intra-burst: log-normal ≈ 25 ms (USB polling rhythm)
+                intra = max(0.006, min(
+                    random.lognormvariate(math.log(0.025), 0.35),
+                    0.080,
+                ))
+                precise_sleep(intra)
+
+        remaining -= burst
+
+        if remaining > 0:
+            # inter-burst silence: log-normal ≈ 140 ms (hand pause between detents)
+            silence = max(0.080, min(
+                random.lognormvariate(math.log(0.140), 0.45),
+                0.250,
+            ))
+            precise_sleep(silence)
 
 
 def stochastic_scroll(driver, total_seconds: float) -> None:
@@ -2014,9 +2231,9 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
                     vh_r = driver.execute_script("return window.innerHeight")
                     # Local drift — stays near current position, Gaussian spread
                     cx = max(int(vw_r * 0.08), min(int(vw_r * 0.92),
-                             _cursor_pos[0] + int(random.gauss(0, vw_r * 0.10))))
+                             _get_ctx().cursor_pos[0] + int(random.gauss(0, vw_r * 0.10))))
                     cy = max(int(vh_r * 0.10), min(int(vh_r * 0.90),
-                             _cursor_pos[1] + int(random.gauss(0, vh_r * 0.09))))
+                             _get_ctx().cursor_pos[1] + int(random.gauss(0, vh_r * 0.09))))
                     bezier_move_to_coords(driver, cx, cy, tag="reading-wander")
                 except Exception:
                     pass
@@ -2029,10 +2246,9 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
     _chunk_count  = 0
     _total_chunks = 0   # ─ DEBUG: cumulative chunk counter for progress logs
     while time.time() < deadline:
-        distance = random.randint(280, 650)
-        step_px  = random.randint(4, 9)
-        tick_ms  = random.randint(12, 20)
-        smooth_scroll_chunk(driver, distance, step_px, tick_ms)
+        # Fix #7+#8: discrete notched wheel events with mixture distance distribution
+        n_notches = _sample_scroll_notches()
+        _notched_scroll_burst(driver, n_notches, direction=1)
         _chunk_count  += 1
         _total_chunks += 1
 
@@ -2069,9 +2285,9 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
                 vw_n = driver.execute_script("return window.innerWidth")
                 vh_n = driver.execute_script("return window.innerHeight")
                 nx = max(int(vw_n * 0.08), min(int(vw_n * 0.92),
-                         _cursor_pos[0] + int(random.gauss(0, vw_n * 0.12))))
+                         _get_ctx().cursor_pos[0] + int(random.gauss(0, vw_n * 0.12))))
                 ny = max(int(vh_n * 0.10), min(int(vh_n * 0.90),
-                         _cursor_pos[1] + int(random.gauss(0, vh_n * 0.10))))
+                         _get_ctx().cursor_pos[1] + int(random.gauss(0, vh_n * 0.10))))
                 bezier_move_to_coords(driver, nx, ny, tag="scroll-drift")
             except Exception:
                 pass
@@ -2103,12 +2319,12 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
         # occasional upward drift — small (re-reading) or large (going back to a post)
         if random.random() < 0.22:
             # 20 % of drift events scroll back a large amount (really went too far)
-            up_px = (
-                random.randint(200, 600) if random.random() < 0.20
-                else random.randint(80, 160)
+            up_notches = (
+                random.randint(4, 8) if random.random() < 0.20
+                else random.randint(1, 3)
             )
-            smooth_scroll_chunk(driver, -up_px, step_px=5, tick_ms=18)
-            dwell = random.uniform(1.5, 4.0) if up_px >= 200 else random.uniform(0.4, 1.2)
+            _notched_scroll_burst(driver, up_notches, direction=-1)
+            dwell = random.uniform(1.5, 4.0) if up_notches >= 4 else random.uniform(0.4, 1.2)
             precise_sleep(dwell)
 
         if time.time() >= deadline:
@@ -2841,7 +3057,7 @@ def view_profile_from_feed(driver) -> bool:
                     continue
                 if own_href and href.rstrip("/") == own_href:
                     continue
-                if href.rstrip("/") in _session_followed:
+                if href.rstrip("/") in _get_ctx().session_followed:
                     continue
                 # Viewport filter — only keep elements currently on-screen
                 rect = driver.execute_script(
@@ -2888,7 +3104,7 @@ def view_profile_from_feed(driver) -> bool:
         # Scroll the link loosely into view before moving the cursor to it.
         scroll_element_into_loose_view(driver, target)
 
-        _session_followed.add(profile_url.rstrip("/"))
+        _get_ctx().session_followed.add(profile_url.rstrip("/"))
         log.info("[PROFILE VIEW]  candidates=%d  target=%s",
                  len(candidates[:15]), profile_url[:60])
         bezier_move(driver, target)
@@ -2985,7 +3201,7 @@ def follow_from_feed(driver) -> bool:
                     continue
                 if own_href and href.rstrip("/") == own_href:
                     continue
-                if href.rstrip("/") in _session_followed:
+                if href.rstrip("/") in _get_ctx().session_followed:
                     continue
                 # Avatar links contain <img>; username links contain only text.
                 # We want textual username links — avatar hover triggers the
@@ -3060,11 +3276,11 @@ def follow_from_feed(driver) -> bool:
         debug_cursor_state(driver, "follow-feed-click")
         precise_sleep(random.uniform(0.8, 1.5))
         log.info("follow_from_feed: follow clicked via hover card")
-        _session_followed.add((username_el.get_attribute("href") or "").rstrip("/"))
+        _get_ctx().session_followed.add((username_el.get_attribute("href") or "").rstrip("/"))
 
         # ── DEBUG LOGGING: ACTION END (success) ──────────────────────────────────
-        _session_metrics["follows"] += 1
-        _session_metrics["actions_dispatched"] += 1
+        _get_ctx().session_metrics["follows"] += 1
+        _get_ctx().session_metrics["actions_dispatched"] += 1
         log.info("[ACTION END]  action=follow_feed  result=success")
         # ────────────────────────────────────────────────────────────────────
 
@@ -3456,7 +3672,7 @@ def passive_action(driver) -> None:
     scroll_time = random.uniform(25, 75)
     # ── DEBUG LOGGING: ACTION START ────────────────────────────────────────────
     _action_t0 = time.perf_counter()
-    _session_metrics["actions_dispatched"] += 1
+    _get_ctx().session_metrics["actions_dispatched"] += 1
     log.info("[ACTION START]  action=passive")
     # ────────────────────────────────────────────────────────────────────
     log.info("[ PASSIVE ]  scroll %.0fs", scroll_time)
@@ -3465,7 +3681,7 @@ def passive_action(driver) -> None:
     # Pause after scrolling stops — user finishes reading the post
     precise_sleep(random.uniform(1.0, 3.0))
     # ── DEBUG LOGGING: ACTION END ────────────────────────────────────────────
-    _session_metrics["passive"] += 1
+    _get_ctx().session_metrics["passive"] += 1
     _log_page_state(driver, "passive_end")
     log.info("[ACTION END]  action=passive  result=success  duration=%.1fs",
              time.perf_counter() - _action_t0)
@@ -3494,7 +3710,7 @@ def active_action(driver) -> None:
 
     # ── DEBUG LOGGING: ACTION START ────────────────────────────────────────────
     _action_t0 = time.perf_counter()
-    _session_metrics["actions_dispatched"] += 1
+    _get_ctx().session_metrics["actions_dispatched"] += 1
     _log_page_state(driver, "active_start")
     log.info("[ACTION START]  action=active  url=%s", current_url[:60])
     # ────────────────────────────────────────────────────────────────────
@@ -3547,7 +3763,7 @@ def active_action(driver) -> None:
         log.warning("[ACTIVE]  error: %s", exc)
 
     # ── DEBUG LOGGING: ACTION END ────────────────────────────────────────────
-    _session_metrics["likes"] += liked
+    _get_ctx().session_metrics["likes"] += liked
     _log_page_state(driver, "active_end")
     log.info("[ACTION END]  action=active  result=success  likes=%d  duration=%.1fs",
              liked, time.perf_counter() - _action_t0)
@@ -3582,7 +3798,7 @@ def read_post_action(driver) -> bool:
             return False
         # ── DEBUG LOGGING: ACTION START ─────────────────────────────────────────
         _action_t0 = time.perf_counter()
-        _session_metrics["actions_dispatched"] += 1
+        _get_ctx().session_metrics["actions_dispatched"] += 1
         log.info("[ACTION START]  action=read_post")
         # ────────────────────────────────────────────────────────────────────
 
@@ -3643,7 +3859,7 @@ def read_post_action(driver) -> bool:
         precise_sleep(random.uniform(1.0, 2.5))
         log.info("[ READ POST ]  returned to feed")
         # ── DEBUG LOGGING: ACTION END (success) ──────────────────────────────────
-        _session_metrics["reads"] += 1
+        _get_ctx().session_metrics["reads"] += 1
         log.info("[ACTION END]  action=read_post  result=success  duration=%.1fs",
                  time.perf_counter() - _action_t0)
         # ────────────────────────────────────────────────────────────────────
@@ -3691,7 +3907,7 @@ def comment_on_post(driver) -> bool:
             return False
         # ── DEBUG LOGGING: ACTION START ─────────────────────────────────────────
         _action_t0 = time.perf_counter()
-        _session_metrics["actions_dispatched"] += 1
+        _get_ctx().session_metrics["actions_dispatched"] += 1
         log.info("[ACTION START]  action=comment")
         # ────────────────────────────────────────────────────────────────────
 
@@ -3783,7 +3999,7 @@ def comment_on_post(driver) -> bool:
         precise_sleep(random.uniform(1.5, 3.5))
         log.info("[ COMMENT ]  comment posted successfully")
         # ── DEBUG LOGGING: ACTION END (success) ──────────────────────────────────
-        _session_metrics["comments"] += 1
+        _get_ctx().session_metrics["comments"] += 1
         log.info("[ACTION END]  action=comment  result=success  duration=%.1fs",
                  time.perf_counter() - _action_t0)
         # ────────────────────────────────────────────────────────────────────
@@ -3808,8 +4024,69 @@ def comment_on_post(driver) -> bool:
 # enforced on top of the daily quota.
 # ================================================================== #
 
+# ── Cross-process state safety ───────────────────────────────────────────────
+# Every load/modify/save cycle on POST_STATE_FILE must happen inside a
+# "with _post_state_locked():" block.  The context manager holds:
+#   1. threading.Lock()   — in-process serialisation between threads.
+#   2. OS file lock on POST_STATE_FILE + ".lock" — cross-process exclusive
+#      access when multiple profiles are launched in parallel.
+# _save_post_state() uses a tmp-fsync-replace pattern so a crash between
+# truncate and write can never produce an empty or partial state file.
+# ─────────────────────────────────────────────────────────────────────────────
+_POST_STATE_TLOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _post_state_locked():
+    """Acquire exclusive access to POST_STATE_FILE for a load-modify-save cycle.
+
+    Combines an in-process threading.Lock with an OS-level file lock on
+    ``POST_STATE_FILE + ".lock"`` so that concurrent threads *and* concurrent
+    processes (parallel profile runs) are both serialised.
+
+    Windows uses ``msvcrt.locking`` (LK_LOCK = blocking exclusive byte-range
+    lock). POSIX uses ``fcntl.flock(LOCK_EX)``.
+
+    Usage::
+
+        with _post_state_locked():
+            state = _load_post_state()
+            # ... mutate state ...
+            _save_post_state(state)
+    """
+    lock_path = POST_STATE_FILE + ".lock"
+    with _POST_STATE_TLOCK:
+        lf = open(lock_path, "a+b")
+        try:
+            if sys.platform == "win32":
+                import msvcrt as _msvcrt
+                # LK_LOCK retries every 1 s for up to 10 s then raises OSError.
+                lf.seek(0)
+                _msvcrt.locking(lf.fileno(), _msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl as _fcntl
+                _fcntl.flock(lf.fileno(), _fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if sys.platform == "win32":
+                    import msvcrt as _msvcrt
+                    lf.seek(0)
+                    _msvcrt.locking(lf.fileno(), _msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl as _fcntl
+                    _fcntl.flock(lf.fileno(), _fcntl.LOCK_UN)
+        finally:
+            lf.close()
+
+
 def _load_post_state() -> dict:
-    """Load per-profile posting state from POST_STATE_FILE (creates if absent)."""
+    """Read posting state from POST_STATE_FILE.
+
+    Must be called from within a ``_post_state_locked()`` context whenever the
+    caller intends to mutate and save.  Safe to call outside the lock for
+    read-only queries where a slightly stale snapshot is acceptable.
+    """
     if os.path.exists(POST_STATE_FILE):
         try:
             with open(POST_STATE_FILE, "r", encoding="utf-8") as fh:
@@ -3820,9 +4097,22 @@ def _load_post_state() -> dict:
 
 
 def _save_post_state(state: dict) -> None:
+    """Atomically persist *state* to POST_STATE_FILE.
+
+    Writes to a sibling ``.tmp`` file, fsyncs to flush kernel buffers, then
+    calls ``os.replace()`` which is atomic on both Windows (Vista+) and POSIX.
+    A crash before ``os.replace()`` leaves the original file intact; a crash
+    after leaves the complete new file.  Either way the state is never empty.
+
+    Must be called from within a ``_post_state_locked()`` context.
+    """
+    tmp_path = POST_STATE_FILE + ".tmp"
     try:
-        with open(POST_STATE_FILE, "w", encoding="utf-8") as fh:
+        with open(tmp_path, "w", encoding="utf-8") as fh:
             json.dump(state, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, POST_STATE_FILE)
     except OSError as exc:
         log.warning("post_state save failed: %s", exc)
 
@@ -4016,9 +4306,12 @@ def _prepare_image_for_profile(src_path: str, profile_id: str) -> str:
     even when two profiles choose the same source image:
 
       1. Random 1–3 px crop on every edge  (geometry changes)
-      2. ±2 % brightness adjustment         (pixel values change)
-      3. ±2 % contrast adjustment           (pixel values change)
-      4. Re-encode at randomised quality    (file bytes change)
+      1b. Horizontal flip — 50 % chance    (pHash distance +8–15 bits)
+      1c. Random rotation 2–5 °            (geometry/DCT fingerprint shift)
+      2. ±12 % brightness adjustment       (DCT coefficient shift)
+      3. ±12 % contrast adjustment         (DCT coefficient shift)
+      3b. Invisible corner stamp           (raw pixel alteration)
+      4. Re-encode at randomised quality   (file bytes change)
          JPEG/WebP: base-88 ± 2–5 pts;
          PNG: lossless but fresh encoding.
       5. Strip all original EXIF metadata.
@@ -4030,7 +4323,7 @@ def _prepare_image_for_profile(src_path: str, profile_id: str) -> str:
     stale copies from previous sessions are easy to identify and the same
     profile never sees another profile's scratch files.
     """
-    from PIL import Image, ImageEnhance  # Pillow – always installed
+    from PIL import Image, ImageDraw, ImageEnhance  # Pillow – always installed
 
     try:
         import piexif as _piexif
@@ -4054,13 +4347,47 @@ def _prepare_image_for_profile(src_path: str, profile_id: str) -> str:
     bottom = random.randint(1, 3)
     img = img.crop((left, top, w - right, h - bottom))
 
-    # 2. Brightness ±2 %
-    b_factor = 1.0 + random.uniform(-0.02, 0.02)
+    # 1b. Horizontal flip — 50 % chance.  A flip changes every pixel's
+    #     position, pushing the pHash distance to 8–15 bits vs the source,
+    #     which is well above any practical near-duplicate threshold.
+    _flip = random.random() < 0.5
+    if _flip:
+        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+
+    # 1c. Small random rotation (2–5 °) in a random direction.  Combined with
+    #     the optional flip this ensures geometry-based hashes (dHash, aHash)
+    #     also differ significantly on every call.
+    angle = random.uniform(2.0, 5.0) * random.choice([-1, 1])
+    img = img.rotate(angle, resample=Image.BICUBIC, expand=False)
+
+    # 2. Brightness ±12 % (was ±2 %) — wider luminance shift moves DCT
+    #    coefficients far outside the ±1-LSB neighbourhood that pHash
+    #    near-duplicate detection relies on.
+    b_factor = 1.0 + random.uniform(-0.12, 0.12)
     img = ImageEnhance.Brightness(img).enhance(b_factor)
 
-    # 3. Contrast ±2 %
-    c_factor = 1.0 + random.uniform(-0.02, 0.02)
+    # 3. Contrast ±12 % (was ±2 %)
+    c_factor = 1.0 + random.uniform(-0.12, 0.12)
     img = ImageEnhance.Contrast(img).enhance(c_factor)
+
+    # 3b. Invisible corner stamp — two-digit number drawn in a colour sampled
+    #     from the corner pixel ± a small random offset so it is imperceptible
+    #     to a human reviewer but alters the raw pixel values and the DCT block
+    #     in that corner region.
+    try:
+        _cw, _ch = img.size
+        _corner_x = random.choice([2, _cw - 14])
+        _corner_y = random.choice([2, _ch - 14])
+        _sample_rgb = img.getpixel((_corner_x, _corner_y))
+        _overlay_rgb = tuple(
+            max(0, min(255, _sample_rgb[c] + random.randint(-18, 18)))
+            for c in range(3)
+        )
+        _draw = ImageDraw.Draw(img)
+        _draw.text((_corner_x, _corner_y), f"{random.randint(10, 99)}", fill=_overlay_rgb)
+        del _draw
+    except Exception:
+        pass  # never block the upload path
 
     # 4. Re-encode at randomised quality
     ext = os.path.splitext(src_path)[1].lower()
@@ -4110,9 +4437,9 @@ def _prepare_image_for_profile(src_path: str, profile_id: str) -> str:
 
     img.save(out_path, format=save_fmt, **save_kwargs)
     log.info(
-        "[ POST ]  image uniquified  |  crop=(%d,%d,%d,%d)  "
-        "b=%.3f  c=%.3f  q=%s  → %s",
-        left, top, right, bottom, b_factor, c_factor,
+        "[ POST ]  image uniquified  |  crop=(%d,%d,%d,%d)  flip=%s  "
+        "rot=%.1f°  b=%.3f  c=%.3f  q=%s  → %s",
+        left, top, right, bottom, _flip, angle, b_factor, c_factor,
         quality if quality else "lossless",
         os.path.basename(out_path),
     )
@@ -4428,51 +4755,59 @@ def create_post(driver, profile_id: str) -> bool:
                      the hidden <input type="file"> without a click chain.
       Post button  — reuses COMMENT_POST_XPATH (same "Post" text node).
     """
-    state = _load_post_state()
-    if not _can_post_now(profile_id, state):
-        return False
-
-    # ── DEBUG LOGGING: POST FLOW timer ────────────────────────────────────────
-    _pf_t0 = time.perf_counter()
-    # ──────────────────────────────────────────────────────────────────────────
-
     if not POST_CAPTION_POOL:
         log.warning("create_post: POST_CAPTION_POOL is empty — cannot post")
         return False
 
-    # Pick media — cross-profile deduplication: never allow two profiles to
-    # post from the same source file.  The global "_used_images" list in state
-    # tracks source basenames across all profiles so platform-side perceptual
-    # hashing cannot link accounts even when the encoded bytes differ.
+    # === Fix #11: locked pre-post transaction — gate check + image reservation =
+    # The lock is held only for the short read-modify-write cycle on state.
+    # Heavy browser automation below runs entirely outside the lock so parallel
+    # profiles are not blocked for the duration of the UI interaction.
     image_path = None
-    if MEDIA_POOL_DIR and os.path.isdir(MEDIA_POOL_DIR):
-        all_images = [
-            os.path.abspath(os.path.join(MEDIA_POOL_DIR, f))
-            for f in os.listdir(MEDIA_POOL_DIR)
-            if os.path.splitext(f)[1].lower() in POST_MEDIA_EXTENSIONS
-        ]
-        if all_images:
-            used_globally = set(state.get("_used_images", []))
-            fresh = [p for p in all_images if os.path.basename(p) not in used_globally]
-            if not fresh:
-                # Pool exhausted — reset and cycle (all images used at least once)
-                log.info("[ POST ]  image pool fully cycled — resetting cross-profile dedup list")
-                state["_used_images"] = []
-                _save_post_state(state)
-                fresh = all_images
-            src = random.choice(fresh)
-            # Mark this source as globally used BEFORE uniquifying, so concurrent
-            # sessions (different profiles) cannot race and pick the same file.
-            used_list = state.setdefault("_used_images", [])
-            basename = os.path.basename(src)
-            if basename not in used_list:
-                used_list.append(basename)
-                _save_post_state(state)
-            try:
-                image_path = _prepare_image_for_profile(src, profile_id)
-            except Exception as exc:
-                log.warning("[ POST ]  image uniquification failed (%s) — using original", exc)
-                image_path = src
+    _src_for_uniquify = None
+    with _post_state_locked():
+        state = _load_post_state()
+        if not _can_post_now(profile_id, state):
+            return False
+
+        # Pick media — cross-profile deduplication: a single locked read-write
+        # ensures two parallel profiles cannot reserve the same source file.
+        if MEDIA_POOL_DIR and not os.path.isdir(MEDIA_POOL_DIR):
+            log.warning(
+                "[ POST ]  MEDIA_POOL_DIR not found — posting text-only  "
+                "(configured path: %s)", MEDIA_POOL_DIR
+            )
+        if MEDIA_POOL_DIR and os.path.isdir(MEDIA_POOL_DIR):
+            all_images = [
+                os.path.abspath(os.path.join(MEDIA_POOL_DIR, f))
+                for f in os.listdir(MEDIA_POOL_DIR)
+                if os.path.splitext(f)[1].lower() in POST_MEDIA_EXTENSIONS
+            ]
+            if all_images:
+                used_globally = set(state.get("_used_images", []))
+                fresh = [p for p in all_images if os.path.basename(p) not in used_globally]
+                if not fresh:
+                    log.info("[ POST ]  image pool fully cycled — resetting cross-profile dedup list")
+                    state["_used_images"] = []
+                    fresh = all_images
+                _src_for_uniquify = random.choice(fresh)
+                used_list = state.setdefault("_used_images", [])
+                basename = os.path.basename(_src_for_uniquify)
+                if basename not in used_list:
+                    used_list.append(basename)
+        _save_post_state(state)  # one atomic write covers gate + image reservation
+    # ===========================================================================
+
+    if _src_for_uniquify:
+        try:
+            image_path = _prepare_image_for_profile(_src_for_uniquify, profile_id)
+        except Exception as exc:
+            log.warning("[ POST ]  image uniquification failed (%s) — using original", exc)
+            image_path = _src_for_uniquify
+
+    # ── DEBUG LOGGING: POST FLOW timer ────────────────────────────────────────
+    _pf_t0 = time.perf_counter()
+    # ──────────────────────────────────────────────────────────────────────────
 
     caption = _humanize_caption(POST_CAPTION_POOL)
     log.info(
@@ -4497,7 +4832,30 @@ def create_post(driver, profile_id: str) -> bool:
                 break
 
         if not compose_btn:
-            log.debug("create_post: compose button not found — aborting")
+            # Diagnostic: dump visible nav buttons so selectors can be updated
+            try:
+                btn_info = driver.execute_script("""
+                    return Array.from(document.querySelectorAll(
+                        '[role="button"],[role="link"]'
+                    )).filter(el => {
+                        var r = el.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0 &&
+                               r.top >= 0 && r.top < window.innerHeight;
+                    }).slice(0, 30).map(el => ({
+                        tag:   el.tagName,
+                        role:  el.getAttribute('role'),
+                        label: el.getAttribute('aria-label') || '',
+                        svgLabels: Array.from(el.querySelectorAll('svg[aria-label]'))
+                                       .map(s => s.getAttribute('aria-label')),
+                        text:  (el.innerText || '').slice(0, 40).replace(/\\n/g,' '),
+                    }));
+                """)
+                log.warning(
+                    "create_post: compose button not found — visible role=button/link elements: %s",
+                    btn_info,
+                )
+            except Exception as _diag_exc:
+                log.debug("create_post: compose button not found (diag failed: %s)", _diag_exc)
             return False
 
         scroll_element_into_loose_view(driver, compose_btn)
@@ -4525,88 +4883,79 @@ def create_post(driver, profile_id: str) -> bool:
         log.info("[POST FLOW]  step=compose_open  success=True  duration=%.0fms  detail=textbox_visible",
                  (time.perf_counter() - _pf_t0) * 1000)
 
-        # 4. Attach image — click the Attach-media button (opens OS file dialog),
-        #    simulate human file-locate time, then dismiss the dialog by pasting
-        #    the absolute path into the filename field via pyautogui + pyperclip.
-        #    Falls back to the hidden-input send_keys trick if either library is absent.
+        # 4. Attach image.
+        #
+        # Primary: pyautogui OS file dialog (visually natural — opens the real
+        # system file picker).  Fallback: hidden <input type="file"> send_keys
+        # (no dialog, used when pyautogui/pyperclip are not installed or the
+        # attach button is not visible in the DOM).
         if image_path:
             try:
-                attach_btns = [
-                    el for el in driver.find_elements(
-                        By.CSS_SELECTOR, COMPOSE_ATTACH_BTN_CSS
-                    )
-                    if el.is_displayed()
-                ]
-                if not attach_btns:
-                    raise WebDriverException("Attach media button not found")
-
-                bezier_move(driver, attach_btns[0])
+                # Short settle after the modal animation
                 precise_sleep(random.uniform(0.3, 0.6))
 
-                # Click → OS file dialog opens
-                try:
-                    _cdp_click(driver)
-                except WebDriverException:
-                    driver.execute_script("arguments[0].click();", attach_btns[0])
+                _media_attached = False
 
+                # Primary: click the attach button → OS file dialog → pyautogui paste.
                 try:
                     import pyautogui as _pag
                     import pyperclip as _ppc
 
-                    # ── Wait for the OS file dialog to appear ────────────────────
-                    # The dialog takes a moment to open; poll for it up to 8 s.
-                    _locate_delay = max(3.0, min(9.0, random.gauss(5.0, 1.5)))
-                    log.debug("create_post: OS dialog open — file-locate pause %.1fs", _locate_delay)
-                    precise_sleep(_locate_delay)
+                    attach_btns = [
+                        el for el in driver.find_elements(
+                            By.CSS_SELECTOR, COMPOSE_ATTACH_BTN_CSS
+                        )
+                        if el.is_displayed()
+                    ]
+                    if attach_btns:
+                        bezier_move(driver, attach_btns[0])
+                        precise_sleep(random.uniform(0.3, 0.6))
+                        try:
+                            _cdp_click(driver)
+                        except WebDriverException:
+                            driver.execute_script("arguments[0].click();", attach_btns[0])
 
-                    # ── Bring the file dialog to foreground ──────────────────────
-                    # pyautogui sends keystrokes to the focused window.  If the
-                    # browser lost focus or the dialog spawned behind it, Ctrl+V
-                    # and Enter go to the wrong window.  We find the Open/Save
-                    # dialog by its Win32 class (#32770 = standard dialog) and
-                    # force it to the foreground before typing.
-                    _dialog_hwnd = None
-                    try:
-                        _FindWindow  = ctypes.windll.user32.FindWindowW
-                        _SetFG       = ctypes.windll.user32.SetForegroundWindow
-                        _BringToTop  = ctypes.windll.user32.BringWindowToTop
-                        _ShowWindow  = ctypes.windll.user32.ShowWindow
-                        _SW_SHOW     = 5
+                        _locate_delay = max(3.0, min(9.0, random.gauss(5.0, 1.5)))
+                        log.debug("create_post: OS dialog open — file-locate pause %.1fs", _locate_delay)
+                        precise_sleep(_locate_delay)
 
-                        # #32770 is the Windows class for common file dialogs
-                        _dialog_hwnd = _FindWindow("#32770", None)
-                        if _dialog_hwnd:
-                            _ShowWindow(_dialog_hwnd, _SW_SHOW)
-                            _BringToTop(_dialog_hwnd)
-                            _SetFG(_dialog_hwnd)
-                            precise_sleep(0.3)  # let the OS finish the focus switch
-                            log.debug("create_post: file dialog brought to foreground (hwnd=%s)", _dialog_hwnd)
-                        else:
-                            log.debug("create_post: no #32770 dialog window found — assuming already focused")
-                    except Exception as _fg_exc:
-                        log.debug("create_post: SetForegroundWindow failed: %s", _fg_exc)
+                        try:
+                            _FindWindow  = ctypes.windll.user32.FindWindowW
+                            _SetFG       = ctypes.windll.user32.SetForegroundWindow
+                            _BringToTop  = ctypes.windll.user32.BringWindowToTop
+                            _ShowWindow  = ctypes.windll.user32.ShowWindow
+                            _dialog_hwnd = _FindWindow("#32770", None)
+                            if _dialog_hwnd:
+                                _ShowWindow(_dialog_hwnd, 5)
+                                _BringToTop(_dialog_hwnd)
+                                _SetFG(_dialog_hwnd)
+                                precise_sleep(0.3)
+                        except Exception as _fg_exc:
+                            log.debug("create_post: SetForegroundWindow failed: %s", _fg_exc)
 
-                    # ── Type path via clipboard paste → Enter ────────────────────
-                    _ppc.copy(os.path.abspath(image_path))
-                    precise_sleep(random.uniform(0.10, 0.25))   # clipboard settle
-                    _pag.hotkey("ctrl", "a")                  # select existing text in field
-                    precise_sleep(random.uniform(0.06, 0.14))
-                    _pag.hotkey("ctrl", "v")                  # paste absolute path
-                    precise_sleep(random.uniform(0.15, 0.35))
-                    _pag.press("enter")                       # confirm → dialog closes
-                    log.info("[ POST ]  media attached via OS dialog: %s",
-                             os.path.basename(image_path))
-                    log.info("[POST FLOW]  step=media_attach  success=True  detail=%s",
-                             os.path.basename(image_path))
-                    # Allow SPA to receive the file-change event and start upload
-                    precise_sleep(random.uniform(1.5, 2.5))
+                        _ppc.copy(os.path.abspath(image_path))
+                        precise_sleep(random.uniform(0.10, 0.25))
+                        _pag.hotkey("ctrl", "a")
+                        precise_sleep(random.uniform(0.06, 0.14))
+                        _pag.hotkey("ctrl", "v")
+                        precise_sleep(random.uniform(0.15, 0.35))
+                        _pag.press("enter")
+                        _ppc.copy("")  # clear clipboard immediately after use
+                        log.info("[ POST ]  media attached via OS dialog: %s",
+                                 os.path.basename(image_path))
+                        log.info("[POST FLOW]  step=media_attach  success=True  method=os_dialog  detail=%s",
+                                 os.path.basename(image_path))
+                        precise_sleep(random.uniform(1.5, 2.5))
+                        _media_attached = True
+                    else:
+                        log.debug("create_post: attach button not visible — falling back to hidden-input")
 
                 except ImportError:
-                    # ── Fallback: inject path into hidden <input type="file"> ────
-                    log.debug("create_post: pyautogui/pyperclip missing — hidden-input fallback"
-                              " (pip install pyautogui pyperclip to enable OS-dialog path)")
-                    # Brief wait for the SPA to create / unhide the input
-                    precise_sleep(random.uniform(0.4, 0.8))
+                    log.debug("create_post: pyautogui/pyperclip not installed — falling back to hidden-input")
+
+                if not _media_attached:
+                    # Fallback: inject path directly into the hidden file input.
+                    # Works without opening any dialog; reliable for unattended runs.
                     file_inputs = driver.find_elements(By.CSS_SELECTOR, COMPOSE_FILE_INPUT_CSS)
                     if file_inputs:
                         fi = file_inputs[0]
@@ -4617,12 +4966,13 @@ def create_post(driver, profile_id: str) -> bool:
                             fi,
                         )
                         fi.send_keys(image_path)
-                        log.info("[ POST ]  media attached (fallback): %s",
+                        log.info("[ POST ]  media attached (hidden-input fallback): %s",
                                  os.path.basename(image_path))
-                        log.info("[POST FLOW]  step=media_attach  success=True  detail=%s(fallback)",
+                        log.info("[POST FLOW]  step=media_attach  success=True  method=hidden_input  detail=%s",
                                  os.path.basename(image_path))
+                        _media_attached = True
                     else:
-                        log.debug("create_post: no file input found — text-only")
+                        log.warning("create_post: no attach button or file input found — skipping media")
                         image_path = None
 
                 # Wait for upload thumbnail / preview to render
@@ -4801,7 +5151,11 @@ def create_post(driver, profile_id: str) -> bool:
                  not _modal_still_open,
                  (time.perf_counter() - _pf_t0) * 1000)
 
-        _record_post(profile_id, state)
+        # Fix #11: reload state inside a fresh locked transaction so any
+        # concurrent profile's daily-count writes are not overwritten.
+        with _post_state_locked():
+            _rp_state = _load_post_state()
+            _record_post(profile_id, _rp_state)
         _cleanup_post_scratch(profile_id)
         log.info("[ POST ]  new post published successfully")
         return True
@@ -4822,13 +5176,13 @@ def post_action(driver, profile_id: str) -> None:
     """Session-loop dispatch wrapper for create_post."""
     # ── DEBUG LOGGING: ACTION START ────────────────────────────────────────────
     _action_t0 = time.perf_counter()
-    _session_metrics["actions_dispatched"] += 1
+    _get_ctx().session_metrics["actions_dispatched"] += 1
     log.info("[ACTION START]  action=post")
     # ────────────────────────────────────────────────────────────────────
     result = create_post(driver, profile_id)
     # ── DEBUG LOGGING: ACTION END ────────────────────────────────────────────
     if result:
-        _session_metrics["posts"] += 1
+        _get_ctx().session_metrics["posts"] += 1
     log.info("[ACTION END]  action=post  result=%s  duration=%.1fs",
              "success" if result else "failure", time.perf_counter() - _action_t0)
     # ────────────────────────────────────────────────────────────────────
@@ -5072,9 +5426,14 @@ def run_social_session(
     but no longer directly control dispatch.  They are used to scale
     the base transition matrix when explicitly overridden by the user.
     """
-    global _session_followed, _session_metrics, _cdp_consecutive_failures
-    _session_followed = set()
-    _cdp_consecutive_failures = 0   # reset circuit breaker for new session
+    # ── Reset all per-session mutable state in this thread's context ──────────
+    # Replacing the SessionContext object atomically resets cursor_pos,
+    # cdp_consecutive_failures, session_followed, session_metrics, and
+    # active_typing_dna in one step — safe for concurrent profiles running in
+    # separate threads because each has its own threading.local slot.
+    _session_local.ctx = SessionContext()
+    _session_local.ctx.active_typing_dna = _get_typing_dna(profile_id)
+    # ─────────────────────────────────────────────────────────────────────────
 
     # ── Break cross-profile RNG correlation ───────────────────────────────
     # The global random module uses a single Mersenne Twister.  Without
@@ -5083,24 +5442,10 @@ def run_social_session(
     # bytes from the OS CSPRNG so each session is independent.
     random.seed(os.urandom(32))
 
-    # Load per-profile typing DNA for this session.
-    global _active_typing_dna
-    _active_typing_dna = _get_typing_dna(profile_id)
-
     # Draw a fresh passive-phase duration for this specific session.
     # Previously a module-level constant shared across all profiles.
     _session_passive_phase_sec = _draw_passive_phase_sec()
     log.debug("[ SESSION ]  passive phase drawn: %.1f min", _session_passive_phase_sec / 60)
-
-    # ── DEBUG LOGGING: reset session metrics ─────────────────────────────────
-    _session_metrics = {
-        "actions_dispatched": 0, "likes": 0, "comments": 0,
-        "follows": 0, "posts": 0, "passive": 0, "reads": 0,
-        "profile_visits": 0, "searches": 0,
-        "last_action": None, "consecutive_same": 0,
-    }
-    # ────────────────────────────────────────────────────────────────────
-
     session_start_ts = time.time()
     deadline    = session_start_ts + session_seconds
     count       = 0
@@ -5164,7 +5509,7 @@ def run_social_session(
         "[STATE SNAPSHOT]  event=session_start  profile=%s  session_sec=%.0f"
         "  account_days=%d  cursor_pos=(%d,%d)  viewport=(%dx%d)  page_url=%s",
         profile_id, session_seconds, _account_days,
-        _cursor_pos[0], _cursor_pos[1], _snap_vp[0], _snap_vp[1], _snap_url[:80],
+        _get_ctx().cursor_pos[0], _get_ctx().cursor_pos[1], _snap_vp[0], _snap_vp[1], _snap_url[:80],
     )
     # ────────────────────────────────────────────────────────────────────
 
@@ -5180,7 +5525,7 @@ def run_social_session(
             check_notifications_action(driver)
         elif action == "profile_view":
             view_profile_from_feed(driver)
-            _session_metrics["profile_visits"] += 1
+            _get_ctx().session_metrics["profile_visits"] += 1
         elif action == "read_post":
             read_post_action(driver)
         elif action == "comment":
@@ -5191,7 +5536,7 @@ def run_social_session(
             return_to_top_action(driver)
         elif action == "search":
             visit_search_action(driver)
-            _session_metrics["searches"] += 1
+            _get_ctx().session_metrics["searches"] += 1
         elif action == "post":
             passive_elapsed = time.time() - session_start_ts
             if passive_elapsed >= _session_passive_phase_sec:
@@ -5221,8 +5566,8 @@ def run_social_session(
             selected_action = _markov_sample_next_action(
                 current_state=current_state,
                 session_elapsed_frac=elapsed_frac,
-                metrics=_session_metrics,
-                consecutive_same=_session_metrics["consecutive_same"],
+                metrics=_get_ctx().session_metrics,
+                consecutive_same=_get_ctx().session_metrics["consecutive_same"],
                 account_days_old=_account_days,
             )
             _dispatch(selected_action)
@@ -5234,11 +5579,11 @@ def run_social_session(
 
         # ── DEBUG LOGGING: [SESSION TICK] + consecutive-action tracking ───────
         _sess_elapsed = time.time() - session_start_ts
-        if _session_metrics["last_action"] == selected_action:
-            _session_metrics["consecutive_same"] += 1
+        if _get_ctx().session_metrics["last_action"] == selected_action:
+            _get_ctx().session_metrics["consecutive_same"] += 1
         else:
-            _session_metrics["consecutive_same"] = 0
-        _session_metrics["last_action"] = selected_action
+            _get_ctx().session_metrics["consecutive_same"] = 0
+        _get_ctx().session_metrics["last_action"] = selected_action
         log.info(
             "[SESSION TICK]  iteration=%d  markov_state=%s  selected=%s"
             "  session_elapsed=%.0fs  elapsed_frac=%.2f"
@@ -5246,14 +5591,14 @@ def run_social_session(
             "  account_days=%d",
             count + 1, current_state, selected_action,
             _sess_elapsed, elapsed_frac,
-            active_done, _session_metrics["actions_dispatched"],
-            _session_metrics["consecutive_same"], _account_days,
+            active_done, _get_ctx().session_metrics["actions_dispatched"],
+            _get_ctx().session_metrics["consecutive_same"], _account_days,
         )
-        if _session_metrics["consecutive_same"] >= 2:
+        if _get_ctx().session_metrics["consecutive_same"] >= 2:
             _dlog.warning(
                 "[RISK WARN]  consecutive_same=%d  action=%s -- "
                 "Markov suppression should reduce this",
-                _session_metrics["consecutive_same"] + 1, selected_action,
+                _get_ctx().session_metrics["consecutive_same"] + 1, selected_action,
             )
         # ───────────────────────────────────────────────────────────────────
 
@@ -5269,10 +5614,14 @@ def run_social_session(
                 and random.random() < 0.12):
             _distraction_pause(driver)
         else:
-            precise_sleep(random.uniform(1, 3))
+            # Fix #8: log-normal inter-action gap — median 1.5 s, σ=0.6 on the
+            # log scale.  Produces a right-skewed distribution that matches
+            # observed human reaction-time between browsing actions far better
+            # than a flat uniform(1,3) which a classifier can trivially identify.
+            precise_sleep(max(0.5, min(15.0, random.lognormvariate(math.log(1.5), 0.6))))
 
     # ── POST-SESSION DIAGNOSTICS ─────────────────────────────────────────────
-    if _session_metrics["passive"] == 0:
+    if _get_ctx().session_metrics["passive"] == 0:
         _dlog.warning(
             "[RISK WARN]  session ended with 0 passive actions "
             "-- pure engagement bot pattern"
@@ -5288,12 +5637,12 @@ def run_social_session(
         "  likes=%d  comments=%d  follows=%d  posts=%d  passive=%d  reads=%d"
         "  profile_visits=%d  searches=%d  page_url=%s",
         profile_id, session_seconds, _account_days,
-        _cursor_pos[0], _cursor_pos[1],
-        len(_session_followed), _session_metrics["actions_dispatched"],
-        _session_metrics["likes"], _session_metrics["comments"],
-        _session_metrics["follows"], _session_metrics["posts"],
-        _session_metrics["passive"], _session_metrics["reads"],
-        _session_metrics["profile_visits"], _session_metrics["searches"],
+        _get_ctx().cursor_pos[0], _get_ctx().cursor_pos[1],
+        len(_get_ctx().session_followed), _get_ctx().session_metrics["actions_dispatched"],
+        _get_ctx().session_metrics["likes"], _get_ctx().session_metrics["comments"],
+        _get_ctx().session_metrics["follows"], _get_ctx().session_metrics["posts"],
+        _get_ctx().session_metrics["passive"], _get_ctx().session_metrics["reads"],
+        _get_ctx().session_metrics["profile_visits"], _get_ctx().session_metrics["searches"],
         _end_url[:80],
     )
     # ────────────────────────────────────────────────────────────────────
@@ -5793,8 +6142,7 @@ def run_test_actions(driver, profile_id: str = "test",
     # Load per-profile typing DNA so human_type() uses realistic per-profile
     # keystroke dynamics (including the typo/correction model) even outside
     # the normal run_social_session() path.
-    global _active_typing_dna
-    _active_typing_dna = _get_typing_dna(profile_id)
+    _get_ctx().active_typing_dna = _get_typing_dna(profile_id)
 
     # ── Define the ordered list of actions to test ────────────────────────────
     # Each entry: (action_name, callable_that_returns_something)
@@ -5839,26 +6187,6 @@ def run_test_actions(driver, profile_id: str = "test",
     def _test_comment_on_post():
         return comment_on_post(driver)
 
-    def _test_create_post():
-        # Bypass _can_post_now by temporarily monkey-patching it
-        original_can_post = globals().get("_can_post_now")
-        # Replace with a lambda that always returns True
-        globals()["_can_post_now"] = lambda pid, state: True
-        # Also monkey-patch _record_post to skip persisting state
-        original_record_post = globals().get("_record_post")
-        def _noop_record(pid, state):
-            tlog.info("[TEST]  _record_post SKIPPED — test post not recorded in %s", POST_STATE_FILE)
-        globals()["_record_post"] = _noop_record
-        try:
-            result = create_post(driver, profile_id)
-            return result
-        finally:
-            # Restore originals
-            if original_can_post is not None:
-                globals()["_can_post_now"] = original_can_post
-            if original_record_post is not None:
-                globals()["_record_post"] = original_record_post
-
     def _test_visit_search():
         visit_search_action(driver)
         return True
@@ -5870,6 +6198,17 @@ def run_test_actions(driver, profile_id: str = "test",
         return_to_top_action(driver)
         return True
 
+    def _test_create_post():
+        # Bypass _can_post_now and _record_post using unittest.mock so the
+        # patch is automatically reverted — even on exception — and never
+        # leaks into concurrent sessions sharing the same module namespace.
+        def _noop_record(pid, state):
+            tlog.info("[TEST]  _record_post SKIPPED — test post not recorded in %s", POST_STATE_FILE)
+        _mod = sys.modules[__name__]
+        with unittest.mock.patch.object(_mod, '_can_post_now', lambda pid, state: True):
+            with unittest.mock.patch.object(_mod, '_record_post', _noop_record):
+                return create_post(driver, profile_id)
+
     # Full action list with short aliases for --test-actions <name> filtering
     _all_actions = [
         ("passive_scroll",        _test_passive_scroll,       {"passive", "scroll"}),
@@ -5879,10 +6218,10 @@ def run_test_actions(driver, profile_id: str = "test",
         ("follow_from_feed",      _test_follow_from_feed,     {"follow"}),
         ("read_post",             _test_read_post,            {"read", "read_post"}),
         ("comment_on_post",       _test_comment_on_post,      {"comment"}),
-        ("create_post",           _test_create_post,          {"post", "create_post"}),
         ("visit_search",          _test_visit_search,         {"search"}),
         ("click_home",            _test_click_home,           {"home", "click_home"}),
-        ("return_to_top",         _test_return_to_top,        {"top", "return_to_top"}),
+        ("return_to_top",         _test_return_to_top,        {"top", "return_to_top"}),        
+        ("create_post",           _test_create_post,          {"post", "create_post"}),
     ]
 
     # Filter to a single action if requested
@@ -5981,7 +6320,7 @@ def run_test_actions(driver, profile_id: str = "test",
             pass
         # A simplistic drift detection: if _cursor_pos is at (0,0) after an
         # action that should have moved it, record a warning.
-        if _cursor_pos[0] == 0 and _cursor_pos[1] == 0:
+        if _get_ctx().cursor_pos[0] == 0 and _get_ctx().cursor_pos[1] == 0:
             cursor_drift_actions.append(name)
             tlog.warning("[CURSOR DRIFT]  cursor at (0,0) after action %s", name)
 
