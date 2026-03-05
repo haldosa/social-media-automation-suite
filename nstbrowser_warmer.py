@@ -693,91 +693,329 @@ _SLOW_BIGRAMS = {
     'qu', 'wr', 'xc', 'zx', 'bv', 'vb', 'pq', 'yw', 'wq', 'xz',
 }
 
-def human_type(element, text: str, driver=None) -> None:
-    """
-    Type text with a realistic keystroke timing model.
+# QWERTY keyboard adjacency map for realistic typo generation.
+# Each key maps to its physically adjacent keys on a standard US layout.
+_QWERTY_ADJACENCY = {
+    'q': ['w', 'a'],           'w': ['q', 'e', 'a', 's'],
+    'e': ['w', 'r', 's', 'd'], 'r': ['e', 't', 'd', 'f'],
+    't': ['r', 'y', 'f', 'g'], 'y': ['t', 'u', 'g', 'h'],
+    'u': ['y', 'i', 'h', 'j'], 'i': ['u', 'o', 'j', 'k'],
+    'o': ['i', 'p', 'k', 'l'], 'p': ['o', 'l'],
+    'a': ['q', 'w', 's', 'z'], 's': ['w', 'e', 'a', 'd', 'z', 'x'],
+    'd': ['e', 'r', 's', 'f', 'x', 'c'],
+    'f': ['r', 't', 'd', 'g', 'c', 'v'],
+    'g': ['t', 'y', 'f', 'h', 'v', 'b'],
+    'h': ['y', 'u', 'g', 'j', 'b', 'n'],
+    'j': ['u', 'i', 'h', 'k', 'n', 'm'],
+    'k': ['i', 'o', 'j', 'l', 'm'],       'l': ['o', 'p', 'k'],
+    'z': ['a', 's', 'x'],     'x': ['s', 'd', 'z', 'c'],
+    'c': ['d', 'f', 'x', 'v'], 'v': ['f', 'g', 'c', 'b'],
+    'b': ['g', 'h', 'v', 'n'], 'n': ['h', 'j', 'b', 'm'],
+    'm': ['j', 'k', 'n'],
+}
 
-    Timing model:
-    - Base delay: log-normal centred ~80 ms (matches corpus inter-key data).
-      Most keystrokes land in 40-120 ms; occasional slow ones up to ~600 ms.
-    - Slow bigrams (wr, qu, xc …): 1.4–2× longer due to awkward hand transitions.
-    - Word boundaries (space): +50–180 ms micro-pause.
-    - Post-sentence punctuation (.!?): +200–600 ms re-reading pause.
-    - Rare mid-word hesitation (thinking of next word): +300–800 ms, ~4 % chance.
-    - Burst pattern: 3–7 characters are typed in rapid succession, then a
-      brief burst-gap (60–200 ms extra) before the next burst begins — matching
-      the way humans type in phrases rather than character-by-character.
+# Active typing DNA for the current session -- set by run_social_session();
+# used by human_type() as the default when no explicit DNA is passed.
+_active_typing_dna: dict = {}
 
-    When driver is supplied the focus click is dispatched via CDP at the
-    current _cursor_pos (where bezier_move left the cursor), so the click
-    lands at the natural offset rather than snapping to the element centre.
+
+def _generate_typing_dna() -> dict:
+    """Generate a stable per-profile typing fingerprint ('typing DNA').
+
+    Each person has idiosyncratic keystroke dynamics -- their personal
+    mu/sigma for inter-key intervals, burst length range, bigram-specific
+    penalties, punctuation pause personality, error propensity, and fatigue
+    drift rate.  Sampled once and persisted in post_state.json so the same
+    profile always types with the same rhythm.
     """
-    # ── DEBUG LOGGING: typing audit ────────────────────────────────────────
+    burst_min = random.randint(2, 5)
+    burst_max = burst_min + random.randint(2, 5)
+    return {
+        "base_mu":              random.uniform(math.log(0.065), math.log(0.110)),
+        "base_sigma":           random.uniform(0.30, 0.55),
+        "burst_min":            burst_min,
+        "burst_max":            burst_max,
+        "space_pause_lo":       random.uniform(0.03, 0.08),
+        "space_pause_hi":       random.uniform(0.12, 0.22),
+        "punct_pause_lo":       random.uniform(0.15, 0.30),
+        "punct_pause_hi":       random.uniform(0.40, 0.70),
+        "burst_gap_lo":         random.uniform(0.04, 0.08),
+        "burst_gap_hi":         random.uniform(0.12, 0.25),
+        "hesitation_prob":      random.uniform(0.02, 0.07),
+        "hesitation_lo":        random.uniform(0.20, 0.40),
+        "hesitation_hi":        random.uniform(0.60, 1.00),
+        "bigram_penalty_lo":    random.uniform(1.2, 1.6),
+        "bigram_penalty_hi":    random.uniform(1.6, 2.2),
+        "error_rate":           random.uniform(0.01, 0.06),
+        "correction_prob":      random.uniform(0.70, 0.95),
+        "detection_delay_mean": random.uniform(0.5, 2.5),
+        "fatigue_drift":        random.uniform(0.002, 0.012),
+    }
+
+
+def _get_typing_dna(profile_id: str) -> dict:
+    """Load or generate the typing DNA for a profile.
+
+    On first call for a profile, generates a new typing fingerprint and
+    persists it in post_state.json.  Subsequent calls return the stored
+    fingerprint so the same profile always types with the same rhythm.
+    """
+    if not profile_id:
+        return _generate_typing_dna()
+
+    state = _load_post_state()
+    _ensure_profile_in_state(profile_id, state)
+
+    profile = state.get(profile_id, {})
+    dna = profile.get("typing_dna")
+    if dna and isinstance(dna, dict) and "base_mu" in dna:
+        return dna
+
+    dna = _generate_typing_dna()
+    state[profile_id]["typing_dna"] = dna
+    _save_post_state(state)
+    log.info("[ TYPING DNA ]  generated fingerprint for %s  "
+             "mu=%.3f sigma=%.2f err=%.1f%%",
+             profile_id[:8], dna["base_mu"], dna["base_sigma"],
+             dna["error_rate"] * 100)
+    return dna
+
+
+def _pick_error_char(char: str):
+    """Pick an error replacement character based on QWERTY adjacency.
+
+    Error taxonomy (weights):
+      Adjacent key:       45 %  (neighbouring QWERTY key)
+      Same key repeat:    15 %  (double-strike)
+      Second-order:       10 %  (2 keys away -- wrong-hand mirror)
+      Random adjacent:    30 %  (fallback to any adjacent key)
+    Returns None if no error can be generated for this character.
+    """
+    lower = char.lower()
+    is_upper = char.isupper()
+    adj = _QWERTY_ADJACENCY.get(lower, [])
+    if not adj:
+        return None
+
+    roll = random.random()
+    if roll < 0.45:
+        result = random.choice(adj)
+    elif roll < 0.60:
+        result = lower  # double-strike
+    elif roll < 0.70:
+        second = []
+        for a in adj:
+            second.extend(_QWERTY_ADJACENCY.get(a, []))
+        second = [k for k in set(second) if k != lower]
+        result = random.choice(second) if second else random.choice(adj)
+    else:
+        result = random.choice(adj)
+
+    return result.upper() if is_upper else result
+
+
+def _build_typo_sequence(text: str, error_rate: float,
+                         correction_prob: float,
+                         detection_delay_mean: float) -> list:
+    """Build a character-action sequence with realistic typos and corrections.
+
+    For each character position, with probability *error_rate* an error is
+    injected.  The wrong character is typed, then *detection_delay* more
+    correct characters follow before the error is noticed.  Backspace
+    erases back to the error, then the correct characters are retyped.
+
+    Errors are more likely near word boundaries (first/last 2 chars of a
+    word) where motor-planning transitions are less rehearsed.
+
+    Returns a list of action dicts:
+      {"char": "a"}                    -- type character 'a'
+      {"char": "", "backspace": True}  -- press Backspace
+    """
+    if error_rate <= 0:
+        return [{"char": c} for c in text]
+
+    actions = []
+    i = 0
+    # Pre-compute word boundary positions for error clustering
+    word_positions = set()
+    word_start = 0
+    for idx, ch in enumerate(text):
+        if ch == ' ':
+            if idx > 0:
+                word_positions.add(idx - 1)
+                word_positions.add(max(0, idx - 2))
+            word_start = idx + 1
+        elif idx == word_start or idx == word_start + 1:
+            word_positions.add(idx)
+
+    while i < len(text):
+        char = text[i]
+        eff_rate = error_rate * (1.5 if i in word_positions else 1.0)
+
+        if char.isalpha() and random.random() < eff_rate:
+            error_char = _pick_error_char(char)
+            if error_char is None:
+                actions.append({"char": char})
+                i += 1
+                continue
+
+            # Type the wrong character
+            actions.append({"char": error_char})
+
+            if random.random() < correction_prob:
+                # Detection delay: type a few more correct chars before noticing
+                delay = min(
+                    max(0, int(random.expovariate(
+                        1.0 / max(0.5, detection_delay_mean)))),
+                    min(4, len(text) - i - 1),
+                )
+                lookahead = text[i + 1: i + 1 + delay]
+                for la in lookahead:
+                    actions.append({"char": la})
+                # Backspace over lookahead + error
+                for _ in range(len(lookahead) + 1):
+                    actions.append({"char": "", "backspace": True})
+                # Retype correctly
+                actions.append({"char": char})
+                for la in lookahead:
+                    actions.append({"char": la})
+                i += 1 + len(lookahead)
+            else:
+                i += 1  # uncorrected error
+        else:
+            actions.append({"char": char})
+            i += 1
+
+    return actions
+
+
+def human_type(element, text: str, driver=None, typing_dna: dict = None) -> None:
+    """
+    Type text with a realistic, per-profile keystroke timing model.
+
+    Improvements over the baseline:
+    1. Per-profile 'typing DNA' -- each profile has its own stable rhythm
+       parameters (mu, sigma, burst range, error rate) persisted in
+       post_state.json.
+    2. Typo/correction model -- injects realistic errors (adjacent-key,
+       double-strike, wrong-hand) with delayed detection and backspace
+       correction.
+    3. Fatigue drift -- typing gradually slows over a long text.
+
+    When typing_dna is None, falls back to the session-level
+    _active_typing_dna set by run_social_session(), or default mid-range
+    parameters if neither exists.
+    """
+    # -- DEBUG LOGGING: typing audit ----------------------------------------
     _type_t0 = time.perf_counter()
     log.info("[TYPE]  chars=%d  preview=%r  element_tag=%s",
              len(text), text[:30], _safe_tag(element))
-    _dlog.debug("[TYPE START]  full_text=%r  chars=%d", text, len(text))
-    # ────────────────────────────────────────────────────────────────────────
+    _dlog.debug("[TYPE START]  full_text=%r  chars=%d  dna=%s",
+                text, len(text), "custom" if typing_dna else "session")
+    # -----------------------------------------------------------------------
     if driver is not None:
-        # CDP click at wherever the bezier arc landed — no centre-snap.
+        # CDP click at wherever the bezier arc landed -- no centre-snap.
         _cdp_click(driver)
     else:
         element.click()   # fallback when driver is unavailable
     precise_sleep(random.uniform(0.08, 0.25))   # focus-settle after click
-    prev      = ''
-    word_len  = 0
-    burst_rem = random.randint(3, 7)          # characters left in current burst
 
-    for char in text:
-        # Base: log-normal centred around 80 ms, clamped 40–600 ms
-        base = random.lognormvariate(math.log(0.08), 0.4)
+    # Resolve typing DNA (session-level or defaults)
+    dna        = typing_dna or _active_typing_dna or {}
+    _mu        = dna.get("base_mu",            math.log(0.08))
+    _sigma     = dna.get("base_sigma",         0.40)
+    _burst_min = dna.get("burst_min",          3)
+    _burst_max = dna.get("burst_max",          7)
+    _sp_lo     = dna.get("space_pause_lo",     0.05)
+    _sp_hi     = dna.get("space_pause_hi",     0.18)
+    _pp_lo     = dna.get("punct_pause_lo",     0.20)
+    _pp_hi     = dna.get("punct_pause_hi",     0.60)
+    _bg_lo     = dna.get("burst_gap_lo",       0.06)
+    _bg_hi     = dna.get("burst_gap_hi",       0.20)
+    _hes_prob  = dna.get("hesitation_prob",    0.04)
+    _hes_lo    = dna.get("hesitation_lo",      0.30)
+    _hes_hi    = dna.get("hesitation_hi",      0.80)
+    _bp_lo     = dna.get("bigram_penalty_lo",  1.4)
+    _bp_hi     = dna.get("bigram_penalty_hi",  2.0)
+    _err_rate  = dna.get("error_rate",         0.0)
+    _corr_prob = dna.get("correction_prob",    0.85)
+    _det_delay = dna.get("detection_delay_mean", 1.5)
+    _fatigue   = dna.get("fatigue_drift",      0.005)
+
+    # Build the character sequence with injected typos
+    typed_sequence = _build_typo_sequence(text, _err_rate, _corr_prob,
+                                          _det_delay)
+
+    prev        = ''
+    word_len    = 0
+    burst_rem   = random.randint(_burst_min, _burst_max)
+    chars_typed = 0
+
+    for action in typed_sequence:
+        char = action["char"]
+        is_backspace = action.get("backspace", False)
+
+        if is_backspace:
+            # Backspace timing: faster than normal keystrokes, short
+            # reaction-driven delay.
+            base = random.lognormvariate(math.log(0.05), 0.30)
+            base = max(0.03, min(base, 0.15))
+            element.send_keys(Keys.BACKSPACE)
+            precise_sleep(base)
+            continue
+
+        # Log-normal base with per-profile parameters + fatigue drift.
+        fatigue_mult = 1.0 + _fatigue * (chars_typed / 100.0)
+        base = random.lognormvariate(_mu, _sigma) * fatigue_mult
         base = max(0.04, min(base, 0.60))
 
         # Slow bigram penalty
         if (prev + char).lower() in _SLOW_BIGRAMS:
-            base *= random.uniform(1.4, 2.0)
+            base *= random.uniform(_bp_lo, _bp_hi)
 
         # Word boundary
         if char == ' ':
-            base += random.uniform(0.05, 0.18)
+            base += random.uniform(_sp_lo, _sp_hi)
             word_len = 0
         else:
             word_len += 1
 
         # Post-sentence punctuation re-reading pause
         if prev in '.!?':
-            base += random.uniform(0.20, 0.60)
+            base += random.uniform(_pp_lo, _pp_hi)
 
         # Rare mid-word hesitation
-        if word_len > 4 and random.random() < 0.04:
-            base += random.uniform(0.30, 0.80)
+        if word_len > 4 and random.random() < _hes_prob:
+            base += random.uniform(_hes_lo, _hes_hi)
 
         # Burst gap: extra pause at end of each burst
         burst_rem -= 1
         if burst_rem <= 0:
-            base += random.uniform(0.06, 0.20)
-            burst_rem = random.randint(3, 7)
+            base += random.uniform(_bg_lo, _bg_hi)
+            burst_rem = random.randint(_burst_min, _burst_max)
 
-        # ── DEBUG LOGGING: keystroke timing audit ────────────────────────────
+        # -- DEBUG LOGGING: keystroke timing audit --------------------------
         _timing_check("human_type_key", base, 0.040, 0.600)
         if base < 0.030:
             _dlog.warning(
-                "[RISK WARN]  keystroke interval %.1fms < 30ms floor — unnatural speed",
-                base * 1000,
-            )
+                "[RISK WARN]  keystroke interval %.1fms < 30ms floor"
+                " -- unnatural speed", base * 1000)
         elif base > 0.700:
             _dlog.warning(
-                "[RISK WARN]  keystroke interval %.1fms > 700ms ceiling — outside corpus range",
-                base * 1000,
-            )
-        # ─────────────────────────────────────────────────────────────────────
+                "[RISK WARN]  keystroke interval %.1fms > 700ms ceiling"
+                " -- outside corpus range", base * 1000)
+        # -------------------------------------------------------------------
+
         element.send_keys(char)
         precise_sleep(base)
         prev = char
-    # ── DEBUG LOGGING: type complete ─────────────────────────────────────────
-    log.info("[TYPE END]  chars=%d  duration=%.1fs",
-             len(text), time.perf_counter() - _type_t0)
-    # ────────────────────────────────────────────────────────────────────────
+        chars_typed += 1
+
+    # -- DEBUG LOGGING: type complete ---------------------------------------
+    _n_typos = sum(1 for a in typed_sequence if a.get("backspace"))
+    log.info("[TYPE END]  chars=%d  duration=%.1fs  typos_injected=%d",
+             len(text), time.perf_counter() - _type_t0, _n_typos)
+    # -----------------------------------------------------------------------
 
 
 def _bezier_point(p0, p1, p2, t):
@@ -793,6 +1031,55 @@ def _ease_in_out_sine(t: float) -> float:
     midpoint, and deceleration back to near-zero as the cursor arrives at the
     target — matching Fitts's Law and real human mouse-movement profiles."""
     return -(math.cos(math.pi * t) - 1) / 2
+
+
+def _min_jerk_basis(t: float) -> float:
+    """Minimum-jerk position basis: 10t^3 - 15t^4 + 6t^5  (Flash & Hogan 1985).
+
+    Produces an asymmetric velocity profile peaking at t ~ 0.47 -- faster
+    acceleration and slower deceleration -- matching real arm-movement
+    kinematics.  Replaces the symmetric _ease_in_out_sine() which was a
+    fingerprint-level tell detectable by trajectory classifiers.
+    """
+    t2 = t * t
+    t3 = t2 * t
+    return t3 * (10.0 - 15.0 * t + 6.0 * t2)
+
+
+def _min_jerk_velocity(t: float) -> float:
+    """Normalised minimum-jerk speed: 30t^2 - 60t^3 + 30t^4.
+
+    Derivative of _min_jerk_basis().  Peak value is ~1.875 at t ~ 0.5.
+    """
+    t2 = t * t
+    return 30.0 * t2 - 60.0 * t2 * t + 30.0 * t2 * t2
+
+
+def _fitts_duration_ms(distance: float, target_width: float = 40.0) -> float:
+    """Fitts's Law movement time:  T = a + b * log2(D / W + 1).
+
+    Parameters from motor-control literature with +/-15 % jitter so the
+    duration is plausible but never deterministic.
+        a ~ 150 ms  (reaction + initiation overhead)
+        b ~ 120 ms  (information-processing rate)
+    """
+    a = 150.0 * random.uniform(0.85, 1.15)
+    b = 120.0 * random.uniform(0.85, 1.15)
+    id_bits = math.log2(max(1.0, distance) / max(1.0, target_width) + 1.0)
+    return max(180.0, a + b * id_bits)
+
+
+def _make_tremor_components(n: int = 3) -> list:
+    """Generate physiological-tremor sinusoid parameters at 8-12 Hz.
+
+    Human hand tremor is narrow-band (8-12 Hz) -- not white Gaussian noise.
+    Returns list of (freq_hz, amplitude, phase) tuples.
+    """
+    return [
+        (random.uniform(8.0, 12.0), random.uniform(0.3, 1.5),
+         random.uniform(0.0, 2.0 * math.pi))
+        for _ in range(n)
+    ]
 
 
 # Persistent cursor state — updated after every bezier_move and on each fresh
@@ -1025,35 +1312,60 @@ def _fire_bezier_arc(
             max(0, min(int(_mid_x + _perp_x * lateral), int(vw))),
             max(0, min(int(_mid_y + _perp_y * lateral), int(vh))),
         )
+    # Fitts's Law: total arc duration based on distance and target size.
+    total_ms   = _fitts_duration_ms(_arc_dist, 40.0)
     steps      = max(20, min(90, int(_arc_dist / 3.5)))  # ~3.5 px/step; clamp 20-90
-    step_ms    = random.uniform(12.0, 22.0)
+    step_ms    = total_ms / steps   # derived from Fitts duration, not fixed
+    # Physiological tremor: 2-3 narrow-band sinusoids at 8-12 Hz.
+    _tremor_components = _make_tremor_components(random.randint(2, 3))
     points     = []
     delays     = []
     prev       = (x0, y0)
     dist_scale = max(0.30, min(_arc_dist / 500.0, 1.0))
     drift_x    = 0.0
     drift_y    = 0.0
+    # Corrective sub-movement for long arcs (>200 px):
+    # At t ~ 0.75 a small positional correction creates the velocity
+    # "notch" characteristic of real Fitts-paradigm pointing movements.
+    _has_sub   = _arc_dist > 200 and random.random() < 0.70
+    _sub_t     = random.uniform(0.70, 0.82) if _has_sub else 2.0
+    _sub_ox    = random.gauss(0, max(2.0, _arc_dist * 0.008))
+    _sub_oy    = random.gauss(0, max(2.0, _arc_dist * 0.006))
+    _sub_done  = False
+    _arc_t0    = time.perf_counter()
     for i in range(1, steps + 1):
         t_raw  = i / steps
-        t      = _ease_in_out_sine(t_raw)
+        t      = _min_jerk_basis(t_raw)
         nx, ny = _bezier_point((x0, y0), cp, (x1, y1), t)
+        # Corrective sub-movement nudge
+        if not _sub_done and t_raw >= _sub_t:
+            nx = int(nx + _sub_ox)
+            ny = int(ny + _sub_oy)
+            _sub_done = True
         if i < steps:
-            # Two-factor tremor: velocity bell × distance scale.
-            # Approach phase (t > 0.80) ramps up corrective wobble.
-            velocity  = math.sin(math.pi * t_raw)
-            approach  = max(0.0, (t_raw - 0.80) / 0.20) if t_raw > 0.80 else 0.0
-            # Bleed-out: linearly reduce tremor and drift over the last few
-            # steps so the arc quiets gracefully before the final snap,
-            # avoiding a hard velocity discontinuity at landing.
+            # Physiological tremor: narrow-band sinusoids (8-12 Hz)
+            # replacing previous Gaussian white-noise model.
+            elapsed = time.perf_counter() - _arc_t0
             bleed_steps    = max(1, min(3, steps // 4))
             steps_from_end = steps - i
             bleed_factor   = (
                 steps_from_end / (bleed_steps + 1)
                 if steps_from_end <= bleed_steps else 1.0
             )
-            tremor_sd = (1.2 * (1.0 - velocity * 0.55) + approach * 1.2) * dist_scale * bleed_factor
-            nx = int(nx + random.gauss(0, tremor_sd))
-            ny = int(ny + random.gauss(0, tremor_sd * 0.75))
+            # Velocity-dependent amplitude: tremor strongest at endpoints
+            # (low velocity), weakest mid-arc (peak velocity).
+            vel_norm   = _min_jerk_velocity(t_raw) / 1.88
+            vel_factor = 1.0 - vel_norm * 0.55
+            approach   = max(0.0, (t_raw - 0.80) / 0.20) if t_raw > 0.80 else 0.0
+            tremor_amp = (0.9 * vel_factor + approach * 1.0) * dist_scale * bleed_factor
+            tremor_x = sum(
+                a * tremor_amp * math.sin(2.0 * math.pi * f * elapsed + p)
+                for f, a, p in _tremor_components)
+            tremor_y = sum(
+                a * tremor_amp * 0.75 * math.sin(2.0 * math.pi * f * elapsed + p + 1.2)
+                for f, a, p in _tremor_components)
+            nx = int(nx + tremor_x)
+            ny = int(ny + tremor_y)
             # Low-frequency drift: correlated wrist/arm oscillation.
             drift_x = drift_x * 0.88 + random.gauss(0, 0.55 * dist_scale * bleed_factor)
             drift_y = drift_y * 0.88 + random.gauss(0, 0.40 * dist_scale * bleed_factor)
@@ -1067,8 +1379,9 @@ def _fire_bezier_arc(
         dx, dy = nx - prev[0], ny - prev[1]
         points.append([nx, ny, dx, dy])
         prev = (nx, ny)
-        vel  = math.sin(math.pi * t_raw)
-        d_ms = step_ms * (1.5 - vel * 0.7) + random.gauss(0, 2.5)
+        # Per-step delay from minimum-jerk velocity profile.
+        vel_n = _min_jerk_velocity(t_raw) / 1.88
+        d_ms  = step_ms * (1.4 - vel_n * 0.7) + random.gauss(0, 1.8)
         delays.append(max(8.0, d_ms))
     # Cumulative step-fire times for STEP log annotation.
     cum_ms     = 0.0
@@ -4558,6 +4871,10 @@ def run_social_session(
     global _session_followed, _session_metrics
     _session_followed = set()
 
+    # Load per-profile typing DNA for this session.
+    global _active_typing_dna
+    _active_typing_dna = _get_typing_dna(profile_id)
+
     # ── DEBUG LOGGING: reset session metrics ─────────────────────────────────
     _session_metrics = {
         "actions_dispatched": 0, "likes": 0, "comments": 0,
@@ -5244,6 +5561,12 @@ def run_test_actions(driver, profile_id: str = "test",
     import traceback as _tb
 
     tlog = _setup_test_logger()
+
+    # Load per-profile typing DNA so human_type() uses realistic per-profile
+    # keystroke dynamics (including the typo/correction model) even outside
+    # the normal run_social_session() path.
+    global _active_typing_dna
+    _active_typing_dna = _get_typing_dna(profile_id)
 
     # ── Define the ordered list of actions to test ────────────────────────────
     # Each entry: (action_name, callable_that_returns_something)
