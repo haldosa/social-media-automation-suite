@@ -128,6 +128,14 @@ COMMENT_POOL = [
     "Yes!!",
 ]
 
+# Search query pool — generic topics typed into the Threads search bar.
+# 70 % of search visits type one of these to model real query behaviour.
+SEARCH_TOPIC_POOL = [
+    "travel", "coffee", "music", "weekend", "food", "nature", "fitness",
+    "books", "art", "movies", "tech", "fashion", "pets", "cooking", "sport",
+    "sunsets", "hiking", "gaming", "photography", "mindfulness",
+]
+
 # ── Content posting ────────────────────────────────────────────────────────── #
 # Set MEDIA_POOL_DIR to a local folder of images to attach to new posts.
 # Leave as None to post text-only captions.
@@ -240,6 +248,12 @@ COMPOSE_BTN_SELECTORS = [
 COMPOSE_TEXTBOX_CSS = 'div[data-lexical-editor="true"][contenteditable="true"]'
 # "Attach media" button inside the compose modal
 COMPOSE_ATTACH_BTN_CSS = 'div[role="button"]:has(svg[aria-label="Attach media"])'
+# Search text input on the Threads search page
+SEARCH_INPUT_CSS = (
+    'input[type="search"],'
+    'input[placeholder*="earch"],'
+    'input[role="searchbox"]'
+)
 
 # ── Multi-signal element resolution ────────────────────────────────────────── #
 # Instead of relying solely on aria-label selectors (which Meta A/B tests,
@@ -273,6 +287,27 @@ _KNOWN_REPLY_LABELS = frozenset({
 # ------------------------------------------------------------------ #
 
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+
+# Fix #38: rolling 7-day screenshot cleanup — runs once at process start.
+# Stale error screenshots accumulate ~50-250 MB/month; prune anything older
+# than 7 days so the directory stays bounded without operator intervention.
+try:
+    _sc_cutoff = time.time() - 7 * 86400
+    _sc_removed = 0
+    for _sc_name in os.listdir(SCREENSHOT_DIR):
+        _sc_path = os.path.join(SCREENSHOT_DIR, _sc_name)
+        try:
+            if os.path.isfile(_sc_path) and os.path.getmtime(_sc_path) < _sc_cutoff:
+                os.remove(_sc_path)
+                _sc_removed += 1
+        except OSError:
+            pass
+    if _sc_removed:
+        import sys as _sys
+        print(f"[STARTUP]  screenshot cleanup: removed {_sc_removed} files older than 7 days",
+              file=_sys.stderr)
+except OSError:
+    pass
 
 # UTF-8 safe logging — prevents cp1252 crash on Windows terminals
 _fmt      = logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s")
@@ -772,8 +807,129 @@ def connect_selenium(ws_debugger_url: str) -> webdriver.Chrome:
         # non-configurable getter side-effect that anti-bot probes look for.
         log.debug("$cdc_ mask skipped: runtime verification confirms no ChromeDriver variables")
 
+    _verify_browser_fingerprint(driver)
     log.info("Selenium attached successfully.")
     return driver
+
+
+def _verify_browser_fingerprint(driver) -> bool:
+    """
+    Post-connect fingerprint consistency check (Fix #28).
+
+    Verifies three independent signals that NstBrowser's spoofing layer
+    should have already configured.  Failures are WARNING-level so the
+    session continues — the operator can review the log offline.
+
+    Checks
+    ------
+    1. navigator.webdriver must be falsy — Orbita suppresses this at the
+       engine level without CDP injection (which creates detectable
+       non-configurable getter side-effects).
+
+    2. WebGL unmasked renderer must be non-empty and must NOT be
+       "Google SwiftShader" (= CPU software renderer, meaning no GPU
+       identity spoofing is active and the raw GPU string is visible).
+
+    3. Canvas toDataURL fingerprint must be stable (two identical samples
+       within the same page context) — confirms the per-profile canvas
+       noise seed is deterministic rather than randomised per-call
+       (per-call randomisation is itself a detectable pattern).
+    """
+    all_ok = True
+
+    # 1. navigator.webdriver ────────────────────────────────────────────────
+    try:
+        wd_val = driver.execute_script("return navigator.webdriver;")
+        if wd_val:
+            log.warning(
+                "[FP VERIFY]  FAIL  navigator.webdriver=%s "
+                "— Orbita injection may not be active", wd_val
+            )
+            all_ok = False
+        else:
+            log.debug("[FP VERIFY]  OK    navigator.webdriver=false")
+    except WebDriverException as exc:
+        log.debug("[FP VERIFY]  navigator.webdriver check skipped: %s", exc)
+
+    # 2. WebGL unmasked renderer ────────────────────────────────────────────
+    try:
+        gl_info = driver.execute_script("""
+            try {
+                var c = document.createElement('canvas');
+                var gl = c.getContext('webgl') ||
+                         c.getContext('experimental-webgl');
+                if (!gl) return {renderer: '', vendor: ''};
+                var ext = gl.getExtension('WEBGL_debug_renderer_info');
+                if (!ext)  return {renderer: 'ext-unavailable', vendor: ''};
+                return {
+                    renderer: gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '',
+                    vendor:   gl.getParameter(ext.UNMASKED_VENDOR_WEBGL)   || '',
+                };
+            } catch(e) { return {renderer: '', vendor: ''}; }
+        """)
+        renderer = (gl_info or {}).get("renderer", "")
+        vendor   = (gl_info or {}).get("vendor",   "")
+        log.info("[FP VERIFY]  WebGL  renderer=%r  vendor=%r", renderer, vendor)
+        if not renderer or renderer == "ext-unavailable":
+            log.warning(
+                "[FP VERIFY]  WARN   WebGL UNMASKED_RENDERER unavailable "
+                "— WEBGL_debug_renderer_info extension may be blocked"
+            )
+        elif "SwiftShader" in renderer:
+            log.warning(
+                "[FP VERIFY]  FAIL   WebGL renderer is SwiftShader (CPU) "
+                "— GPU-level spoofing is inactive; real GPU string is exposed"
+            )
+            all_ok = False
+    except WebDriverException as exc:
+        log.debug("[FP VERIFY]  WebGL check skipped: %s", exc)
+
+    # 3. Canvas fingerprint stability ───────────────────────────────────────
+    _CANVAS_FP_JS = """
+        try {
+            var c = document.createElement('canvas');
+            c.width = 220; c.height = 30;
+            var ctx = c.getContext('2d');
+            ctx.textBaseline = 'top';
+            ctx.font = '14px \'Arial\'';
+            ctx.fillStyle = '#f60';
+            ctx.fillRect(125, 1, 62, 20);
+            ctx.fillStyle = '#069';
+            ctx.fillText('Cwm fjordbank glyphs vext quiz', 2, 15);
+            ctx.fillStyle = 'rgba(102,204,0,0.7)';
+            ctx.fillText('Cwm fjordbank glyphs vext quiz', 4, 17);
+            return c.toDataURL();
+        } catch(e) { return ''; }
+    """
+    try:
+        sample_a = driver.execute_script(_CANVAS_FP_JS)
+        sample_b = driver.execute_script(_CANVAS_FP_JS)
+        if not sample_a:
+            log.warning(
+                "[FP VERIFY]  FAIL   canvas toDataURL returned empty string "
+                "— canvas API may be blocked or broken"
+            )
+            all_ok = False
+        elif sample_a != sample_b:
+            log.warning(
+                "[FP VERIFY]  FAIL   canvas fingerprint differs between two calls "
+                "— per-call randomisation is itself a detectable bot signal"
+            )
+            all_ok = False
+        else:
+            fp_hash = hashlib.md5(sample_a.encode()).hexdigest()[:12]
+            log.info("[FP VERIFY]  OK    canvas stable  hash=%s", fp_hash)
+    except WebDriverException as exc:
+        log.debug("[FP VERIFY]  canvas check skipped: %s", exc)
+
+    if all_ok:
+        log.info("[FP VERIFY]  all checks passed")
+    else:
+        log.warning(
+            "[FP VERIFY]  one or more checks failed "
+            "— session continues but trust signals may be degraded"
+        )
+    return all_ok
 
 
 # ================================================================== #
@@ -1424,24 +1580,15 @@ def inject_cursor_overlay(driver) -> None:
 # ------------------------------------------------------------------ #
 #  SHARED BÉZIER PATH ENGINE
 # ------------------------------------------------------------------ #
-# JS that replays a pre-computed path as DOM mousemove events at the
-# per-step delay computed in Python.  One execute_script call fires the
-# entire arc; Python sleeps while JS runs — no per-step round-trips.
-_BEZIER_DISPATCH_JS = """
-(function(pts, delays) {
-    var i = 0;
-    function tick() {
-        if (i >= pts.length) return;
-        var p = pts[i]; var d = delays[i]; i++;
-        document.dispatchEvent(new MouseEvent('mousemove', {
-            clientX: p[0], clientY: p[1],
-            bubbles: true, cancelable: true, view: window
-        }));
-        setTimeout(tick, d);
-    }
-    tick();
-})(arguments[0], arguments[1]);
-"""
+# Fix #27: The JS batch-dispatch approach (_BEZIER_DISPATCH_JS) was removed.
+# MouseEvent() created inside execute_script() is always isTrusted:false —
+# a property that cannot be overridden by user-land JS and is explicitly
+# checked by Meta's bot-detection pipeline via trusted-events heuristics.
+# CDP Input.dispatchMouseEvent generates isTrusted:true events with the full
+# pointermove → mousemove chain identical to physical hardware input, at the
+# cost of ~1–2 ms per-step round-trip over localhost.  The per-step overhead
+# is subtracted from the subsequent sleep (fix #29) so arc timing accuracy
+# is unaffected.
 
 def debug_cursor_state(driver, label: str = "") -> None:
     """Log both the Python-tracked position and the overlay's actual DOM position.
@@ -1481,9 +1628,22 @@ def _fire_bezier_arc(
 ) -> tuple:
     """
     Build a randomised quadratic Bézier path from (x0,y0) to (x1,y1),
-    dispatch it as JS mousemove events at ~60 fps, then sleep for the full
-    arc duration.  Returns (points, delays) for any post-arc work by the
-    caller (e.g. snap-gap logging in bezier_move).
+    dispatch it step-by-step via CDP Input.dispatchMouseEvent (isTrusted:true),
+    and subtract each CDP round-trip from the subsequent sleep so arc timing
+    matches the Fitts's Law model precisely.  Returns (points, delays) for
+    any post-arc work by the caller.
+
+    Why CDP per-step dispatch instead of a single JS batch call (fix #27):
+      JS-constructed MouseEvent()/PointerEvent() objects produced inside
+      execute_script() always have isTrusted=false (Web spec §4.2.2).  This
+      property is read-only and cannot be overridden by user-land JS.  Meta's
+      bot-detection layer explicitly checks isTrusted for pointer events
+      during engagement actions.  CDP Input.dispatchMouseEvent injects events
+      at the browser input pipeline level, so they arrive as isTrusted:true
+      with the complete pointermove → mousemove event sequence that real
+      hardware produces.  The ~1–2 ms per-step round-trip overhead over
+      localhost is subtracted from each inter-step sleep (fix #29), keeping
+      the arc's velocity profile faithful to the Fitts's Law model.
 
     Control-point strategy
     ----------------------
@@ -1643,13 +1803,15 @@ def _fire_bezier_arc(
             _mlog.debug("STEP  i=%02d  t=+%.0fms  pos=(%d,%d)  delta=(%+d,%+d)",
                         i, t_ms, nx, ny, dx, dy)
     # Dispatch via CDP Input.dispatchMouseEvent — produces isTrusted:true
-    # events with the full pointermove → mousemove chain that real input
-    # produces.  Per-step round-trips are ~1 ms over localhost, well within
-    # the 8–22 ms inter-step budget.
+    # events with the full pointermove → mousemove chain that real hardware
+    # input generates.  JS-constructed MouseEvent() via execute_script() would
+    # always be isTrusted:false (Web spec §4.2.2) — a read-only flag checked by
+    # Meta's bot-detection layer for pointer events during engagement actions.
     for pt, d_ms in zip(points, delays):
-        # Fix #6: measure CDP round-trip and subtract from sleep so the actual
-        # inter-step interval matches the biomechanical model rather than
-        # inflating it by the ~1-2 ms localhost RTT every step.
+        # Fix #6/#29: measure CDP round-trip time and subtract it from the
+        # inter-step sleep so the actual inter-step interval matches the
+        # biomechanical model instead of inflating it by the ~1–2 ms localhost
+        # RTT on every step (~25% slowdown across a full arc without this).
         _step_t0 = time.perf_counter()
         try:
             driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
@@ -2185,6 +2347,37 @@ def _notched_scroll_burst(driver, n_notches: int, direction: int = 1) -> None:
             precise_sleep(silence)
 
 
+def _maybe_pause_for_video(driver) -> None:
+    """
+    Detect a <video> element visible in the viewport and, with 60 % chance,
+    pause for 3–15 s to simulate watching it.
+
+    Called from stochastic_scroll so video watch-time accumulates naturally
+    as the feed scrolls past video posts.  Only fires on threads.net/com URLs
+    so it is a no-op during Wikipedia pre-flight.
+    """
+    try:
+        url = driver.current_url
+        if "threads.net" not in url and "threads.com" not in url:
+            return
+        has_video = driver.execute_script("""
+            var vids = document.querySelectorAll('video');
+            for (var i = 0; i < vids.length; i++) {
+                var r = vids[i].getBoundingClientRect();
+                if (r.height > 30 && r.top >= 0 &&
+                        r.bottom <= window.innerHeight + 80)
+                    return true;
+            }
+            return false;
+        """)
+        if has_video and random.random() < 0.60:
+            dwell = random.uniform(3.0, 15.0)
+            log.info("[ VIDEO ]  video in viewport — watching for %.0fs", dwell)
+            precise_sleep(dwell)
+    except Exception:
+        pass
+
+
 def stochastic_scroll(driver, total_seconds: float) -> None:
     """
     Scroll the page for total_seconds with natural human variance.
@@ -2316,6 +2509,11 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
                       {"distraction": 15.0, "long": 9.0, "skim": 1.2, "normal": 4.0}[_pause_tier])
         # ────────────────────────────────────────────────────────────────────
         _reading_pause(_pause_s)
+        # Video dwell — fires on ~20% of normal/long chunks when a <video>
+        # is visible in the viewport.  _maybe_pause_for_video() handles the
+        # internal 60% probability gate and the Threads-URL guard.
+        if _pause_tier in ("normal", "long") and random.random() < 0.20:
+            _maybe_pause_for_video(driver)
         # occasional upward drift — small (re-reading) or large (going back to a post)
         if random.random() < 0.22:
             # 20 % of drift events scroll back a large amount (really went too far)
@@ -3162,8 +3360,7 @@ def view_profile_from_feed(driver) -> bool:
     except (TimeoutException, WebDriverException) as exc:
         log.warning("[ACTION END]  action=profile_view  result=failure  error=%s", exc)
         try:
-            if not click_home_button(driver):
-                navigate_to(driver, TARGET_SOCIAL_URL)
+            _safe_return_to_feed(driver, "profile_view_err")
         except Exception:
             pass
         return False
@@ -3462,11 +3659,40 @@ def click_home_button(driver) -> bool:
     return False
 
 
+def _safe_return_to_feed(driver, context: str = "") -> None:
+    """
+    Return to the Threads feed using a 3-step fallback hierarchy:
+
+      1. click_home_button()          — SPA nav click, no page load (best)
+      2. navigate_history("back")     — browser back, avoids star-topology
+      3. navigate_to(TARGET_SOCIAL_URL) — hard navigate, last resort only
+
+    Using hard navigate as the *first* fallback creates a star-shaped
+    navigation graph (all action paths converge at the feed root) which is
+    a detectable bot pattern.  Steps 1–2 preserve the SPA history so the
+    back-stack remains varied and realistic.
+    """
+    tag = f"[{context}]  " if context else ""
+    if click_home_button(driver):
+        return
+    log.debug("%shome button not found — trying navigate_history(back)", tag)
+    try:
+        navigate_history(driver, "back")
+        WebDriverWait(driver, 6).until(
+            lambda d: "threads.net" in d.current_url or "threads.com" in d.current_url
+        )
+        return
+    except Exception:
+        pass
+    log.debug("%sback navigation failed — hard navigate (last resort)", tag)
+    navigate_to(driver, TARGET_SOCIAL_URL)
+
+
 def check_notifications_action(driver) -> None:
     """
-    Click the Notifications nav button and dwell briefly.
-    Simulates a user checking who liked or replied to them.
-    Uses bezier_move() + click on the nav icon — no URL-bar navigation.
+    Click the Notifications nav button and dwell.
+    30 % of visits tap a notification item and dwell 2-5 s before returning
+    (fix #36) — scroll-only visits every time is a mildly suspicious pattern.
     """
     log.info("Checking notifications via nav button")
     try:
@@ -3475,9 +3701,39 @@ def check_notifications_action(driver) -> None:
             return
         precise_sleep(random.uniform(2.0, 5.0))
         stochastic_scroll(driver, total_seconds=random.uniform(5, 15))
-        # Return to feed by clicking the Home nav button
-        if not click_home_button(driver):
-            navigate_to(driver, TARGET_SOCIAL_URL)
+
+        # Fix #36: 30 % of visits tap a notification item.
+        # Notification items are <a> links inside the notifications list;
+        # we target visible ones that contain a time element (activity items)
+        # and avoid the generic "All" / "Verified" filter tabs.
+        if random.random() < 0.30:
+            try:
+                notif_items = [
+                    el for el in driver.find_elements(
+                        By.CSS_SELECTOR,
+                        'a[href*="@"][role="link"], a[href*="/t/"][role="link"]'
+                    )
+                    if el.is_displayed()
+                ]
+                if notif_items:
+                    target = random.choice(notif_items[:8])
+                    scroll_element_into_loose_view(driver, target)
+                    bezier_move(driver, target)
+                    precise_sleep(random.uniform(0.4, 0.9))
+                    try:
+                        _cdp_click(driver)
+                    except WebDriverException:
+                        driver.execute_script("arguments[0].click();", target)
+                    log.info("[ NOTIFY ]  tapped notification item")
+                    precise_sleep(random.uniform(2.0, 5.0))
+                    # Go back to notifications page before returning to feed
+                    navigate_history(driver, "back")
+                    precise_sleep(random.uniform(0.8, 1.8))
+            except (NoSuchElementException, WebDriverException) as _ne:
+                log.debug("[ NOTIFY ]  item tap failed: %s", _ne)
+
+        # Return to feed via 3-step hierarchy (home → back → hard-navigate)
+        _safe_return_to_feed(driver, "notifications")
         precise_sleep(random.uniform(1.0, 2.5))
     except (TimeoutException, WebDriverException) as exc:
         log.debug("Notification check failed: %s", exc)
@@ -3485,26 +3741,54 @@ def check_notifications_action(driver) -> None:
 
 def return_to_top_action(driver) -> None:
     """Click the Home / Threads-logo nav button to scroll back to the top of the feed."""
-    if not click_home_button(driver):
-        log.debug("Return to top failed — home button not found")
+    _safe_return_to_feed(driver, "return_top")
 
 
 def visit_search_action(driver) -> None:
     """
-    Click the Search nav icon, dwell briefly (no typing), then return home.
-    Simulates a user opening search to inspect trending topics or profiles
-    without committing to a query.
+    Click the Search nav icon.  70 % of the time type a short generic query
+    from SEARCH_TOPIC_POOL and scroll the results for 5–15 s.  The remaining
+    30 % only dwell (scanning trending topics without committing to a query).
+
+    Opening search and immediately leaving without any interaction is a
+    statistically rare pattern that looks automated; adding real query typing
+    and result scrolling brings the action in line with observed user behaviour.
     """
     log.info("Visiting search page via nav button")
     try:
         if not _click_nav_btn(driver, "Search", "Search"):
             log.debug("Search button not found — skipping")
             return
-        # Dwell as if scanning the search page
-        precise_sleep(random.uniform(3.0, 8.0))
-        # Return to feed
-        if not click_home_button(driver):
-            navigate_to(driver, TARGET_SOCIAL_URL)
+        precise_sleep(random.uniform(1.5, 3.0))   # search page settle
+
+        if random.random() < 0.70:
+            # ── Type a query and scroll results ──────────────────────────────
+            try:
+                search_input = WebDriverWait(driver, 6).until(
+                    lambda d: d.find_element(By.CSS_SELECTOR, SEARCH_INPUT_CSS)
+                )
+                query = random.choice(SEARCH_TOPIC_POOL)
+                bezier_move(driver, search_input)
+                precise_sleep(random.uniform(0.3, 0.8))
+                search_input.click()
+                precise_sleep(random.uniform(0.2, 0.5))
+                human_type(search_input, query, driver)
+                precise_sleep(random.uniform(0.4, 0.9))
+                search_input.send_keys(Keys.RETURN)
+                log.info("[ SEARCH ]  typed query=%r", query)
+                precise_sleep(random.uniform(1.0, 2.5))   # results load
+                stochastic_scroll(driver, total_seconds=random.uniform(5.0, 15.0))
+            except (TimeoutException, NoSuchElementException, WebDriverException) as _se:
+                # Input not found — fall back to plain dwell so we still
+                # retain some visit value instead of just leaving immediately.
+                log.debug("visit_search_action: search input not found (%s) — dwell fallback", _se)
+                precise_sleep(random.uniform(3.0, 8.0))
+        else:
+            # ── Dwell only — scanning trending content ────────────────────────
+            precise_sleep(random.uniform(3.0, 8.0))
+
+        # Return to feed via 3-step hierarchy (home → back → hard-navigate)
+        _safe_return_to_feed(driver, "search")
         precise_sleep(random.uniform(1.0, 2.0))
     except (TimeoutException, WebDriverException) as exc:
         log.debug("visit_search_action failed: %s", exc)
@@ -3661,9 +3945,8 @@ def passive_action(driver) -> None:
                 "[ACTION SKIP]  action=passive  reason=off_feed  recovered=True  url=%s",
                 current[:80],
             )
-            if not click_home_button(driver):
-                log.debug("[ PASSIVE ]  home button not found — hard navigate fallback")
-                navigate_to(driver, TARGET_SOCIAL_URL)
+            # 3-step fallback: home button → navigate_history(back) → hard navigate
+            _safe_return_to_feed(driver, "passive_feed_guard")
             precise_sleep(random.uniform(1.2, 2.5))  # settle after nav
     except WebDriverException as exc:
         log.debug("[ PASSIVE ]  URL guard error: %s", exc)
@@ -3986,7 +4269,7 @@ def comment_on_post(driver) -> bool:
             log.debug("comment_on_post: Post button not found — aborting")
             return False
 
-        scroll_element_into_loose_view(driver, post_btn)
+        #scroll_element_into_loose_view(driver, post_btn)
         bezier_move(driver, post_btn)
         precise_sleep(random.uniform(0.3, 0.6))
         try:
@@ -4858,7 +5141,7 @@ def create_post(driver, profile_id: str) -> bool:
                 log.debug("create_post: compose button not found (diag failed: %s)", _diag_exc)
             return False
 
-        scroll_element_into_loose_view(driver, compose_btn)
+        #scroll_element_into_loose_view(driver, compose_btn)
         bezier_move(driver, compose_btn)
         precise_sleep(random.uniform(0.4, 0.9))
         try:
@@ -5117,7 +5400,13 @@ def create_post(driver, profile_id: str) -> bool:
             )
             return False
 
-        scroll_element_into_loose_view(driver, post_btn)
+        # Do NOT call scroll_element_into_loose_view here.  The Post button
+        # lives in the compose modal's sticky footer and is always visible.
+        # scroll_element_into_loose_view fires mouseWheel CDP events at the
+        # current cursor position — which after human_type() is still inside
+        # the modal's scrollable content area.  The wheel events are delivered
+        # to that scroll container (not the page), causing the modal body to
+        # scroll instead of the page.  Bezier-move directly to the button.
         bezier_move(driver, post_btn)
         precise_sleep(random.uniform(0.4, 0.9))
         try:
@@ -5555,9 +5844,13 @@ def run_social_session(
         time_left = deadline - time.time()
         elapsed_frac = min(1.0, (time.time() - session_start_ts) / max(1, session_seconds))
 
-        # Force active if we haven't done one yet and time is almost up
-        if not active_done and time_left < 60:
-            log.info("Forcing active action (session guarantee).")
+        # Fix #31: move the active_done guarantee to the middle 25-75% of the
+        # session with a 10% per-tick probability, instead of a deterministic
+        # forced like in the final 60 s.  The old last-minute pattern created
+        # a repeatable "like then exit" fingerprint visible across all sessions.
+        if not active_done and 0.25 <= elapsed_frac <= 0.75 and random.random() < 0.10:
+            log.info("[ SESSION ]  mid-session active guarantee triggered (elapsed_frac=%.2f)",
+                     elapsed_frac)
             selected_action = "active"
             _dispatch(selected_action)
             active_done = True
