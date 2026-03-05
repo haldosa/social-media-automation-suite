@@ -76,12 +76,16 @@ PREFLIGHT_SITES_MAX  = 4    # maximum number of pre-flight sites to visit
 PREFLIGHT_DWELL_MIN  = 18   # minimum seconds on each pre-flight site
 PREFLIGHT_DWELL_MAX  = 55   # maximum seconds on each pre-flight site
 
-SESSION_MIN_MIN     = 6     # minimum session length (minutes)
-SESSION_MAX_MIN     = 32    # maximum session length (minutes)
-# 15 % chance of a long session (40-70 min) — models binge days
-SESSION_LONG_PROB   = 0.15
-SESSION_LONG_MIN    = 40    # long-session minimum (minutes)
-SESSION_LONG_MAX    = 70    # long-session maximum (minutes)
+# Session duration — smooth log-normal distribution.
+# Real social-media session lengths follow a right-skewed continuous
+# distribution (many short sessions, occasional long ones) — NOT the
+# bimodal uniform draw that creates a detectable 32–40 min gap.
+#   mu=2.95, sigma=0.55  →  median ≈ 19 min, mean ≈ 22 min
+#   Clamped to [5, 80] min so outliers stay realistic.
+SESSION_LOGNORMAL_MU    = 2.95   # ln(minutes) centre
+SESSION_LOGNORMAL_SIGMA = 0.55   # ln(minutes) spread
+SESSION_CLAMP_MIN       = 5      # hard floor (minutes)
+SESSION_CLAMP_MAX       = 80     # hard ceiling (minutes)
 
 BUFFER_MIN_MIN      = 8     # minimum buffer between profiles (minutes)
 BUFFER_MAX_MIN      = 25    # maximum buffer between profiles (minutes)
@@ -191,7 +195,7 @@ SCREENSHOT_DIR      = "screenshots"
 LOG_FILE            = "nstbrowser_warmer.log"
 MOUSE_LOG_FILE      = "mouse_moves.log"  # dedicated cursor movement log
 MOUSE_TRACE         = False             # True = log every Bezier step (verbose)
-DEBUG_CURSOR_OVERLAY= True             # True = inject red dot overlay to visualise cursor movement
+DEBUG_CURSOR_OVERLAY= False             # True = inject red dot overlay to visualise cursor movement
 
 # ── Selector constants ─────────────────────────────────────────────────────── #
 # Profile link in post header — href="/@username"
@@ -5010,6 +5014,46 @@ def _markov_sample_next_action(
     return _MARKOV_STATES[0]
 
 
+def _sample_session_duration_sec() -> float:
+    """Sample session length from a smooth log-normal distribution.
+
+    Eliminates the old bimodal uniform draw (6-32 / 40-70 min gap) that
+    created a fingerprint-level tell — real social-media sessions follow
+    a right-skewed continuous curve.
+    """
+    minutes = random.lognormvariate(SESSION_LOGNORMAL_MU, SESSION_LOGNORMAL_SIGMA)
+    minutes = max(SESSION_CLAMP_MIN, min(minutes, SESSION_CLAMP_MAX))
+    return minutes * 60.0
+
+
+def _distraction_pause(driver) -> None:
+    """Simulate a brief multitasking distraction mid-session.
+
+    Real users don't maintain unbroken focus for an entire session — they
+    check another tab, glance at their phone, reply to a message, etc.
+    This produces a visible pause (no scroll, no click) of 8–45 s that
+    breaks the otherwise metronomic action cadence.
+
+    ~12 % of session ticks trigger a distraction (called from the main loop).
+    """
+    pause_sec = random.uniform(8.0, 45.0)
+    log.info("[ DISTRACTION ]  pausing %.0fs (simulated tab-switch / phone check)", pause_sec)
+
+    # Occasionally move the cursor to a neutral spot first — user's hand
+    # drifts as attention shifts away from the feed.
+    if random.random() < 0.4:
+        try:
+            vw = driver.execute_script("return window.innerWidth")
+            vh = driver.execute_script("return window.innerHeight")
+            drift_x = random.randint(int(vw * 0.05), int(vw * 0.95))
+            drift_y = random.randint(int(vh * 0.30), int(vh * 0.80))
+            bezier_move_to_coords(driver, drift_x, drift_y, tag="distraction-drift")
+        except Exception:
+            pass
+
+    precise_sleep(pause_sec)
+
+
 def run_social_session(
     driver,
     session_seconds: float,
@@ -5041,6 +5085,13 @@ def run_social_session(
     global _session_followed, _session_metrics, _cdp_consecutive_failures
     _session_followed = set()
     _cdp_consecutive_failures = 0   # reset circuit breaker for new session
+
+    # ── Break cross-profile RNG correlation ───────────────────────────────
+    # The global random module uses a single Mersenne Twister.  Without
+    # reseeding, sequential profiles produce statistically correlated
+    # random sequences (same PRNG state continues).  Reseed with 32
+    # bytes from the OS CSPRNG so each session is independent.
+    random.seed(os.urandom(32))
 
     # Load per-profile typing DNA for this session.
     global _active_typing_dna
@@ -5217,7 +5268,18 @@ def run_social_session(
         # ───────────────────────────────────────────────────────────────────
 
         count += 1
-        precise_sleep(random.uniform(1, 3))
+
+        # ── Distraction / multitasking injection ─────────────────────────
+        # ~12 % of ticks: pause as if the user switched tabs or checked
+        # their phone.  Skipped in the first 2 min (user is still engaged)
+        # and the last 1 min (session is winding down).
+        _elapsed_s = time.time() - session_start_ts
+        if (_elapsed_s > 120
+                and (deadline - time.time()) > 60
+                and random.random() < 0.12):
+            _distraction_pause(driver)
+        else:
+            precise_sleep(random.uniform(1, 3))
 
     # ── POST-SESSION DIAGNOSTICS ─────────────────────────────────────────────
     if _session_metrics["passive"] == 0:
@@ -5284,13 +5346,9 @@ def warm_profile(profile_id: str, weights: dict | None = None) -> None:
             )
             return
 
-        # 5. Main activity session — 15 % chance of a long binge session
-        if random.random() < SESSION_LONG_PROB:
-            session_sec = random.uniform(SESSION_LONG_MIN * 60, SESSION_LONG_MAX * 60)
-            log.info("Long session drawn: %.1f min  |  profile: %s", session_sec / 60, profile_id)
-        else:
-            session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
-            log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
+        # 5. Main activity session — smooth log-normal duration
+        session_sec = _sample_session_duration_sec()
+        log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
         run_social_session(driver, session_sec, profile_id=profile_id, **(weights or {}))
 
     except (TimeoutException, RuntimeError, WebDriverException, CDPConnectionDead) as exc:
@@ -5372,12 +5430,8 @@ def warm_profile_attached(
                       profile_id)
             return
 
-        if random.random() < SESSION_LONG_PROB:
-            session_sec = random.uniform(SESSION_LONG_MIN * 60, SESSION_LONG_MAX * 60)
-            log.info("Long session drawn: %.1f min  |  profile: %s", session_sec / 60, profile_id)
-        else:
-            session_sec = random.uniform(SESSION_MIN_MIN * 60, SESSION_MAX_MIN * 60)
-            log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
+        session_sec = _sample_session_duration_sec()
+        log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
         run_social_session(driver, session_sec, profile_id=profile_id, **(weights or {}))
 
     except (TimeoutException, RuntimeError, WebDriverException) as exc:
