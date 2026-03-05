@@ -27,6 +27,7 @@ import textwrap
 import argparse
 import tempfile
 import hashlib
+import shutil
 import requests
 import json
 from datetime import datetime, date
@@ -145,11 +146,30 @@ POST_STATE_FILE       = "post_state.json"
 
 # Minimum elapsed session time (seconds) before a post action is allowed.
 # Ensures the bot scrolls/reads for a meaningful passive phase first.
-POST_PASSIVE_PHASE_SEC = 0 #random.uniform(5 * 60, 10 * 60)   # 5–10 min, re-drawn each run
+def _draw_passive_phase_sec() -> float:
+    """Draw a per-session passive-phase minimum (seconds).
 
-# Absolute floor between any two posts per profile (seconds).
-# Poisson sampling can occasionally produce very short gaps; this guards them.
-POST_MIN_GAP_SEC = 4 * 3600   # 4 hours hard floor
+    Re-drawn every session so the same profile doesn't always start
+    posting at the same elapsed time.  Module-level constant was shared
+    across all profiles in a multi-profile invocation.
+    """
+    return random.uniform(5 * 60, 10 * 60)   # 5–10 min, per-session
+
+# Soft floor between any two posts per profile.
+# Instead of a fixed 4-hour hard floor (which eliminates natural post-
+# clustering behavior), we use a Gaussian-sampled floor that averages
+# ~2 hours but can go as low as 45 min or as high as 4 hours.
+# This preserves the organic "two posts within an hour" pattern that real
+# users sometimes exhibit while still preventing machine-gun posting.
+def _sample_post_min_gap_sec() -> float:
+    """Sample a soft minimum inter-post gap (seconds).
+
+    Distribution: Gaussian(mean=2h, sigma=40min), clamped to [45min, 4h].
+    The result is different each time so clusters can emerge naturally.
+    """
+    gap_h = random.gauss(2.0, 0.67)   # mean=2h, sigma=40min
+    gap_h = max(0.75, min(gap_h, 4.0))  # clamp [45min, 4h]
+    return gap_h * 3600.0
 
 # Caption variation helpers — used by _humanize_caption().
 # Emoji-only tier: one of these is posted as the entire caption (~5 % of posts).
@@ -171,7 +191,7 @@ SCREENSHOT_DIR      = "screenshots"
 LOG_FILE            = "nstbrowser_warmer.log"
 MOUSE_LOG_FILE      = "mouse_moves.log"  # dedicated cursor movement log
 MOUSE_TRACE         = False             # True = log every Bezier step (verbose)
-DEBUG_CURSOR_OVERLAY= False             # True = inject red dot overlay to visualise cursor movement
+DEBUG_CURSOR_OVERLAY= True             # True = inject red dot overlay to visualise cursor movement
 
 # ── Selector constants ─────────────────────────────────────────────────────── #
 # Profile link in post header — href="/@username"
@@ -889,6 +909,51 @@ def _build_typo_sequence(text: str, error_rate: float,
     return actions
 
 
+# ── CDP keystroke dispatch ────────────────────────────────────────────────────
+# Replaces Selenium element.send_keys() to avoid StaleElementReferenceException
+# when React/Lexical re-renders the contenteditable <div> mid-typing.
+# Also produces isTrusted:true keyboard events.
+
+def _cdp_type_key(driver, char: str) -> None:
+    """Type a single character via CDP Input.dispatchKeyEvent / insertText.
+
+    ASCII printable chars get full keyDown+keyUp so the browser generates
+    the complete keydown → beforeinput → input → keyup event chain.
+    Non-ASCII (emoji, accented chars) use Input.insertText which fires
+    beforeinput → input — matching real IME / emoji-picker behaviour.
+    """
+    if len(char) == 1 and 32 <= ord(char) < 127:
+        driver.execute_cdp_cmd("Input.dispatchKeyEvent", {
+            "type": "keyDown",
+            "key": char,
+            "text": char,
+        })
+        driver.execute_cdp_cmd("Input.dispatchKeyEvent", {
+            "type": "keyUp",
+            "key": char,
+        })
+    else:
+        driver.execute_cdp_cmd("Input.insertText", {"text": char})
+
+
+def _cdp_backspace(driver) -> None:
+    """Press Backspace via CDP Input.dispatchKeyEvent."""
+    driver.execute_cdp_cmd("Input.dispatchKeyEvent", {
+        "type": "keyDown",
+        "key": "Backspace",
+        "code": "Backspace",
+        "windowsVirtualKeyCode": 8,
+        "nativeVirtualKeyCode": 8,
+    })
+    driver.execute_cdp_cmd("Input.dispatchKeyEvent", {
+        "type": "keyUp",
+        "key": "Backspace",
+        "code": "Backspace",
+        "windowsVirtualKeyCode": 8,
+        "nativeVirtualKeyCode": 8,
+    })
+
+
 def human_type(element, text: str, driver=None, typing_dna: dict = None) -> None:
     """
     Type text with a realistic, per-profile keystroke timing model.
@@ -960,7 +1025,10 @@ def human_type(element, text: str, driver=None, typing_dna: dict = None) -> None
             # reaction-driven delay.
             base = random.lognormvariate(math.log(0.05), 0.30)
             base = max(0.03, min(base, 0.15))
-            element.send_keys(Keys.BACKSPACE)
+            if driver is not None:
+                _cdp_backspace(driver)
+            else:
+                element.send_keys(Keys.BACKSPACE)
             precise_sleep(base)
             continue
 
@@ -1006,7 +1074,10 @@ def human_type(element, text: str, driver=None, typing_dna: dict = None) -> None
                 " -- outside corpus range", base * 1000)
         # -------------------------------------------------------------------
 
-        element.send_keys(char)
+        if driver is not None:
+            _cdp_type_key(driver, char)
+        else:
+            element.send_keys(char)
         precise_sleep(base)
         prev = char
         chars_typed += 1
@@ -1025,12 +1096,9 @@ def _bezier_point(p0, p1, p2, t):
     return int(x), int(y)
 
 
-def _ease_in_out_sine(t: float) -> float:
-    """Ease-in-out sine: maps a linear 0→1 parameter to an S-curve position.
-    Produces slow acceleration at the start of the arc, peak speed at the
-    midpoint, and deceleration back to near-zero as the cursor arrives at the
-    target — matching Fitts's Law and real human mouse-movement profiles."""
-    return -(math.cos(math.pi * t) - 1) / 2
+# _ease_in_out_sine() REMOVED — symmetric sine ease was a fingerprint-level
+# tell detectable by trajectory classifiers.  Replaced by _min_jerk_basis()
+# which produces the asymmetric velocity profile of real arm movements.
 
 
 def _min_jerk_basis(t: float) -> float:
@@ -1089,6 +1157,42 @@ def _make_tremor_components(n: int = 3) -> list:
 _cursor_pos: list = [0, 0]
 _last_bezier_end_ts: float = 0.0   # perf_counter timestamp of last arc; read by _cdp_click RISK WARN
 
+# CDP circuit breaker — tracks consecutive CDP failures.  If the count
+# exceeds the threshold within a session, the session aborts immediately
+# rather than silently swallowing errors from a dead browser connection.
+_cdp_consecutive_failures: int = 0
+_CDP_FAILURE_THRESHOLD: int = 5
+
+
+class CDPConnectionDead(WebDriverException):
+    """Raised when the CDP circuit breaker trips."""
+    pass
+
+
+def _cdp_record_success() -> None:
+    """Reset the consecutive-failure counter on a successful CDP call."""
+    global _cdp_consecutive_failures
+    _cdp_consecutive_failures = 0
+
+
+def _cdp_record_failure(context: str, exc: Exception) -> None:
+    """Record a CDP failure and trip the circuit breaker if threshold exceeded."""
+    global _cdp_consecutive_failures
+    _cdp_consecutive_failures += 1
+    log.warning(
+        "[CDP CIRCUIT]  failure %d/%d  context=%s  error=%s",
+        _cdp_consecutive_failures, _CDP_FAILURE_THRESHOLD, context, exc,
+    )
+    if _cdp_consecutive_failures >= _CDP_FAILURE_THRESHOLD:
+        log.error(
+            "[CDP CIRCUIT]  TRIPPED — %d consecutive failures.  "
+            "Browser connection presumed dead.", _cdp_consecutive_failures,
+        )
+        raise CDPConnectionDead(
+            f"CDP circuit breaker tripped after {_cdp_consecutive_failures} "
+            f"consecutive failures (last context: {context})"
+        ) from exc
+
 
 def _set_cursor(x: int, y: int, tag: str = "") -> None:
     """
@@ -1119,7 +1223,7 @@ _session_followed: set = set()
 # Responds to real DOM mousemove events fired by Selenium’s ActionChains,
 # so it follows every bezier step in real time.
 # Injected via execute_script after each page load — safe, no fingerprint risk.
-'''
+
 _CURSOR_OVERLAY_JS = """
 (function () {
     var ID  = '__cursor_debug_dot';
@@ -1194,7 +1298,6 @@ def inject_cursor_overlay(driver) -> None:
                      (result.get('cspMeta') or 'none')[:120])
     except WebDriverException as exc:
         log.debug("Cursor overlay injection failed: %s", exc)
-'''
 # ------------------------------------------------------------------ #
 #  SHARED BÉZIER PATH ENGINE
 # ------------------------------------------------------------------ #
@@ -1428,8 +1531,9 @@ def _fire_bezier_arc(
                 "x": pt[0],
                 "y": pt[1],
             })
-        except WebDriverException:
-            pass
+            _cdp_record_success()
+        except WebDriverException as exc:
+            _cdp_record_failure("bezier_arc_step", exc)
         precise_sleep(d_ms / 1000.0)
     return points, delays
 
@@ -1544,8 +1648,9 @@ def bezier_move(driver, target_element) -> None:
                     "x": _cdp_x,
                     "y": _cdp_y,
                 })
-            except WebDriverException:
-                pass
+                _cdp_record_success()
+            except WebDriverException as exc:
+                _cdp_record_failure("bezier_dwell", exc)
             _set_cursor(_cdp_x, _cdp_y, "hover-dwell")
             _mlog.debug("DWELL  cursor within 25px of target  dist=%.1fpx",
                         math.hypot(x1 - x0, y1 - y0))
@@ -1600,8 +1705,10 @@ def bezier_move(driver, target_element) -> None:
         _set_cursor(snap_x, snap_y, "elem-hover")
         debug_cursor_state(driver, "bezier-snap")
 
-    except WebDriverException:
-        pass
+    except CDPConnectionDead:
+        raise   # circuit breaker — propagate immediately
+    except WebDriverException as exc:
+        log.debug("bezier_move failed: %s", exc)
 
 def bezier_move_to_coords(driver, x1: int, y1: int, tag: str = "arc-end") -> None:
     """
@@ -1636,8 +1743,10 @@ def bezier_move_to_coords(driver, x1: int, y1: int, tag: str = "arc-end") -> Non
         _fire_bezier_arc(driver, x0, y0, x1, y1, vw, vh, exact_end=True)
         _set_cursor(x1, y1, tag)
         debug_cursor_state(driver, f"bezier-coords/{tag}")
-    except WebDriverException:
-        pass
+    except CDPConnectionDead:
+        raise   # circuit breaker — propagate immediately
+    except WebDriverException as exc:
+        log.debug("bezier_move_to_coords failed: %s", exc)
 
 
 def _navigate_and_settle(driver, action) -> None:
@@ -1696,7 +1805,6 @@ def _navigate_and_settle(driver, action) -> None:
 
     # 3. Overlay — inject after readyState complete, then verify it survives
     #    React's next reconcile pass (1 s later).
-    '''
     inject_cursor_overlay(driver)
     if DEBUG_CURSOR_OVERLAY:
         exists_now = driver.execute_script(
@@ -1711,7 +1819,6 @@ def _navigate_and_settle(driver, action) -> None:
         if exists_now and not exists_1s:
             log.warning("React wiped the overlay — re-injecting into documentElement")
             inject_cursor_overlay(driver)
-        '''
     # 4. Silent position set — fresh page has no cursor history.
     #    Cursor was at (park_x, 0) before navigation; it's still conceptually
     #    there.  No dispatch needed — the drift arc below is the first event
@@ -2628,8 +2735,10 @@ def check_login_status(driver) -> bool:
             log.info("[LOGIN]  status=logged_in(presumed)  url=%s", url[:80])
             return True
 
-    except WebDriverException:
-        pass
+    except CDPConnectionDead:
+        raise   # circuit breaker — propagate immediately
+    except WebDriverException as exc:
+        log.debug("check_login_status failed: %s", exc)
     return False
 
 
@@ -2792,7 +2901,7 @@ def view_profile_from_feed(driver) -> bool:
                 WebDriverWait(driver, 10).until(lambda d: "/@" in d.current_url)
             except TimeoutException:
                 pass
-            #inject_cursor_overlay(driver)
+            inject_cursor_overlay(driver)
             init_cursor_pos(driver)
         else:
             _cdp_click(driver)
@@ -3522,7 +3631,7 @@ def read_post_action(driver) -> bool:
             )
         except TimeoutException:
             pass
-        #inject_cursor_overlay(driver)
+        inject_cursor_overlay(driver)
         init_cursor_pos(driver)
 
         dwell = random.uniform(5.0, 18.0)
@@ -3799,7 +3908,8 @@ def _can_post_now(profile_id: str, state: dict) -> bool:
         return False
     # Always enforce hard floor as well
     elapsed = now - entry.get("last_post_ts", 0.0)
-    if elapsed < POST_MIN_GAP_SEC:
+    _soft_floor = _sample_post_min_gap_sec()
+    if elapsed < _soft_floor:
         days_old_pg2 = (date.fromisoformat(today) - date.fromisoformat(entry["first_seen"])).days
         # ── DEBUG LOGGING: [POST GATE] hard floor ─────────────────────────────
         log.info(
@@ -4012,6 +4122,67 @@ def _prepare_image_for_profile(src_path: str, profile_id: str) -> str:
         os.path.basename(out_path),
     )
     return out_path
+
+
+def _cleanup_post_scratch(profile_id: str, max_age_sec: float = 3600.0) -> None:
+    """Remove stale uniquified image files from the per-profile scratch dir.
+
+    Called after every successful post so the temp directory doesn't grow
+    indefinitely.  Removes files older than *max_age_sec* (default 1 hour)
+    and deletes entirely empty profile subdirectories.
+
+    Any OS errors (permission, concurrent access) are logged and swallowed
+    so cleanup never blocks the main session flow.
+    """
+    try:
+        if not os.path.isdir(_POST_TEMP_DIR):
+            return
+        now = time.time()
+        safe_pid = (profile_id or "anon")[:16].replace("-", "")
+        profile_dir = os.path.join(_POST_TEMP_DIR, safe_pid)
+
+        # Phase 1: purge stale files in THIS profile's scratch dir
+        if os.path.isdir(profile_dir):
+            for fname in os.listdir(profile_dir):
+                fpath = os.path.join(profile_dir, fname)
+                try:
+                    if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > max_age_sec:
+                        os.remove(fpath)
+                except OSError:
+                    pass
+            # Remove empty dir
+            try:
+                if not os.listdir(profile_dir):
+                    os.rmdir(profile_dir)
+            except OSError:
+                pass
+
+        # Phase 2: opportunistically purge OTHER profiles' stale dirs
+        # (handles profiles that crashed without cleanup)
+        for entry in os.listdir(_POST_TEMP_DIR):
+            subdir = os.path.join(_POST_TEMP_DIR, entry)
+            if not os.path.isdir(subdir):
+                continue
+            try:
+                for fname in os.listdir(subdir):
+                    fpath = os.path.join(subdir, fname)
+                    if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > max_age_sec * 4:
+                        os.remove(fpath)
+                if not os.listdir(subdir):
+                    os.rmdir(subdir)
+            except OSError:
+                pass
+
+        # Phase 3: remove top-level dir if completely empty
+        try:
+            if not os.listdir(_POST_TEMP_DIR):
+                os.rmdir(_POST_TEMP_DIR)
+        except OSError:
+            pass
+
+        log.debug("[ POST ]  scratch cleanup complete for %s", profile_id)
+    except Exception as exc:
+        log.debug("[ POST ]  scratch cleanup error: %s", exc)
 
 
 # ================================================================== #
@@ -4489,7 +4660,7 @@ def create_post(driver, profile_id: str) -> bool:
         #    Each pass is retried up to 3 times (2 s apart) so React has time
         #    to activate the button after processing the typed text.
         post_btn = None
-
+        
         for _attempt in range(3):
             # Pass A: walk up from text_box → find Post button in same container
             post_btn = driver.execute_script("""
@@ -4612,6 +4783,7 @@ def create_post(driver, profile_id: str) -> bool:
                  (time.perf_counter() - _pf_t0) * 1000)
 
         _record_post(profile_id, state)
+        _cleanup_post_scratch(profile_id)
         log.info("[ POST ]  new post published successfully")
 
         # 9. Post-dwell: stay on own post watching for early reactions.
@@ -4642,7 +4814,7 @@ def create_post(driver, profile_id: str) -> bool:
         return True
 
     except (NoSuchElementException, TimeoutException, WebDriverException) as exc:
-        log.debug("create_post failed: %s", exc)
+        log.warning("create_post failed: %s", exc)
         try:
             driver.execute_script(
                 "document.dispatchEvent(new KeyboardEvent('keydown',"
@@ -4868,12 +5040,18 @@ def run_social_session(
     but no longer directly control dispatch.  They are used to scale
     the base transition matrix when explicitly overridden by the user.
     """
-    global _session_followed, _session_metrics
+    global _session_followed, _session_metrics, _cdp_consecutive_failures
     _session_followed = set()
+    _cdp_consecutive_failures = 0   # reset circuit breaker for new session
 
     # Load per-profile typing DNA for this session.
     global _active_typing_dna
     _active_typing_dna = _get_typing_dna(profile_id)
+
+    # Draw a fresh passive-phase duration for this specific session.
+    # Previously a module-level constant shared across all profiles.
+    _session_passive_phase_sec = _draw_passive_phase_sec()
+    log.info("[ SESSION ]  passive phase drawn: %.1f min", _session_passive_phase_sec / 60)
 
     # ── DEBUG LOGGING: reset session metrics ─────────────────────────────────
     _session_metrics = {
@@ -4977,10 +5155,10 @@ def run_social_session(
             _session_metrics["searches"] += 1
         elif action == "post":
             passive_elapsed = time.time() - session_start_ts
-            if passive_elapsed >= POST_PASSIVE_PHASE_SEC:
+            if passive_elapsed >= _session_passive_phase_sec:
                 post_action(driver, profile_id)
             else:
-                wait_min = (POST_PASSIVE_PHASE_SEC - passive_elapsed) / 60
+                wait_min = (_session_passive_phase_sec - passive_elapsed) / 60
                 log.info(
                     "[ POST ]  passive phase not complete (%.1f min remaining) "
                     "-- deferring post to scroll", wait_min,
@@ -5117,7 +5295,7 @@ def warm_profile(profile_id: str, weights: dict | None = None) -> None:
             log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
         run_social_session(driver, session_sec, profile_id=profile_id, **(weights or {}))
 
-    except (TimeoutException, RuntimeError, WebDriverException) as exc:
+    except (TimeoutException, RuntimeError, WebDriverException, CDPConnectionDead) as exc:
         log.error("Error on profile %s: %s", profile_id, exc)
         if driver:
             ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
