@@ -771,7 +771,8 @@ def connect_selenium(ws_debugger_url: str) -> webdriver.Chrome:
     # inconsistency (the characteristic getOwnPropertyDescriptor side-effects
     # that Meta's bot detection explicitly checks for), so we omit it entirely
     # and trust the profile's built-in fingerprint configuration.
-    driver.execute_cdp_cmd("Network.enable", {})
+    # Fix 7.3: Network.enable is not needed (no Network.* CDP commands used
+    # downstream) and keeping the domain active is a detectable CDP signal.
 
     # Fix #14: run Layer 3 (runtime verification) FIRST.
     # If the binary patch already removed all $cdc_ properties, skipping the
@@ -1190,10 +1191,21 @@ _ASCII_KEY_INFO: dict[str, tuple[str, int, int]] = {
 def _cdp_type_key(driver, char: str) -> None:
     """Type a single character via CDP Input.dispatchKeyEvent / insertText.
 
-    ASCII printable chars get full keyDown+keyUp so the browser generates
-    the complete keydown → beforeinput → input → keyup event chain, with
-    all required KeyboardEvent fields populated (key, code,
-    windowsVirtualKeyCode, nativeVirtualKeyCode, location, modifiers).
+    Fix 1.2 — Full three-event keyboard sequence for printable ASCII:
+      1. keyDown  — fires DOM 'keydown'; no text insertion yet (text="")
+      2. char     — fires DOM 'keypress' AND inserts the character (text=char)
+      3. keyUp    — fires DOM 'keyup'
+
+    This exactly mirrors the CDP event sequence that Chrome records for
+    physical hardware key presses.  The original two-event (keyDown+keyUp)
+    sequence omitted 'keypress', which is detectable by behavioral analytics
+    that fingerprint the full keyboard event chain (keydown → keypress →
+    beforeinput → input → keyup).
+
+    Note: the 'char' CDP type is deprecated in the spec but still the only
+    way to generate a trusted DOM 'keypress' event via CDP.  It matches what
+    Chrome DevTools itself records when you reproduce typing via the Recorder.
+
     Non-ASCII (emoji, accented chars) use Input.insertText which fires
     beforeinput → input — matching real IME / emoji-picker behaviour.
     """
@@ -1203,27 +1215,24 @@ def _cdp_type_key(driver, char: str) -> None:
             code, vk, mods = info
         else:
             code, vk, mods = f"Key{char.upper()}", ord(char.upper()), 0
-        down: dict = {
-            "type": "keyDown",
-            "key": char,
-            "code": code,
-            "text": char,
+        # Shared fields for all three events
+        base: dict = {
+            "key":                  char,
+            "code":                 code,
             "windowsVirtualKeyCode": vk,
             "nativeVirtualKeyCode": vk,
-            "location": 0,
-            "modifiers": mods,
+            "location":             0,
+            "modifiers":            mods,
         }
-        up: dict = {
-            "type": "keyUp",
-            "key": char,
-            "code": code,
-            "windowsVirtualKeyCode": vk,
-            "nativeVirtualKeyCode": vk,
-            "location": 0,
-            "modifiers": mods,
-        }
-        driver.execute_cdp_cmd("Input.dispatchKeyEvent", down)
-        driver.execute_cdp_cmd("Input.dispatchKeyEvent", up)
+        # 1. keydown — no text so the browser doesn't insert twice
+        driver.execute_cdp_cmd("Input.dispatchKeyEvent",
+                                {**base, "type": "keyDown", "text": ""})
+        # 2. keypress (char type) — fires 'keypress' DOM event + inserts char
+        driver.execute_cdp_cmd("Input.dispatchKeyEvent",
+                                {**base, "type": "char",    "text": char})
+        # 3. keyup
+        driver.execute_cdp_cmd("Input.dispatchKeyEvent",
+                                {**base, "type": "keyUp",   "text": ""})
     else:
         driver.execute_cdp_cmd("Input.insertText", {"text": char})
 
@@ -1884,6 +1893,49 @@ def _cdp_click(driver, x: int = None, y: int = None) -> None:
     except Exception:
         pass
     # ────────────────────────────────────────────────────────────────────────
+
+def _cdp_click_element(driver, element) -> None:
+    """CDP click on a specific element — single event pair, no retry.
+
+    Fix 6.4: the old two-attempt strategy (cursor_pos first, then bbox-centre
+    fallback) fired mousePressed+mouseReleased *twice* when the primary missed.
+    A mousePressed/Released pair that produces no click event followed
+    immediately by one that does is a detectable bot-detection signal.
+
+    New strategy: read the element's bounding rect BEFORE any mouse events,
+    then fire exactly ONE mousePressed/mouseReleased pair:
+      • Normal path — cursor_pos is already inside the element bounds
+                      (expected after every bezier_move): click there.
+      • Snap path   — cursor_pos is outside the element (page reflux / stale
+                      pos): silently update cursor to element centre first,
+                      then click there.  Still one event pair, no failed attempt.
+
+    Raises WebDriverException if the single CDP attempt fails.  A missed click
+    is always preferable to isTrusted:false or a double-fire artefact.
+    """
+    rect = driver.execute_script(
+        "var r = arguments[0].getBoundingClientRect();"
+        "return {l: r.left, t: r.top, r: r.right, b: r.bottom,"
+        "        cx: Math.round(r.left + r.width  / 2),"
+        "        cy: Math.round(r.top  + r.height / 2)};",
+        element,
+    )
+    cur_x, cur_y = _get_ctx().cursor_pos
+    if rect["l"] <= cur_x <= rect["r"] and rect["t"] <= cur_y <= rect["b"]:
+        # Normal path: bezier arc already landed on the element.
+        log.debug("[CLICK]  cdp_click_element  on-element  pos=(%d,%d)", cur_x, cur_y)
+        _cdp_click(driver)
+    else:
+        # Cursor is outside element — snap to centre before the first (and
+        # only) mouse event so there is no failed-attempt artefact.
+        cx, cy = int(rect["cx"]), int(rect["cy"])
+        log.debug(
+            "[CLICK]  cdp_click_element  snapped  centre=(%d,%d)  cursor_was=(%d,%d)",
+            cx, cy, cur_x, cur_y,
+        )
+        _set_cursor(cx, cy, "cdp-element-snap")
+        _cdp_click(driver, cx, cy)
+        raise
 
 def init_cursor_pos(driver) -> None:
     """
@@ -3065,11 +3117,7 @@ def _attempt_like(driver, element) -> bool:
         bezier_move(driver, element)
         precise_sleep(random.uniform(0.2, 0.6))   # hand settling on the button
 
-        try:
-            _cdp_click(driver)
-        except WebDriverException:
-            log.debug("Selenium click intercepted — JS click fallback")
-            driver.execute_script("arguments[0].click();", element)
+        _cdp_click_element(driver, element)  # Fix 1.4: never JS .click()
         debug_cursor_state(driver, "like-click")
 
         # Watch the heart animation
@@ -3720,10 +3768,7 @@ def check_notifications_action(driver) -> None:
                     scroll_element_into_loose_view(driver, target)
                     bezier_move(driver, target)
                     precise_sleep(random.uniform(0.4, 0.9))
-                    try:
-                        _cdp_click(driver)
-                    except WebDriverException:
-                        driver.execute_script("arguments[0].click();", target)
+                    _cdp_click_element(driver, target)  # Fix 1.4: never JS .click()
                     log.info("[ NOTIFY ]  tapped notification item")
                     precise_sleep(random.uniform(2.0, 5.0))
                     # Go back to notifications page before returning to feed
@@ -3770,7 +3815,7 @@ def visit_search_action(driver) -> None:
                 query = random.choice(SEARCH_TOPIC_POOL)
                 bezier_move(driver, search_input)
                 precise_sleep(random.uniform(0.3, 0.8))
-                search_input.click()
+                _cdp_click_element(driver, search_input)  # Fix 1.6: CDP, not native Selenium click
                 precise_sleep(random.uniform(0.2, 0.5))
                 human_type(search_input, query, driver)
                 precise_sleep(random.uniform(0.4, 0.9))
@@ -4211,10 +4256,7 @@ def comment_on_post(driver) -> bool:
         # 3. Bezier-arc to Reply and click
         bezier_move(driver, target_btn)
         precise_sleep(random.uniform(0.3, 0.7))
-        try:
-            _cdp_click(driver)
-        except WebDriverException:
-            driver.execute_script("arguments[0].click();", target_btn)
+        _cdp_click_element(driver, target_btn)  # Fix 1.4: never JS .click()
         debug_cursor_state(driver, "comment-reply-click")
 
         # 4. Wait for the comment box to appear
@@ -4272,10 +4314,7 @@ def comment_on_post(driver) -> bool:
         #scroll_element_into_loose_view(driver, post_btn)
         bezier_move(driver, post_btn)
         precise_sleep(random.uniform(0.3, 0.6))
-        try:
-            _cdp_click(driver)
-        except WebDriverException:
-            driver.execute_script("arguments[0].click();", post_btn)
+        _cdp_click_element(driver, post_btn)  # Fix 1.4: never JS .click()
         debug_cursor_state(driver, "comment-post-click")
 
         # 8. Post-click pause — watching the reply appear
@@ -5144,10 +5183,7 @@ def create_post(driver, profile_id: str) -> bool:
         #scroll_element_into_loose_view(driver, compose_btn)
         bezier_move(driver, compose_btn)
         precise_sleep(random.uniform(0.4, 0.9))
-        try:
-            _cdp_click(driver)
-        except WebDriverException:
-            driver.execute_script("arguments[0].click();", compose_btn)
+        _cdp_click_element(driver, compose_btn)  # Fix 1.4: never JS .click()
 
         # 3. Wait for the compose modal's contenteditable text area.
         #    Uses behavioral detection (role=textbox, contenteditable, modal
@@ -5193,10 +5229,7 @@ def create_post(driver, profile_id: str) -> bool:
                     if attach_btns:
                         bezier_move(driver, attach_btns[0])
                         precise_sleep(random.uniform(0.3, 0.6))
-                        try:
-                            _cdp_click(driver)
-                        except WebDriverException:
-                            driver.execute_script("arguments[0].click();", attach_btns[0])
+                        _cdp_click_element(driver, attach_btns[0])  # Fix 1.4: never JS .click()
 
                         _locate_delay = max(3.0, min(9.0, random.gauss(5.0, 1.5)))
                         log.debug("create_post: OS dialog open — file-locate pause %.1fs", _locate_delay)
@@ -5409,10 +5442,7 @@ def create_post(driver, profile_id: str) -> bool:
         # scroll instead of the page.  Bezier-move directly to the button.
         bezier_move(driver, post_btn)
         precise_sleep(random.uniform(0.4, 0.9))
-        try:
-            _cdp_click(driver)
-        except WebDriverException:
-            driver.execute_script("arguments[0].click();", post_btn)
+        _cdp_click_element(driver, post_btn)  # Fix 1.4: never JS .click()
         log.info("[POST FLOW]  step=submit_click  success=True  detail=post_btn_clicked")
         debug_cursor_state(driver, "post-submit-click")
 
