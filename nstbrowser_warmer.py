@@ -53,6 +53,15 @@ from selenium.common.exceptions import (
 from dotenv import load_dotenv
 load_dotenv()
 
+from pathlib import Path
+
+# This converts any string into a proper absolute path for your specific OS
+absolute_path = Path(r"C:\Users\User\Documents\pools.json").resolve()
+
+# Adding encoding='utf-8' is the magic fix here
+with open(absolute_path, 'r', encoding='utf-8') as file:
+    data = json.load(file)
+
 # ------------------------------------------------------------------ #
 #  CONFIGURATION
 # ------------------------------------------------------------------ #
@@ -103,48 +112,14 @@ BUFFER_LONG_MAX     = 60    # extended break maximum (minutes)
 ACTIVE_HOURS_RANGE  = (8, 23)   # only run between 08:00 and 23:00 local time
 # Simulated inactive day ,  skip the entire run with this probability.
 # Models the natural days when a real user simply doesn't open Threads.
-INACTIVE_DAY_PROB   = 0 #0.18
+INACTIVE_DAY_PROB   = 0.1
 # Comment pool ,  short, natural-sounding replies that fit a wide range of posts.
 # Add / remove entries to tune the vocabulary used by the bot.
-COMMENT_POOL = [
-"Love this 🖤 where are you from? 💬",
-"Haha so true old man! How old are you? 😫",
-"This is great! Tell me your location tbh 🥺",
-"Exactly how I feel... wanna chat? 😈",
-"Needed this today lol, where you at? 💬",
-"Facts 😭 how close are we? Tell me",
-"Well said old man, your turn where from? ☺️",
-"This made my day 🖤 im from ohio, you? ",
-"Couldn't agree more ngl, how old r u? 😫",
-"Really interesting... show me your clock? 😈",
-"This is so good lol, afraid of goths? 💔",
-"Haha yes exactly old man 🥺 where you from?",
-"Okay this is actually really good 😫 tell me age?",
-"lol same, wanna see my puppy? 🖤",
-"Absolutely tbh, how far away are we? 💬",
-"More people need to see this 😭 where r u?",
-"Love the energy here ☺️ old man tell me location",
-"This is everything idk, afraid of asian goths? 😈",
-"Amazing 🖤 how old are you old man?",
-"Yes!! 😫 where you from i wanna know 💬",
-"Cute post lol, would u date a goth girl? 🖤",
-"Haha love it, show me where u r? 😈",
-"So relatable tbh 🥺 how old r u really?",
-"This hits different 😭 tell me your spot",
-"Goth vibes here lol, where are you old man? 💬",
-"Perfect 😫 wanna trade locations?",
-"Love it ngl 🖤 afraid of dangerous goths?",
-"Haha yes 🥺 how close are we old man?",
-"This is fire 😈 tell me age and place?",
-"So cute lol, would u like a goth snack? ☺️",
-]
+COMMENT_POOL = data["comments"]
+
 # Search query pool ,  generic topics typed into the Threads search bar.
 # 70 % of search visits type one of these to model real query behaviour.
-SEARCH_TOPIC_POOL = [
-    "travel", "coffee", "music", "weekend", "food", "nature", "fitness",
-    "books", "art", "movies", "tech", "fashion", "pets", "cooking", "sport",
-    "sunsets", "hiking", "gaming", "photography", "mindfulness",
-]
+SEARCH_TOPIC_POOL = data["search_topics"]
 
 # ── Content posting ────────────────────────────────────────────────────────── #
 # Set MEDIA_POOL_DIR to a local folder of images to attach to new posts.
@@ -156,38 +131,7 @@ MEDIA_POOL_DIR        = os.path.join(_SCRIPT_DIR, "media")   # e.g. "media_pool"
 POST_MEDIA_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 
 # Captions for original posts.  Add / remove entries freely.
-POST_CAPTION_POOL = [
-"Hello old man My name is Anney Rose I am 19 I wonder how far away we are Can you tell me where you are from? 💬 📸 PHOTO",
-"I wish old men were into asian goths 🥺 where r u from? 😫",
-"Old man... My name is Anney. I know im ugly but ill take good care of u 😭 📸 PHOTO",
-"I want to find the oldest person here... how old are you? 💬",
-"The older guys on threads are crazy and i love it 😍 im 19 👋",
-"Perks of low followers... i reply to all. Try me old man ☺️",
-"Hey old man youre sneaky, you never say where youre from 💬",
-"Dude i love you. Im Anney Rose from Ohio. Where you from first time asking ❤️ 📸 PHOTO",
-"Are men afraid of goths? 💔 i need to know 😫",
-"I need a big clock right now 😩 is that one in your pocket? 📸 PHOTO",
-"You must be happy to see my new kimono ☺️ where r u? Ill drive lol",
-"My name is Anney im 19 today happy bday to me i guess 🎂 where you from?",
-"I love a makeup free day (gloss dont count lol) 🖤 afraid of goths? 📸 PHOTO",
-"Handle this goth snack with care ☺️ ill show my puppy if u show your clock",
-"I dont change for fun 🤩 are you afraid of dangerous goths? 😈 📸 PHOTO",
-"Men be honest... would you date a goth girl cop? 🖤",
-"I feel like my puppy deserves more love 😭 show me yours? 💬 📸 PHOTO",
-"Im a 6 but i got cute goth kitties?? 🥺",
-"Woould you luck me with your clock? ☺️ asian snack 🖤 📸 PHOTO",
-"I cant hold it in anymore. I LIKE OLDER MEN 😈",
-"Hii old man 🟢 hello.. wanna tell me where you from? 💬",
-"Special treat for you old man 😫 how old r u tbh? 📸 PHOTO",
-"It cost $0 to say hi to me 😌 where you at? ",
-"Youve got class old man! Im Anney from Virginia your turn 💬",
-"i need dc!! kkkkkkkkk.… like for dm 😭 📸 PHOTO",
-"Translate this goth tease... where r u from old man? 🥺",
-"Okay im ugly but ill care for u 😫 tell me age? ",
-"Wagon wednesday but goth style 🖤 how far are we? 💬 📸 PHOTO",
-"The older generation is unhinged i love it 😍 im 19",
-"No notes just tell me where you from old man 😈",
-]
+POST_CAPTION_POOL = data["post_captions"]
 
 # Path to the persistent posting-state JSON (per-profile daily counts + age).
 POST_STATE_FILE       = "post_state.json"
@@ -416,6 +360,11 @@ class SessionContext:
         default_factory=lambda: dict(_SESSION_METRICS_DEFAULTS)
     )
     active_typing_dna: dict   = dataclasses.field(default_factory=dict)
+    # Per-profile isolated content pools — populated by run_social_session().
+    # Empty list means "not yet assigned"; callers fall back to the global pool.
+    profile_comment_pool: list = dataclasses.field(default_factory=list)
+    profile_caption_pool: list = dataclasses.field(default_factory=list)
+    profile_search_topic_pool: list = dataclasses.field(default_factory=list)
 
 
 _session_local = threading.local()
@@ -3837,15 +3786,28 @@ def visit_search_action(driver) -> None:
         if not _click_nav_btn(driver, "Search", "Search"):
             log.debug("Search button not found ,  skipping")
             return
-        precise_sleep(random.uniform(1.5, 3.0))   # search page settle
+
+        # Wait for the search input to be present and visible before proceeding.
+        # The fixed sleep is replaced with an explicit element wait so the bot
+        # never proceeds on a partially-loaded page regardless of network speed.
+        try:
+            search_input = WebDriverWait(driver, 12).until(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, SEARCH_INPUT_CSS))
+            )
+        except TimeoutException:
+            log.debug("visit_search_action: search input did not appear after nav click ,  dwell fallback")
+            precise_sleep(random.uniform(3.0, 8.0))
+            _safe_return_to_feed(driver, "search")
+            return
+
+        # Brief human pause after the page settles — user orients before acting.
+        precise_sleep(random.uniform(0.8, 2.0))
 
         if random.random() < 0.70:
             # ── Type a query and scroll results ──────────────────────────────
             try:
-                search_input = WebDriverWait(driver, 6).until(
-                    lambda d: d.find_element(By.CSS_SELECTOR, SEARCH_INPUT_CSS)
-                )
-                query = random.choice(SEARCH_TOPIC_POOL)
+                _active_search_pool = _get_ctx().profile_search_topic_pool or SEARCH_TOPIC_POOL
+                query = random.choice(_active_search_pool)
                 bezier_move(driver, search_input)
                 precise_sleep(random.uniform(0.3, 0.8))
                 _cdp_click_element(driver, search_input)  # Fix 1.6: CDP, not native Selenium click
@@ -3854,12 +3816,30 @@ def visit_search_action(driver) -> None:
                 precise_sleep(random.uniform(0.4, 0.9))
                 search_input.send_keys(Keys.RETURN)
                 log.info("[ SEARCH ]  typed query=%r", query)
-                precise_sleep(random.uniform(1.0, 2.5))   # results load
+
+                # Wait for at least one result item to appear before scrolling.
+                # Falls back to a fixed pause if results use a non-standard structure.
+                _SEARCH_RESULT_CSS = (
+                    "article, "
+                    "div[data-pressable-container='true'], "
+                    "div[role='article']"
+                )
+                try:
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, _SEARCH_RESULT_CSS))
+                    )
+                    # Small settle pause after first result renders
+                    precise_sleep(random.uniform(0.5, 1.2))
+                except TimeoutException:
+                    # Results may use a layout we don't recognise — wait a fixed
+                    # amount so the page still has time to finish loading.
+                    log.debug("[ SEARCH ]  result selector timed out ,  fixed settle fallback")
+                    precise_sleep(random.uniform(2.0, 3.5))
+
                 stochastic_scroll(driver, total_seconds=random.uniform(5.0, 15.0))
-            except (TimeoutException, NoSuchElementException, WebDriverException) as _se:
-                # Input not found ,  fall back to plain dwell so we still
-                # retain some visit value instead of just leaving immediately.
-                log.debug("visit_search_action: search input not found (%s) ,  dwell fallback", _se)
+            except (NoSuchElementException, WebDriverException) as _se:
+                # Input interaction failed ,  fall back to plain dwell.
+                log.debug("visit_search_action: input interaction failed (%s) ,  dwell fallback", _se)
                 precise_sleep(random.uniform(3.0, 8.0))
         else:
             # ── Dwell only ,  scanning trending content ────────────────────────
@@ -4306,7 +4286,8 @@ def comment_on_post(driver) -> bool:
         # 5. Bezier-arc to text field, then type
         bezier_move(driver, comment_box)
         precise_sleep(random.uniform(0.3, 0.6))
-        comment = random.choice(COMMENT_POOL)
+        _active_comment_pool = _get_ctx().profile_comment_pool or COMMENT_POOL
+        comment = random.choice(_active_comment_pool)
         log.info("[ COMMENT ]  typing reply: %r", comment)
         human_type(comment_box, comment, driver)
 
@@ -5164,7 +5145,7 @@ def create_post(driver, profile_id: str) -> bool:
     _pf_t0 = time.perf_counter()
     # ──────────────────────────────────────────────────────────────────────────
 
-    caption = _humanize_caption(POST_CAPTION_POOL)
+    caption = _humanize_caption(_get_ctx().profile_caption_pool or POST_CAPTION_POOL)
     log.info(
         "[ POST ]  composing  |  caption=%r  |  media=%s",
         caption,
@@ -5664,12 +5645,115 @@ def _normalize_probs(probs: list) -> list:
     return [p / total for p in probs]
 
 
+# ── Per-profile pool isolation ────────────────────────────────────────────────
+
+def _get_profile_pool_shard(pool: list, profile_id: str) -> list:
+    """Return the deterministic subset of *pool* assigned to *profile_id*.
+
+    Partitions *pool* across all known PROFILE_IDS (in their declared order)
+    so no two profiles routinely draw from the same slice.  This eliminates
+    the cross-account content correlation caused by all profiles sampling the
+    exact same comment / caption pool.
+
+    Edge cases
+    ----------
+    - Unknown profile_id (attached mode, "manual", etc.) → full pool returned.
+    - Pool smaller than the number of profiles → round-robin single-item shards.
+    - PROFILE_IDS has only one entry → full pool is returned (nothing to split).
+    """
+    if not pool or not profile_id or profile_id in ("manual", ""):
+        return pool
+
+    try:
+        idx = PROFILE_IDS.index(profile_id)
+    except ValueError:
+        return pool  # profile not in PROFILE_IDS list → use full pool
+
+    n = len(PROFILE_IDS)
+    if n <= 1:
+        return pool
+
+    if len(pool) < n:
+        # Pool too small to give every profile a unique item — assign by index
+        return [pool[idx % len(pool)]]
+
+    shard_size = len(pool) // n
+    start = idx * shard_size
+    # Last shard absorbs any remainder so every item is assigned somewhere
+    end = start + shard_size if idx < n - 1 else len(pool)
+    return pool[start:end]
+
+
+def _get_profile_transition_matrix(profile_id: str) -> dict:
+    """Load or generate a stable per-profile perturbed Markov transition matrix.
+
+    Each profile receives a unique behavioral fingerprint derived by applying a
+    deterministic ±15 % noise vector (seeded from the MD5 of the profile ID)
+    to every row of _BASE_TRANSITION_MATRIX.  The result is persisted in
+    post_state.json so the same profile always exhibits the same statistical
+    pattern across runs — providing stable uniqueness without drift.
+
+    Falls back to _BASE_TRANSITION_MATRIX for anonymous / manual sessions.
+
+    Design notes
+    ------------
+    - ±15 % per-weight perturbation keeps each profile clearly within the
+      realistic human-behaviour envelope while making cross-account Markov
+      fingerprints statistically distinguishable.
+    - Seeding from the profile ID (not os.urandom) ensures determinism: the
+      matrix is regenerated identically if post_state.json is wiped.
+    - All rows are re-normalised after perturbation so they still sum to 1.0.
+    """
+    if not profile_id or profile_id in ("manual", ""):
+        return _BASE_TRANSITION_MATRIX
+
+    with _post_state_locked():
+        state = _load_post_state()
+        _ensure_profile_in_state(profile_id, state)
+        profile = state.get(profile_id, {})
+        stored = profile.get("transition_matrix")
+        # Validate: must have all expected state keys and correct row lengths
+        if (
+            stored
+            and isinstance(stored, dict)
+            and set(stored.keys()) == set(_BASE_TRANSITION_MATRIX.keys())
+            and all(
+                isinstance(stored[k], list)
+                and len(stored[k]) == len(_BASE_TRANSITION_MATRIX[k])
+                for k in stored
+            )
+        ):
+            return stored
+
+        # Generate a new perturbed matrix seeded from the profile ID
+        profile_seed = int(hashlib.md5(profile_id.encode()).hexdigest()[:8], 16)
+        rng = random.Random(profile_seed)
+
+        perturbed: dict = {}
+        for state_name, base_row in _BASE_TRANSITION_MATRIX.items():
+            # Scale each weight by a factor in [0.85, 1.15] — same seed → same factors
+            noisy_row = [max(0.0, w * rng.uniform(0.85, 1.15)) for w in base_row]
+            total = sum(noisy_row) or 1.0
+            perturbed[state_name] = [p / total for p in noisy_row]
+
+        state[profile_id]["transition_matrix"] = perturbed
+        _save_post_state(state)
+        log.info(
+            "[ MARKOV ]  generated per-profile transition matrix for %s  seed=%d",
+            profile_id[:12], profile_seed,
+        )
+        return perturbed
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _markov_sample_next_action(
     current_state: str,
     session_elapsed_frac: float,
     metrics: dict,
     consecutive_same: int,
     account_days_old: int = 15,
+    transition_matrix: dict | None = None,
 ) -> str:
     """Sample the next action from the Markov chain with context modifiers.
 
@@ -5680,10 +5764,11 @@ def _markov_sample_next_action(
     metrics               : _session_metrics accumulator
     consecutive_same      : how many times current_state repeated in a row
     account_days_old      : for account-maturity adjustment
+    transition_matrix     : per-profile perturbed matrix; falls back to
+                            _BASE_TRANSITION_MATRIX when None
     """
-    base = list(_BASE_TRANSITION_MATRIX.get(
-        current_state, _BASE_TRANSITION_MATRIX["passive"]
-    ))
+    _matrix = transition_matrix if transition_matrix is not None else _BASE_TRANSITION_MATRIX
+    base = list(_matrix.get(current_state, _matrix["passive"]))
 
     # Account maturity: young accounts heavily favour passive
     if account_days_old < 7:
@@ -5785,6 +5870,19 @@ def run_social_session(
     # separate threads because each has its own threading.local slot.
     _session_local.ctx = SessionContext()
     _session_local.ctx.active_typing_dna = _get_typing_dna(profile_id)
+    # ── Assign per-profile isolated content pools ─────────────────────────────
+    # Each profile receives its own deterministic shard of COMMENT_POOL and
+    # POST_CAPTION_POOL so no two accounts ever share the same surface text.
+    _session_local.ctx.profile_comment_pool = _get_profile_pool_shard(COMMENT_POOL, profile_id)
+    _session_local.ctx.profile_caption_pool = _get_profile_pool_shard(POST_CAPTION_POOL, profile_id)
+    _session_local.ctx.profile_search_topic_pool = _get_profile_pool_shard(SEARCH_TOPIC_POOL, profile_id)
+    log.info(
+        "[ POOLS ]  profile=%s  comment_shard=%d/%d  caption_shard=%d/%d  search_shard=%d/%d",
+        profile_id[:12],
+        len(_session_local.ctx.profile_comment_pool), len(COMMENT_POOL),
+        len(_session_local.ctx.profile_caption_pool), len(POST_CAPTION_POOL),
+        len(_session_local.ctx.profile_search_topic_pool), len(SEARCH_TOPIC_POOL),
+    )
     # ─────────────────────────────────────────────────────────────────────────
 
     # ── Break cross-profile RNG correlation ───────────────────────────────
@@ -5815,6 +5913,12 @@ def run_social_session(
     except Exception:
         pass
 
+    # ── Load or generate the stable per-profile perturbed transition matrix ────
+    # Stored in post_state.json; generated once per profile from a seed derived
+    # from the profile ID so the same profile always has the same fingerprint.
+    _profile_transition_matrix = _get_profile_transition_matrix(profile_id)
+    # ─────────────────────────────────────────────────────────────────────────
+
     # Current Markov state ,  start with passive (user just opened the feed)
     current_state = "passive"
 
@@ -5831,11 +5935,13 @@ def run_social_session(
     if w_search  != 0.06:    _user_weights["search"]        = w_search
     if w_post    != 0.02:    _user_weights["post"]          = w_post
 
-    # If user overrides are present, patch every row of the base matrix
+    # If user overrides are present, patch the profile's local matrix copy
     # so the Markov chain honours them while preserving transition structure.
+    # Note: _profile_transition_matrix is a local dict (copy), not the global
+    # _BASE_TRANSITION_MATRIX, so this mutation is session-scoped only.
     if _user_weights:
-        for state_key in _BASE_TRANSITION_MATRIX:
-            row = list(_BASE_TRANSITION_MATRIX[state_key])
+        for state_key in list(_profile_transition_matrix.keys()):
+            row = list(_profile_transition_matrix[state_key])
             for action_name, desired_w in _user_weights.items():
                 try:
                     idx = _MARKOV_STATES.index(action_name)
@@ -5844,7 +5950,7 @@ def run_social_session(
                     pass
             total = sum(row)
             if total > 0:
-                _BASE_TRANSITION_MATRIX[state_key] = [p / total for p in row]
+                _profile_transition_matrix[state_key] = [p / total for p in row]
 
     log.info(
         "Session Markov chain  |  account_age=%d days  |  user_overrides=%s",
@@ -5925,6 +6031,7 @@ def run_social_session(
                 metrics=_get_ctx().session_metrics,
                 consecutive_same=_get_ctx().session_metrics["consecutive_same"],
                 account_days_old=_account_days,
+                transition_matrix=_profile_transition_matrix,
             )
             _dispatch(selected_action)
             if selected_action == "active":
