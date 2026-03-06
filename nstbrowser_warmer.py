@@ -152,7 +152,7 @@ POST_MEDIA_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 POST_CAPTION_POOL = data["post_captions"]
 
 # Path to the persistent posting-state JSON (per-profile daily counts + age).
-POST_STATE_FILE       = "post_state.json"
+POST_STATE_FILE       = os.path.join(_SCRIPT_DIR, "post_state.json")
 
 # Minimum elapsed session time (seconds) before a post action is allowed.
 # Ensures the bot scrolls/reads for a meaningful passive phase first.
@@ -200,9 +200,9 @@ POST_CAPTION_SHORTS = [
 # per-profile image copies.  Cleaned up by the OS between reboots.
 _POST_TEMP_DIR = os.path.join(tempfile.gettempdir(), "nstbrowser_post_scratch")
 
-SCREENSHOT_DIR      = "screenshots"
-LOG_FILE            = "nstbrowser_warmer.log"
-MOUSE_LOG_FILE      = "mouse_moves.log"  # dedicated cursor movement log
+SCREENSHOT_DIR      = os.path.join(_SCRIPT_DIR, "screenshots")
+LOG_FILE            = os.path.join(_SCRIPT_DIR, "nstbrowser_warmer.log")
+MOUSE_LOG_FILE      = os.path.join(_SCRIPT_DIR, "mouse_moves.log")  # dedicated cursor movement log
 MOUSE_TRACE         = False             # True = log every Bezier step (verbose)
 DEBUG_CURSOR_OVERLAY= False             # True = inject red dot overlay to visualise cursor movement
 
@@ -4481,6 +4481,12 @@ def _load_post_state() -> dict:
     caller intends to mutate and save.  Safe to call outside the lock for
     read-only queries where a slightly stale snapshot is acceptable.
     """
+    if not os.path.exists(POST_STATE_FILE) and os.path.exists(POST_STATE_FILE + ".bak"):
+        try:
+            os.replace(POST_STATE_FILE + ".bak", POST_STATE_FILE)
+        except OSError:
+            pass
+
     if os.path.exists(POST_STATE_FILE):
         try:
             with open(POST_STATE_FILE, "r", encoding="utf-8") as fh:
@@ -4506,6 +4512,11 @@ def _save_post_state(state: dict) -> None:
             json.dump(state, fh, indent=2)
             fh.flush()
             os.fsync(fh.fileno())
+        if os.path.exists(POST_STATE_FILE):
+            try:
+                os.replace(POST_STATE_FILE, POST_STATE_FILE + ".bak")
+            except OSError:
+                pass
         os.replace(tmp_path, POST_STATE_FILE)
     except OSError as exc:
         log.warning("post_state save failed: %s", exc)
@@ -4752,7 +4763,26 @@ def _prepare_image_for_profile(src_path: str, profile_id: str) -> str:
     #     the optional flip this ensures geometry-based hashes (dHash, aHash)
     #     also differ significantly on every call.
     angle = random.uniform(2.0, 5.0) * random.choice([-1, 1])
-    img = img.rotate(angle, resample=Image.BICUBIC, expand=False)
+    
+    # Calculate scale factor to cover black corners
+    import math
+    cw, ch = img.size
+    theta = math.radians(abs(angle))
+    z = math.cos(theta) + max(cw/ch, ch/cw) * math.sin(theta)
+    
+    # Zoom in first, then rotate
+    zoom_w = int(math.ceil(cw * z))
+    zoom_h = int(math.ceil(ch * z))
+    img = img.resize((zoom_w, zoom_h), resample=Image.BICUBIC)
+    
+    # Rotate with expand=True to avoid any clipping before the final crop
+    img = img.rotate(angle, resample=Image.BICUBIC, expand=True)
+    
+    # Crop back to original dimensions to remove the corners
+    rotated_w, rotated_h = img.size
+    crop_x = (rotated_w - cw) // 2
+    crop_y = (rotated_h - ch) // 2
+    img = img.crop((crop_x, crop_y, crop_x + cw, crop_y + ch))
 
     # 2. Brightness ±12 % (was ±2 %) ,  wider luminance shift moves DCT
     #    coefficients far outside the ±1-LSB neighbourhood that pHash
@@ -5178,17 +5208,27 @@ def create_post(driver, profile_id: str) -> bool:
                 if os.path.splitext(f)[1].lower() in POST_MEDIA_EXTENSIONS
             ]
             if all_images:
-                used_globally = set(state.get("_used_images", []))
-                fresh = [p for p in all_images if os.path.basename(p) not in used_globally]
+                used_list = state.get("_used_images", [])
+                pool_basenames = {os.path.basename(p) for p in all_images}
+                used_list = [x for x in used_list if x in pool_basenames]
+
+                fresh = [p for p in all_images if os.path.basename(p) not in used_list]
                 if not fresh:
                     log.info("[ POST ]  image pool fully cycled ,  resetting cross-profile dedup list")
-                    state["_used_images"] = []
                     fresh = all_images
+
                 _src_for_uniquify = random.choice(fresh)
-                used_list = state.setdefault("_used_images", [])
                 basename = os.path.basename(_src_for_uniquify)
-                if basename not in used_list:
-                    used_list.append(basename)
+
+                if basename in used_list:
+                    used_list.remove(basename)
+                used_list.append(basename)
+
+                max_history = max(0, len(all_images) - 1)
+                while len(used_list) > max_history:
+                    used_list.pop(0)
+
+                state["_used_images"] = used_list
         _save_post_state(state)  # one atomic write covers gate + image reservation
     # ===========================================================================
 
@@ -5396,7 +5436,7 @@ def create_post(driver, profile_id: str) -> bool:
                  caption[:40])
 
         # 6. Re-read pause ,  mimics proof-reading before hitting Post
-        reread_s = random.uniform(1.5, 4.0)
+        reread_s = random.uniform(5.0, 10.0)
         log.info("[ POST ]  re-reading before submit (%.1fs)…", reread_s)
         precise_sleep(reread_s)
 
@@ -7479,14 +7519,26 @@ def main() -> None:
         )
         return
 
-    # Time-of-day scheduling guard ,  refuse to run outside natural waking hours.
-    _now_hour = datetime.now().hour
-    if not (ACTIVE_HOURS_RANGE[0] <= _now_hour <= ACTIVE_HOURS_RANGE[1]):
-        log.warning(
-            "Outside active hours (%02d:00\u2013%02d:00 local) ,  not running.",
+    # Time-of-day scheduling guard — wait until active hours instead of exiting.
+    while True:
+        _now = datetime.now()
+        _now_hour = _now.hour
+        if ACTIVE_HOURS_RANGE[0] <= _now_hour <= ACTIVE_HOURS_RANGE[1]:
+            break  # within active window — proceed normally
+        # Calculate seconds until the next active-window start.
+        _start_hour = ACTIVE_HOURS_RANGE[0]
+        _next_active = _now.replace(hour=_start_hour, minute=0, second=0, microsecond=0)
+        if _next_active <= _now:
+            # Already past today's window start time (i.e. we're after end hour),
+            # so target tomorrow's start.
+            _next_active += timedelta(days=1)
+        _wait_sec = (_next_active - _now).total_seconds()
+        log.info(
+            "Outside active hours (%02d:00\u2013%02d:00 local) — sleeping %.0f min until %s.",
             ACTIVE_HOURS_RANGE[0], ACTIVE_HOURS_RANGE[1],
+            _wait_sec / 60, _next_active.strftime("%H:%M"),
         )
-        return
+        time.sleep(min(_wait_sec, 60))  # re-check every minute to handle clock drift
 
     log.info("Target: %s  |  Profiles: %d", TARGET_SOCIAL_URL, len(PROFILE_IDS))
 
