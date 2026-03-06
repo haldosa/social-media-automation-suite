@@ -6,3 +6,4 @@ media/VirtualBox_Kali Linux_18_02_2026_23_14_11.png
 __pycache__/nstbrowser_warmer.cpython-311.pyc
 mouse_moves.log
 nstbrowser_warmer.log
+.env
