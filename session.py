@@ -589,7 +589,7 @@ def run_social_session(
 #  SINGLE PROFILE WARM-UP ORCHESTRATOR
 # ================================================================== #
 
-def warm_profile(profile_id: str, weights: dict | None = None) -> bool:
+def warm_profile(profile_id: str, weights: dict | None = None, skip_preflight: bool = False) -> bool:
     """Full end-to-end warm-up for one NstBrowser profile.
 
     Returns True if a Threads session was actually started, False if the

@@ -418,7 +418,7 @@ def main() -> None:
     for idx, profile_id in enumerate(profile_order):
         log.info("-" * 60)
         log.info("[%d/%d] Starting: %s", idx + 1, len(profile_order), profile_id)
-        ran_session = warm_profile(profile_id, weights=weights or None)
+        ran_session = warm_profile(profile_id, weights=weights or None, skip_preflight=args.no_preflight)
 
         if idx < len(profile_order) - 1:
             if ran_session:

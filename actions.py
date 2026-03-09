@@ -1036,7 +1036,7 @@ def passive_action(driver) -> None:
         log.debug("[ PASSIVE ]  URL guard error: %s", exc)
     # ─────────────────────────────────────────────────────────────────
 
-    scroll_time = random.uniform(25, 75)
+    scroll_time = random.uniform(15, 45)
     # ── DEBUG LOGGING: ACTION START ────────────────────────────────────────────
     _action_t0 = time.perf_counter()
     _get_ctx().session_metrics["actions_dispatched"] += 1

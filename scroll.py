@@ -2,6 +2,7 @@ import time
 import random
 import math
 import re
+from socket import timeout
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
@@ -349,6 +350,16 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
      17%  quick skim   0.3–1.2 s (nothing to see, keep scrolling)
      65%  normal read  1.5–4 s
     """
+    def _browser_alive(driver, timeout: float = 5.0) -> bool:
+    #Quick CDP ping to verify browser is still responsive.  
+        try:
+            WebDriverWait(driver, timeout).until(
+                lambda d: d.execute_script("return 1") == 1
+            )
+            return True
+        except Exception:
+            return False
+
     def _reading_pause(seconds: float) -> None:
         """
         Sleep for `seconds` while continuously drifting the cursor ,  mimicking
