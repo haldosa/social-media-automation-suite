@@ -13,3 +13,5 @@ logs/
 heartbeat.json
 screenshots/
 daemon.pid
+cookie_state.json
+cookie_daemon.pid

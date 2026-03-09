@@ -30,6 +30,11 @@ if not _raw_profiles:
     raise SystemExit("PROFILE_IDS env var is not set. Add it to your .env file (comma-separated).")
 PROFILE_IDS = [p.strip() for p in _raw_profiles.split(",") if p.strip()]
 
+_raw_cookie_profiles = os.getenv("COOKIE_PROFILE_IDS")
+if not _raw_cookie_profiles:
+    raise SystemExit("COOKIE_PROFILE_IDS env var is not set. Add it to your .env file (comma-separated).")
+COOKIE_PROFILE_IDS = [p.strip() for p in _raw_cookie_profiles.split(",") if p.strip()]
+
 TARGET_SOCIAL_URL   = "https://www.threads.net"       # change to your target
 
 PREFLIGHT_SITES_POOL = [
