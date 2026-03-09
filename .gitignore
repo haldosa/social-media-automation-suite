@@ -7,3 +7,8 @@ nstbrowser_warmer.log
 post_state.json.bak
 post_state.json.lock
 test_actions.log
+.venv
+pools.json
+logs/
+heartbeat.json
+screenshots/
