@@ -12,3 +12,4 @@ pools.json
 logs/
 heartbeat.json
 screenshots/
+daemon.pid

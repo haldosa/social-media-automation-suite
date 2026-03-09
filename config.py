@@ -33,13 +33,28 @@ PROFILE_IDS = [p.strip() for p in _raw_profiles.split(",") if p.strip()]
 TARGET_SOCIAL_URL   = "https://www.threads.net"       # change to your target
 
 PREFLIGHT_SITES_POOL = [
-    "https://www.wikipedia.org",
-    "https://www.bbc.com",
-    "https://www.reddit.com",
-    "https://www.youtube.com",
-    "https://www.theguardian.com",
-    "https://www.espn.com",
-    "https://news.ycombinator.com",
+        "https://www.bbc.com",
+        "https://www.theguardian.com",
+        "https://www.reuters.com",
+        "https://www.apnews.com",
+        "https://www.npr.org",
+        "https://www.wikipedia.org",
+        "https://www.wikihow.com",
+        "https://www.merriam-webster.com",
+        "https://stackoverflow.com",
+        "https://www.imdb.com",
+        "https://www.goodreads.com",
+        "https://www.youtube.com",
+        "https://www.weather.com",
+        "https://www.allrecipes.com",
+        "https://www.tripadvisor.com",
+        "https://news.ycombinator.com",
+        "https://www.theverge.com",
+        "https://techcrunch.com",
+        "https://www.amazon.com",
+        "https://www.etsy.com",
+        "https://www.google.com",
+        "https://www.bing.com",
 ]
 PREFLIGHT_SITES_MIN  = 2    # minimum number of pre-flight sites to visit
 PREFLIGHT_SITES_MAX  = 4    # maximum number of pre-flight sites to visit

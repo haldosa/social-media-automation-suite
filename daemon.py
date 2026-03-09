@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, date
 from config import (
     ACTIVE_HOURS_RANGE,
     HEARTBEAT_FILE, _HEARTBEAT_INTERVAL_SEC,
-    PROFILE_IDS,
+    PROFILE_IDS, _SCRIPT_DIR,
 )
 from utils import log, _ensure_profile_logger, _active_profile_id
 from state import _load_post_state, _save_post_state
@@ -66,7 +66,7 @@ def _is_day_off(profile_id: str, state: dict, today_iso: str) -> bool:
     # Draw the decision using a profile-seeded RNG so a restart within
     # the same day doesn't re-roll.
     seed_str = f"{profile_id}:{today_iso}:day_off"
-    is_off = random.Random(seed_str).random() < 0.10
+    is_off = random.Random(seed_str).random() < 0.0
     if is_off:
         state.setdefault(profile_id, {})["day_off_date"] = today_iso
     else:
@@ -79,7 +79,7 @@ def _is_day_off(profile_id: str, state: dict, today_iso: str) -> bool:
 def _get_daily_session_target(profile_id: str, state: dict, today_iso: str) -> int:
     """Return the target session count for *profile_id* on *today_iso*.
 
-    Distribution: 1 (50 %), 2 (35 %), 3 (15 %).
+    Distribution: 1 (25 %), 2 (50 %), 3 (25 %).
     Drawn once and persisted; survives restarts.
     """
     entry = state.get(profile_id, {})
@@ -90,12 +90,12 @@ def _get_daily_session_target(profile_id: str, state: dict, today_iso: str) -> i
     seed_str = f"{profile_id}:{today_iso}:session_target"
     rng = random.Random(seed_str)
     roll = rng.random()
-    if roll < 0.50:
-        target = 1
-    elif roll < 0.85:
+    if roll < 0.25:
+        target = 3
+    elif roll < 0.75:
         target = 2
     else:
-        target = 3
+        target = 1
 
     targets[today_iso] = target
     state.setdefault(profile_id, {})["daily_session_target"] = targets
@@ -246,6 +246,11 @@ def daemon_main(weights: dict | None = None) -> None:
     """
     global _daemon_start_ts
     _daemon_start_ts = time.time()
+    _pid_file = os.path.join(_SCRIPT_DIR, "daemon.pid")
+    with open(_pid_file, "w") as f:
+        f.write(str(os.getpid()))
+    log.info("[ DAEMON ]  PID %d written to %s", os.getpid(), _pid_file)
+
     _install_daemon_signals()
 
     log.info("=" * 60)

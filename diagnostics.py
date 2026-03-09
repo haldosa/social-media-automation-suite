@@ -1,9 +1,9 @@
 import time
 import logging
 import random
-import sys
-import unittest
-import datetime
+import unittest.mock
+import posting
+from datetime import date, datetime, timedelta
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.by import By
 from config import TARGET_SOCIAL_URL
@@ -19,7 +19,7 @@ from actions import (
 )
 from session import _get_typing_dna, _get_ctx
 from posting import create_post
-from state import POST_STATE_FILE
+from state import _can_post_now, _record_post
 
 # ================================================================== #
 #  TEST-ACTIONS DIAGNOSTIC RUNNER
@@ -188,15 +188,19 @@ def run_test_actions(driver, profile_id: str = "test",
         return True
 
     def _test_create_post():
-        # Bypass _can_post_now and _record_post using unittest.mock so the
-        # patch is automatically reverted ,  even on exception ,  and never
-        # leaks into concurrent sessions sharing the same module namespace.
+        fake_first_seen = (date.today() - timedelta(days=8)).isoformat()
+
+        # Patch _can_post_now to always return True
+        def _always_allow(profile_id, state):
+            return True
+
+        # Patch _record_post to do nothing
         def _noop_record(pid, state):
-            tlog.info("[TEST]  _record_post SKIPPED ,  test post not recorded in %s", POST_STATE_FILE)
-        _mod = sys.modules[__name__]
-        with unittest.mock.patch.object(_mod, '_can_post_now', lambda pid, state: True):
-            with unittest.mock.patch.object(_mod, '_record_post', _noop_record):
-                return create_post(driver, profile_id)
+            tlog.info("[TEST]  _record_post SKIPPED — test post not recorded")
+
+        with unittest.mock.patch.object(posting, '_can_post_now', _always_allow), \
+            unittest.mock.patch.object(posting, '_record_post', _noop_record):
+            return create_post(driver, profile_id)
 
     # Full action list with short aliases for --test-actions <name> filtering
     _all_actions = [
