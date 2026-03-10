@@ -362,43 +362,6 @@ _CONSENT_SELECTORS = [
     '//a[contains(normalize-space(text()), "Accept all")]',
 ]
 
-def _dismiss_consent_banner(driver, timeout: float = 4.0) -> bool:
-    """
-    Attempt to find and click a cookie consent accept button.
-    Returns True if a banner was dismissed, False if none found.
-    Fails silently — a missed banner is not a fatal error.
-    """
-    try:
-        for selector in _CONSENT_SELECTORS:
-            try:
-                # Determine if CSS or XPath
-                if selector.startswith("//"):
-                    by = By.XPATH
-                else:
-                    by = By.CSS_SELECTOR
-
-                el = WebDriverWait(driver, 1.5).until(
-                    EC.element_to_be_clickable((by, selector))
-                )
-                # Human-like: move to button then click
-                precise_sleep(random.uniform(0.8, 2.5))
-                bezier_move(driver, el)
-                precise_sleep(random.uniform(0.3, 0.8))
-                el.click()
-                log.info("[COOKIE]  consent banner dismissed via: %s",
-                         selector[:60])
-                precise_sleep(random.uniform(0.5, 1.5))
-                return True
-
-            except (TimeoutException, NoSuchElementException,
-                    WebDriverException):
-                continue
-
-    except Exception as exc:
-        log.debug("[COOKIE]  consent check failed: %s", exc)
-
-    return False
-
 DWELL_MIN           = 25
 DWELL_MAX           = 90
 INTERNAL_LINK_PROB  = 0.35
@@ -456,8 +419,6 @@ def _visit_site(driver, url: str) -> bool:
 
         dwell = random.uniform(DWELL_MIN, DWELL_MAX)
         log.info("[COOKIE]  dwelling %.0fs on %s", dwell, url)
-
-        _dismiss_consent_banner(driver)
         
         # Split dwell into scroll phase and optional internal link phase
         scroll_time = dwell * random.uniform(0.5, 0.75)

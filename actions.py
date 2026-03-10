@@ -492,54 +492,12 @@ def view_profile_from_feed(driver) -> bool:
         bezier_move(driver, target)
         precise_sleep(random.uniform(0.5, 1.5))
 
-        # ~25 % of visits: open the profile in a new tab (mirrors Ctrl+click /
-        # middle-click behaviour a real user exhibits occasionally).
-        use_new_tab = (random.random() < 0.25)
-        original_handle = driver.current_window_handle
-
-        if use_new_tab:
-            log.info("[ NAV ]  opening profile in new tab")
-            driver.execute_script("window.open(arguments[0], '_blank');", profile_url)
-            precise_sleep(random.uniform(0.4, 0.9))   # brief pause while tab opens
-            driver.switch_to.window(driver.window_handles[-1])
-            try:
-                WebDriverWait(driver, 10).until(lambda d: "/@" in d.current_url)
-            except TimeoutException:
-                pass
-            inject_cursor_overlay(driver)
-            init_cursor_pos(driver)
-        else:
-            _cdp_click(driver)
-            debug_cursor_state(driver, "profile-nav-click")
-            try:
-                WebDriverWait(driver, 10).until(lambda d: "/@" in d.current_url)
-            except TimeoutException:
-                pass
-
         precise_sleep(random.uniform(1.5, 3.0))
         stochastic_scroll(driver, total_seconds=random.uniform(2, 4))
 
         # Follow gate ,  15 % probabilistic
         if random.random() < 0.15:
             follow_from_profile_page(driver)
-
-        if use_new_tab:
-            # Close the profile tab and return focus to the feed tab.
-            precise_sleep(random.uniform(0.5, 1.2))
-            log.info("[ NAV ]  closing profile tab, returning to feed")
-            driver.close()
-            driver.switch_to.window(original_handle)
-            precise_sleep(random.uniform(0.8, 1.8))
-        else:
-            # Return via Home nav button ,  more human-like than the back button.
-            # Falls back to navigate_history only if the nav icon is not found.
-            if not click_home_button(driver):
-                log.debug("view_profile_from_feed: home button not found ,  back fallback")
-                navigate_history(driver, "back")
-            precise_sleep(random.uniform(1.0, 2.5))
-        log.info("[ACTION END]  action=profile_view  result=success  duration=%.1fs",
-                 time.perf_counter() - _action_t0)
-        return True
 
     except (TimeoutException, WebDriverException) as exc:
         log.warning("[ACTION END]  action=profile_view  result=failure  error=%s", exc)
