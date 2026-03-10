@@ -9,6 +9,14 @@ COMMENT_POOL = data["comments"]
 POST_CAPTION_POOL = data["post_captions"]
 # Path to the persistent posting-state JSON (per-profile daily counts + age).
 
+POST_CAPTION_SHORTS = data["POST_CAPTION_SHORTS"]
+
+POST_CAPTION_EMOJIS = data["POST_CAPTION_EMOJIS"]
+
+PREFLIGHT_SITES_POOL = data["PREFLIGHT_SITES_POOL"]
+
+COOKIE_SITE_POOL = data["COOKIE_SITE_POOL"]
+
 # Search query pool ,  generic topics typed into the Threads search bar.
 # 70 % of search visits type one of these to model real query behaviour.
 SEARCH_TOPIC_POOL = data["search_topics"]

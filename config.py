@@ -36,31 +36,6 @@ if not _raw_cookie_profiles:
 COOKIE_PROFILE_IDS = [p.strip() for p in _raw_cookie_profiles.split(",") if p.strip()]
 
 TARGET_SOCIAL_URL   = "https://www.threads.net"       # change to your target
-
-PREFLIGHT_SITES_POOL = [
-        "https://www.bbc.com",
-        "https://www.theguardian.com",
-        "https://www.reuters.com",
-        "https://www.apnews.com",
-        "https://www.npr.org",
-        "https://www.wikipedia.org",
-        "https://www.wikihow.com",
-        "https://www.merriam-webster.com",
-        "https://stackoverflow.com",
-        "https://www.imdb.com",
-        "https://www.goodreads.com",
-        "https://www.youtube.com",
-        "https://www.weather.com",
-        "https://www.allrecipes.com",
-        "https://www.tripadvisor.com",
-        "https://news.ycombinator.com",
-        "https://www.theverge.com",
-        "https://techcrunch.com",
-        "https://www.amazon.com",
-        "https://www.etsy.com",
-        "https://www.google.com",
-        "https://www.bing.com",
-]
 PREFLIGHT_SITES_MIN  = 2    # minimum number of pre-flight sites to visit
 PREFLIGHT_SITES_MAX  = 4    # maximum number of pre-flight sites to visit
 PREFLIGHT_DWELL_MIN  = 18   # minimum seconds on each pre-flight site
@@ -99,21 +74,6 @@ INACTIVE_DAY_PROB   = 0     # replaced by daemon scheduler's per-profile day-off
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MEDIA_POOL_DIR        = os.path.join(_SCRIPT_DIR, "media")   # e.g. "media_pool"
 POST_MEDIA_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
-# Comment pool ,  short, natural-sounding replies that fit a wide range of posts.
-# Add / remove entries to tune the vocabulary used by the bot.
-
-POST_CAPTION_EMOJIS = [
-    "🥺", "😭", "💬", "😫", "☺️", "🖤", "😈",
-    "💔", "😩", "👋", "❤️", "🔥", "🏵️", "🎂",
-]
-# Short-fragment tier: casual 1-3 word phrases (~10 % of posts).
-POST_CAPTION_SHORTS = [
-    "same tho", "felt that", "big goth mood", "old man tho",
-    "tease me", "goth snack", "clock time", "afraid tho",
-    "lol yes", "tbh same", "ngl cute", "idk but yes",
-    "where tho", "age check", "location pls", "hi old man",
-    "goth vibes only", "puppy love", "ugly but caring",
-]
 
 # Temp directory used by _prepare_image_for_profile() to store uniquified
 # per-profile image copies.  Cleaned up by the OS between reboots.

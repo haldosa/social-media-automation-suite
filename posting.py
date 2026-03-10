@@ -17,7 +17,6 @@ from selenium.common.exceptions import (
 )
 from config import (
     MEDIA_POOL_DIR, POST_MEDIA_EXTENSIONS,
-    POST_CAPTION_EMOJIS, POST_CAPTION_SHORTS,
     _POST_TEMP_DIR, TARGET_SOCIAL_URL,
 )
 from dom_selectors import (
@@ -32,7 +31,7 @@ from state import (
     _load_post_state, _save_post_state,
     _post_state_locked
 )
-from pools import POST_CAPTION_POOL
+from pools import POST_CAPTION_POOL, POST_CAPTION_EMOJIS, POST_CAPTION_SHORTS
 # ================================================================== #
 #  IMAGE UNIQUIFIER  (per-profile re-encode)
 # ================================================================== #

@@ -28,12 +28,13 @@ from selenium.common.exceptions import (
     TimeoutException, WebDriverException, NoSuchElementException
 )
 
-from config import COOKIE_PROFILE_IDS, SCREENSHOT_DIR
+from config import COOKIE_PROFILE_IDS
 from utils import log, precise_sleep
 from api import start_profile, stop_profile
 from browser import connect_selenium
-from mouse import bezier_move_to_coords, bezier_move, init_cursor_pos
+from mouse import bezier_move, init_cursor_pos
 from scroll import stochastic_scroll, navigate_to
+from pools import COOKIE_SITE_POOL
 
 # ── Daemon config ─────────────────────────────────────────────────────────────
 COOKIE_DAEMON_ACTIVE_HOURS  = (8, 23)   # only run between these hours
@@ -398,47 +399,6 @@ def _dismiss_consent_banner(driver, timeout: float = 4.0) -> bool:
 
     return False
 
-# ── Site pool ────────────────────────────────────────────────────────────────
-
-COOKIE_SITE_POOL = {
-    "news": [
-        "https://www.bbc.com",
-        "https://www.theguardian.com",
-        "https://www.reuters.com",
-        "https://www.apnews.com",
-        "https://www.npr.org",
-    ],
-    "reference": [
-        "https://www.wikipedia.org",
-        "https://www.wikihow.com",
-        "https://www.merriam-webster.com",
-        "https://stackoverflow.com",
-    ],
-    "entertainment": [
-        "https://www.imdb.com",
-        "https://www.goodreads.com",
-        "https://www.youtube.com",
-    ],
-    "lifestyle": [
-        "https://www.weather.com",
-        "https://www.allrecipes.com",
-        "https://www.tripadvisor.com",
-    ],
-    "tech": [
-        "https://news.ycombinator.com",
-        "https://www.theverge.com",
-        "https://techcrunch.com",
-    ],
-    "shopping": [
-        "https://www.amazon.com",
-        "https://www.etsy.com",
-    ],
-    "search": [
-        "https://www.google.com",
-        "https://www.bing.com",
-    ],
-}
-
 DWELL_MIN           = 25
 DWELL_MAX           = 90
 INTERNAL_LINK_PROB  = 0.35
@@ -487,6 +447,12 @@ def _visit_site(driver, url: str) -> bool:
         if any(w in title.lower() for w in ("captcha", "verify", "robot", "blocked")):
             log.warning("[COOKIE]  %s returned challenge page — skipping", url)
             return False
+
+        try:
+            driver.execute_script("return 1")
+        except Exception:
+            log.warning("[COOKIE]  browser unresponsive after loading %s — aborting session", url)
+            raise  # propagates up to cookie_robot() exception handler
 
         dwell = random.uniform(DWELL_MIN, DWELL_MAX)
         log.info("[COOKIE]  dwelling %.0fs on %s", dwell, url)

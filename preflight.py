@@ -1,9 +1,9 @@
 import random
 from config import (
-    PREFLIGHT_SITES_POOL,
     PREFLIGHT_SITES_MIN, PREFLIGHT_SITES_MAX,
     PREFLIGHT_DWELL_MIN, PREFLIGHT_DWELL_MAX,
 )
+from pools import PREFLIGHT_SITES_POOL
 from utils import log
 from scroll import stochastic_scroll, navigate_to
 from selenium.common.exceptions import (
