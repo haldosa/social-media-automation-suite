@@ -579,12 +579,29 @@ def view_profile_from_feed(driver) -> bool:
         bezier_move(driver, target)
         precise_sleep(random.uniform(0.5, 1.5))
 
+        # Click the profile link and wait for navigation
+        _cdp_click_element(driver, target)
         precise_sleep(random.uniform(1.5, 3.0))
-        stochastic_scroll(driver, total_seconds=random.uniform(2, 4))
 
-        # Follow gate ,  15 % probabilistic
+        # Verify we actually navigated to the profile
+        current = driver.current_url
+        if "threads" not in current or current.rstrip("/") == TARGET_SOCIAL_URL.rstrip("/"):
+            log.debug("[PROFILE VIEW]  navigation did not occur — returning to feed")
+            _safe_return_to_feed(driver, "profile_view_no_nav")
+            return False
+
+        log.info("[PROFILE VIEW]  landed on %s", current[:60])
+
+        # Scroll the profile
+        stochastic_scroll(driver, total_seconds=random.uniform(8, 20))
+
+        # Follow gate — 15% probabilistic
         if random.random() < 0.15:
             follow_from_profile_page(driver)
+
+        # Navigate back to feed
+        navigate_history(driver, "back")
+        precise_sleep(random.uniform(1.0, 2.5))
 
     except (TimeoutException, WebDriverException) as exc:
         log.warning("[ACTION END]  action=profile_view  result=failure  error=%s", exc)

@@ -19,9 +19,10 @@ from config import (
     ACTIVE_HOURS_RANGE, INACTIVE_DAY_PROB,
     BUFFER_MIN_MIN, BUFFER_MAX_MIN,
     BUFFER_LONG_PROB, BUFFER_LONG_MIN, BUFFER_LONG_MAX,
+    DEMO_PROFILES
 )
 from utils import log, cleanup_screenshots, precise_sleep
-from api import get_running_browsers, _resolve_attached_address, start_profile, stop_profile
+from api import get_running_browsers, _resolve_attached_address, start_profile, stop_profile, start_chrome, stop_chrome
 from browser import connect_selenium
 from preflight import run_preflight
 from scroll import navigate_to
@@ -59,7 +60,29 @@ def _build_parser() -> argparse.ArgumentParser:
             "via the API."
         ),
     )
-
+    p.add_argument(
+    "--demo",
+    action="store_true",
+    help=(
+        "Demo mode — launches plain Chrome with CDP enabled instead of "
+        "NstBrowser. No anti-detect features. Useful for showcase/testing."
+    ),
+)
+    p.add_argument(
+    "--demo-port",
+    metavar="PORT",
+    type=int,
+    dest="demo_port",
+    help=f"CDP port for demo Chrome instance (default: 9222).",
+)
+    p.add_argument(
+        "--demo-profile-dir",
+        metavar="PATH",
+        dest="demo_profile_dir",
+        help=(
+            f"Chrome user data directory for demo mode "
+        ),
+    )
     p.add_argument(
         "--label",
         metavar="NAME",
@@ -205,9 +228,26 @@ def main() -> None:
     log.info("NstBrowser Warmer (API v2) -- %s",
              datetime.now().strftime("%Y-%m-%d %H:%M"))
 
-    # ---------------------------------------------------------------- #
-    #  DAEMON MODE  —  persistent 24/7 scheduler
-    # ---------------------------------------------------------------- #
+    # ── Demo mode: swap NstBrowser API for plain Chrome ──────────────────────
+    if args.demo:
+        _demo_lookup = {p["id"]: p for p in DEMO_PROFILES}
+
+        def _start(pid):
+            profile = _demo_lookup.get(pid)
+            if not profile:
+                raise RuntimeError(f"No demo profile configured with id '{pid}'")
+            return start_chrome(profile)
+
+        def _stop(pid):
+            stop_chrome(pid)
+
+        profile_ids_to_run = [p["id"] for p in DEMO_PROFILES]
+    else:
+        _start = start_profile
+        _stop  = stop_profile
+        profile_ids_to_run = PROFILE_IDS
+
+    # ── Daemon mode ───────────────────────────────────────────────────────────
     if getattr(args, 'daemon', False):
         if args.test_actions:
             log.error("--daemon cannot be combined with --test-actions")
@@ -215,61 +255,50 @@ def main() -> None:
         daemon_main()
         return
 
-    # ---------------------------------------------------------------- #
-    #  ATTACH MODE  ,  reuse already-open browser, no daily open consumed
-    # ---------------------------------------------------------------- #
-    profile_id = args.profile_id  # None if not specified
+    # ── Resolve single profile-id if specified ────────────────────────────────
+    profile_id = args.profile_id
     address    = None
 
-    if profile_id:
-        # Check if profile is already open in NstBrowser
+    if profile_id and not args.demo:
         try:
-            running    = get_running_browsers()
+            running     = get_running_browsers()
             running_ids = {b.get("id") or b.get("profileId") for b in running}
             if profile_id in running_ids:
                 log.info("[MAIN]  profile %s is already open — attaching",
-                        profile_id[:12])
+                         profile_id[:12])
                 address = _resolve_attached_address(profile_id)
                 log.info("[MAIN]  resolved debug address: %s", address)
             else:
                 log.info("[MAIN]  profile %s is not open — will launch",
-                        profile_id[:12])
+                         profile_id[:12])
         except Exception as exc:
             log.warning("[MAIN]  could not query running browsers (%s) — "
                         "proceeding with normal launch", exc)
 
-    # ---------------------------------------------------------------- #
-    #  NORMAL MODE  ,  open every profile via the API
-    # ---------------------------------------------------------------- #
-
-    # --test-actions in normal mode: skip inactive-day / time-of-day guards,
-    # open the first profile via the API, run the diagnostic, then close it.
+    # ── Test-actions mode ─────────────────────────────────────────────────────
     if args.test_actions:
-        pid = PROFILE_IDS[0] if PROFILE_IDS else None
+        pid = profile_ids_to_run[0] if profile_ids_to_run else None
         if not pid:
-            log.error("No profiles configured in PROFILE_IDS ,  cannot run test-actions.")
+            log.error("No profiles configured — cannot run test-actions.")
             return
         log.info("--test-actions (normal mode): testing profile %s", pid)
-        driver = None
+        driver   = None
         launched = False
         try:
-            info = start_profile(pid)
+            if args.demo:
+                info = _start(pid)
+            else:
+                info = start_profile(pid)
             launched = True
             driver = connect_selenium(info["webSocketDebuggerUrl"])
             driver.set_page_load_timeout(30)
             init_cursor_pos(driver)
-
-            #if not args.no_preflight:
-            #    run_preflight(driver)
-
             log.info("Navigating to %s", TARGET_SOCIAL_URL)
             navigate_to(driver, TARGET_SOCIAL_URL)
             precise_sleep(random.uniform(2, 5))
-
             if not check_login_status(driver):
-                log.error("Profile '%s' appears logged out -- cannot run test-actions.", pid)
+                log.error("Profile '%s' appears logged out — cannot run test-actions.", pid)
                 return
-
             _filter = args.test_actions if args.test_actions != "__all__" else None
             run_test_actions(driver, profile_id=pid, filter_action=_filter)
         except (TimeoutException, RuntimeError, WebDriverException) as exc:
@@ -281,89 +310,107 @@ def main() -> None:
                 except Exception:
                     pass
             if launched:
-                stop_profile(pid)
+                _stop(pid)
         log.info("=" * 60)
         log.info("Done (test-actions).")
         return
 
-    # Inactive-day simulation ,  models days when a real user never opens Threads.
-    if random.random() < INACTIVE_DAY_PROB:
-        log.info(
-            "Simulating inactive day (%.0f%% probability) ,  no profiles run today.",
-            INACTIVE_DAY_PROB * 100,
-        )
-        return
+    # ── Inactive-day + active-hours guards (skipped in demo mode) ────────────
+    if not args.demo:
+        if random.random() < INACTIVE_DAY_PROB:
+            log.info(
+                "Simulating inactive day (%.0f%% probability) — no profiles run today.",
+                INACTIVE_DAY_PROB * 100,
+            )
+            return
 
-    # Time-of-day scheduling guard — wait until active hours instead of exiting.
-    while True:
-        _now = datetime.now()
-        _now_hour = _now.hour
-        if ACTIVE_HOURS_RANGE[0] <= _now_hour <= ACTIVE_HOURS_RANGE[1]:
-            break  # within active window — proceed normally
-        # Calculate seconds until the next active-window start.
-        _start_hour = ACTIVE_HOURS_RANGE[0]
-        _next_active = _now.replace(hour=_start_hour, minute=0, second=0, microsecond=0)
-        if _next_active <= _now:
-            # Already past today's window start time (i.e. we're after end hour),
-            # so target tomorrow's start.
-            _next_active += timedelta(days=1)
-        _wait_sec = (_next_active - _now).total_seconds()
-        log.info(
-            "Outside active hours (%02d:00\u2013%02d:00 local) — sleeping %.0f min until %s.",
-            ACTIVE_HOURS_RANGE[0], ACTIVE_HOURS_RANGE[1],
-            _wait_sec / 60, _next_active.strftime("%H:%M"),
-        )
-        time.sleep(min(_wait_sec, 60))  # re-check every minute to handle clock drift
+        while True:
+            _now      = datetime.now()
+            _now_hour = _now.hour
+            if ACTIVE_HOURS_RANGE[0] <= _now_hour <= ACTIVE_HOURS_RANGE[1]:
+                break
+            _start_hour  = ACTIVE_HOURS_RANGE[0]
+            _next_active = _now.replace(hour=_start_hour, minute=0,
+                                        second=0, microsecond=0)
+            if _next_active <= _now:
+                _next_active += timedelta(days=1)
+            _wait_sec = (_next_active - _now).total_seconds()
+            log.info(
+                "Outside active hours (%02d:00–%02d:00 local) — "
+                "sleeping %.0f min until %s.",
+                ACTIVE_HOURS_RANGE[0], ACTIVE_HOURS_RANGE[1],
+                _wait_sec / 60, _next_active.strftime("%H:%M"),
+            )
+            time.sleep(min(_wait_sec, 60))
 
-    log.info("Target: %s  |  Profiles: %d", TARGET_SOCIAL_URL, len(PROFILE_IDS))
-
-    profile_order = PROFILE_IDS.copy()
+    # ── Build profile order ───────────────────────────────────────────────────
+    log.info("Target: %s  |  Profiles: %d",
+             TARGET_SOCIAL_URL, len(profile_ids_to_run))
+    profile_order = profile_ids_to_run.copy()
     random.shuffle(profile_order)
     log.info("Execution order: %s", profile_order)
 
-    # Get currently running profiles once before the loop
-    try:
-        running_browsers = get_running_browsers()
-        running_ids = {b.get("id") or b.get("profileId") for b in running_browsers}
-    except Exception as exc:
-        log.warning("[MAIN]  could not query running browsers: %s", exc)
-        running_ids = set()
+    # ── Get currently running NstBrowser profiles ─────────────────────────────
+    running_ids = set()
+    if not args.demo:
+        try:
+            running_browsers = get_running_browsers()
+            running_ids = {b.get("id") or b.get("profileId")
+                           for b in running_browsers}
+            if running_browsers:
+                log.info("Already running at startup: %s",
+                         [b.get("profileId") for b in running_browsers])
+        except Exception as exc:
+            log.warning("[MAIN]  could not query running browsers: %s", exc)
 
+    # ── Main loop ─────────────────────────────────────────────────────────────
     for idx, pid in enumerate(profile_order):
         log.info("-" * 60)
         log.info("[%d/%d] Starting: %s", idx + 1, len(profile_order), pid)
 
-        if pid in running_ids:
-            # Profile already open — attach instead of launching
-            log.info("[MAIN]  %s is already open — attaching", pid[:12])
+        if args.demo:
             try:
-                address = _resolve_attached_address(pid)
-                ran_session = warm_profile_attached(
-                    debugger_address=address,
-                    profile_id=pid,
-                    skip_preflight=args.no_preflight,
-                    close_after=False,
-                )
+                info        = _start(pid)
+                ws_url      = info["webSocketDebuggerUrl"]
+                ran_session = warm_profile(pid, ws_url=ws_url,
+                                           skip_preflight=args.no_preflight)
             except Exception as exc:
-                log.error("[MAIN]  attach failed for %s: %s", pid[:12], exc)
+                log.error("[DEMO]  failed for %s: %s", pid, exc)
                 ran_session = False
+            finally:
+                _stop(pid)
         else:
-            ran_session = warm_profile(pid, skip_preflight=args.no_preflight)
+            if pid in running_ids:
+                log.info("[MAIN]  %s is already open — attaching", pid[:12])
+                try:
+                    address = _resolve_attached_address(pid)
+                    ran_session = warm_profile_attached(
+                        debugger_address=address,
+                        profile_id=pid,
+                        skip_preflight=args.no_preflight,
+                        close_after=False,
+                    )
+                except Exception as exc:
+                    log.error("[MAIN]  attach failed for %s: %s", pid[:12], exc)
+                    ran_session = False
+            else:
+                ran_session = warm_profile(pid, skip_preflight=args.no_preflight)
 
         if idx < len(profile_order) - 1:
             if ran_session:
                 if random.random() < BUFFER_LONG_PROB:
                     buf = random.uniform(BUFFER_LONG_MIN * 60, BUFFER_LONG_MAX * 60)
-                    log.info("Extended buffer: %.1f min before next profile...", buf / 60)
+                    log.info("Extended buffer: %.1f min before next profile...",
+                             buf / 60)
                 else:
                     buf = random.uniform(BUFFER_MIN_MIN * 60, BUFFER_MAX_MIN * 60)
                     log.info("Buffer: %.1f min before next profile...", buf / 60)
                 time.sleep(buf)
             else:
                 log.info("Profile failed — skipping inter-profile buffer.")
+
     log.info("=" * 60)
     log.info("All profiles warmed. Done.")
-
 
 if __name__ == "__main__":
     main()

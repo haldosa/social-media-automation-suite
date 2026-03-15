@@ -589,51 +589,49 @@ def run_social_session(
 #  SINGLE PROFILE WARM-UP ORCHESTRATOR
 # ================================================================== #
 
-def warm_profile(profile_id: str, weights: dict | None = None, skip_preflight: bool = False) -> bool:
-    """Full end-to-end warm-up for one NstBrowser profile.
-
-    Returns True if a Threads session was actually started, False if the
-    profile failed or was skipped before reaching Threads.
-    """
-    driver      = None
-    launched    = False
+def warm_profile(
+    profile_id: str,
+    skip_preflight: bool = False,
+    ws_url: str | None = None,        # add this
+) -> bool:
+    driver   = None
+    launched = False
     ran_session = False
-
     try:
-        # 1. Launch browser via POST /api/v2/browsers/{profileId}
-        info     = start_profile(profile_id)
-        launched = True
+        if ws_url:
+            # Demo mode — browser already launched externally
+            launched = False  # don't call stop_profile in finally
+            log.info("Connecting to pre-launched browser  |  ws=%s", ws_url)
+        else:
+            # Normal mode — launch via NstBrowser API
+            info   = start_profile(profile_id)
+            ws_url = info["webSocketDebuggerUrl"]
+            launched = True
 
-        # 2. Attach Selenium via CDP
-        driver = connect_selenium(info["webSocketDebuggerUrl"])
+        driver = connect_selenium(ws_url)
         driver.set_page_load_timeout(30)
-        init_cursor_pos(driver)    # seed a random start position so the first park arc is never flat at y=0
+        init_cursor_pos(driver)
 
-        # 3. Pre-flight
         if skip_preflight:
             log.info("Preflight skipped (--no-preflight).")
         else:
             run_preflight(driver)
-        # 4. Navigate to Threads
+
         log.info("Navigating to %s", TARGET_SOCIAL_URL)
         navigate_to(driver, TARGET_SOCIAL_URL)
         precise_sleep(random.uniform(2, 5))
 
-        # 4b. Verify the profile is logged in before wasting a session
         if not check_login_status(driver):
-            log.error(
-                "Profile %s appears logged out ,  skipping session for this profile.",
-                profile_id,
-            )
+            log.error("Profile %s appears logged out — skipping.", profile_id)
             return False
 
-        # 5. Main activity session ,  smooth log-normal duration
         ran_session = True
         session_sec = _sample_session_duration_sec()
         log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
-        run_social_session(driver, session_sec, profile_id=profile_id, **(weights or {}))
+        run_social_session(driver, session_sec, profile_id=profile_id)
 
-    except (TimeoutException, RuntimeError, WebDriverException, CDPConnectionDead) as exc:
+    except (TimeoutException, RuntimeError, WebDriverException,
+            CDPConnectionDead) as exc:
         log.error("Error on profile %s: %s", profile_id, exc)
         if driver:
             ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -643,12 +641,9 @@ def warm_profile(profile_id: str, weights: dict | None = None, skip_preflight: b
                 log.info("Screenshot saved: %s", path)
             except Exception as ss_err:
                 log.warning("Screenshot failed: %s", ss_err)
-
     finally:
         if driver:
             try:
-                # Vary close behaviour ,  sometimes linger before quitting so
-                # session-duration metadata isn’t perfectly uniform across profiles.
                 if random.random() < 0.40:
                     time.sleep(random.uniform(2.0, 7.0))
                 driver.quit()
@@ -658,7 +653,6 @@ def warm_profile(profile_id: str, weights: dict | None = None, skip_preflight: b
             stop_profile(profile_id)
 
     return ran_session
-
 
 def warm_profile_attached(
     debugger_address: str,

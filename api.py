@@ -1,5 +1,8 @@
+import subprocess
+import time
 import requests
-from config import NSTBROWSER_BASE_URL, NSTBROWSER_API_KEY
+import os
+from config import NSTBROWSER_BASE_URL, NSTBROWSER_API_KEY, _SCRIPT_DIR
 from utils import log
 # ================================================================== #
 #  NSTBROWSER API v2
@@ -102,3 +105,98 @@ def _resolve_attached_address(profile_id: str) -> str:
         "Open the profile in NstBrowser before using --attach-profile."
     )
 
+# Common Chrome executable paths — first match wins
+_CHROME_CANDIDATES = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+]
+
+
+def _find_chrome_exe() -> str:
+    """Return the first Chrome executable that exists on this machine."""
+    import os
+    for path in _CHROME_CANDIDATES:
+        if os.path.isfile(path):
+            return path
+    raise RuntimeError(
+        "Chrome executable not found. Install Chrome or set the path manually "
+        "in _CHROME_CANDIDATES inside api.py."
+    )
+
+
+def get_chrome_ws_url(port: int = 9222) -> str:
+    """
+    Query Chrome's CDP endpoint and return the browser-level WebSocket URL.
+    Chrome must already be running with --remote-debugging-port=<port>.
+    """
+    try:
+        resp = requests.get(
+            f"http://localhost:{port}/json/version", timeout=5
+        )
+        resp.raise_for_status()
+        return resp.json()["webSocketDebuggerUrl"]
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not reach Chrome CDP on port {port}. "
+            f"Is Chrome running with --remote-debugging-port={port}? "
+            f"Error: {exc}"
+        )
+
+
+_chrome_procs: dict[str, subprocess.Popen] = {}  # keyed by profile id
+
+
+def start_chrome(profile: dict) -> dict:
+    """
+    Launch a plain Chrome instance for a demo profile.
+    profile = {"id": "demo1", "port": 9222, "dir": "C:\\..."}
+    """
+    pid  = profile["id"]
+    port = profile["port"]
+    dir_ = profile["dir"]
+
+    os.makedirs(dir_, exist_ok=True)
+    exe = _find_chrome_exe()
+
+    log.info("[DEMO]  launching Chrome  |  id=%s  |  port=%d", pid, port)
+
+    proc = subprocess.Popen(
+        [
+            exe,
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={dir_}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    _chrome_procs[pid] = proc
+    log.info("[DEMO]  Chrome launched  |  id=%s  |  pid=%d", pid, proc.pid)
+
+    for _ in range(20):
+        try:
+            ws_url = get_chrome_ws_url(port)
+            log.info("[DEMO]  CDP ready  |  id=%s  |  ws=%s", pid, ws_url)
+            return {"webSocketDebuggerUrl": ws_url, "port": port, "id": pid}
+        except RuntimeError:
+            time.sleep(0.5)
+
+    raise RuntimeError(f"Chrome CDP did not become available for {pid} on port {port}")
+
+
+def stop_chrome(profile_id: str) -> None:
+    """Terminate the Chrome instance for the given demo profile."""
+    proc = _chrome_procs.get(profile_id)
+    if proc and proc.poll() is None:
+        log.info("[DEMO]  stopping Chrome  |  id=%s  |  pid=%d", profile_id, proc.pid)
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        del _chrome_procs[profile_id]
+    else:
+        log.debug("[DEMO]  stop_chrome called but no process found for %s", profile_id)

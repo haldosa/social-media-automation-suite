@@ -118,3 +118,9 @@ _HEARTBEAT_INTERVAL_SEC = 300                    # 5 minutes
 
 #NICHE_ENGAGEMENT_PROB = 0.85   # probability of engaging with on-topic post
 #OFFTOPIC_ENGAGEMENT_PROB = 0.08  # probability of engaging with off-topic post
+
+# ── Demo mode (plain Chrome, no anti-detect) ──────────────────────────────────
+DEMO_PROFILES = [
+    {"id": "demo1", "port": 9222, "dir": r"C:\Users\User\AppData\Local\Google\Chrome\User Data\Profile 4"},
+    {"id": "demo2", "port": 9223, "dir": r"C:\Users\User\AppData\Local\Google\Chrome\User Data\Profile 5"},
+]
