@@ -609,9 +609,11 @@ def warm_profile(profile_id: str, weights: dict | None = None, skip_preflight: b
         driver.set_page_load_timeout(30)
         init_cursor_pos(driver)    # seed a random start position so the first park arc is never flat at y=0
 
-        # 3. Pre-flight: Wikipedia only
-        run_preflight(driver)
-
+        # 3. Pre-flight
+        if skip_preflight:
+            log.info("Preflight skipped (--no-preflight).")
+        else:
+            run_preflight(driver)
         # 4. Navigate to Threads
         log.info("Navigating to %s", TARGET_SOCIAL_URL)
         navigate_to(driver, TARGET_SOCIAL_URL)

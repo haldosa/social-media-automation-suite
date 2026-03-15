@@ -47,46 +47,19 @@ def _build_parser() -> argparse.ArgumentParser:
         Normal (no flags)
           Opens every profile in PROFILE_IDS via the NstBrowser API, runs a
           full warm-up session for each, then closes them (consumes daily opens).
-
-        --attach HOST:PORT            [saves daily opens]
-          Connects directly to an already-open NstBrowser profile via its CDP
-          debug address.  Get the address from NstBrowser UI:
-            right-click running profile -> Remote Debug / Copy Debug Address
-
-        --attach-profile PROFILE_ID   [saves daily opens]
-          Queries GET /api/v2/browsers to resolve the debug address of a
-          running profile automatically, then attaches to it.
-
-        EXAMPLES
-        --------
-          python nstbrowser_warmer.py
-          python nstbrowser_warmer.py --attach 127.0.0.1:9222
-          python nstbrowser_warmer.py --attach 127.0.0.1:9222 --no-preflight
-          python nstbrowser_warmer.py --attach 127.0.0.1:9222 --label myaccount
-          python nstbrowser_warmer.py --attach-profile 251894f1-0abc-4e5b-831c-1d3d594de9aa
-          python nstbrowser_warmer.py --attach-profile 251894f1-... --no-preflight --close
         """),
     )
-
-    attach_group = p.add_mutually_exclusive_group()
-    attach_group.add_argument(
-        "--attach",
-        metavar="HOST:PORT",
-        help=(
-            "CDP debug address of an already-open NstBrowser profile "
-            "(e.g. 127.0.0.1:9222).  Browser is NOT opened or closed by "
-            "this script."
-        ),
-    )
-    attach_group.add_argument(
-        "--attach-profile",
+    p.add_argument(
+        "--profile-id",
         metavar="PROFILE_ID",
+        default=None,
         help=(
-            "UUID of a profile already open in NstBrowser.  The script "
-            "calls GET /api/v2/browsers to resolve the debug address "
-            "automatically."
+            "UUID of the profile to run. If the profile is already open in "
+            "NstBrowser, attaches to it automatically. If not, launches it "
+            "via the API."
         ),
     )
+
     p.add_argument(
         "--label",
         metavar="NAME",
@@ -232,100 +205,38 @@ def main() -> None:
     log.info("NstBrowser Warmer (API v2) -- %s",
              datetime.now().strftime("%Y-%m-%d %H:%M"))
 
-    # Build per-action weight overrides dict ,  only keys explicitly passed by
-    # the user are included; omitted keys fall back to run_social_session defaults.
-    weights: dict = {}
-    if args.like      is not None: weights["w_like"]    = args.like
-    if args.notify    is not None: weights["w_notify"]  = args.notify
-    if args.profile   is not None: weights["w_profile"] = args.profile
-    if args.read_post is not None: weights["w_read"]    = args.read_post
-    if args.comment   is not None: weights["w_comment"] = args.comment
-    if args.follow    is not None: weights["w_follow"]  = args.follow
-    if args.scroll    is not None: weights["w_top"]     = args.scroll
-    if args.search    is not None: weights["w_search"]  = args.search
-    if args.post      is not None: weights["w_post"]    = args.post
-    if weights:
-        log.info("Custom action weights: %s", weights)
-
     # ---------------------------------------------------------------- #
     #  DAEMON MODE  —  persistent 24/7 scheduler
     # ---------------------------------------------------------------- #
     if getattr(args, 'daemon', False):
-        if args.attach or args.attach_profile:
-            log.error("--daemon cannot be combined with --attach / --attach-profile")
-            return
         if args.test_actions:
             log.error("--daemon cannot be combined with --test-actions")
             return
-        daemon_main(weights=weights or None)
+        daemon_main()
         return
 
     # ---------------------------------------------------------------- #
     #  ATTACH MODE  ,  reuse already-open browser, no daily open consumed
     # ---------------------------------------------------------------- #
-    if args.attach or args.attach_profile:
-        if args.attach_profile:
-            pid   = args.attach_profile
-            label = args.label or pid
-            log.info("Attach-profile mode  |  profile=%s", pid)
-            try:
-                address = _resolve_attached_address(pid)
-            except RuntimeError as exc:
-                log.error("%s", exc)
-                return
-            log.info("Resolved debug address: %s", address)
-        else:
-            address = args.attach
-            label   = args.label or address
-            log.info("Attach mode  |  address=%s", address)
+    profile_id = args.profile_id  # None if not specified
+    address    = None
 
-        # ── TEST-ACTIONS diagnostic mode ─────────────────────────────────
-        if args.test_actions:
-            log.info("--test-actions mode: running single-pass diagnostic session")
-            driver = None
-            addr = address.replace("ws://", "").split("/")[0]
-            ws_url = f"ws://{addr}"
-            try:
-                driver = connect_selenium(ws_url)
-                driver.set_page_load_timeout(30)
-                init_cursor_pos(driver)
-
-                if not args.no_preflight:
-                    run_preflight(driver)
-
-                log.info("Navigating to %s", TARGET_SOCIAL_URL)
-                navigate_to(driver, TARGET_SOCIAL_URL)
-                precise_sleep(random.uniform(2, 5))
-
-                if not check_login_status(driver):
-                    log.error("Profile '%s' appears logged out -- cannot run test-actions.", label)
-                    return
-
-                _filter = args.test_actions if args.test_actions != "__all__" else None
-                run_test_actions(driver, profile_id=label, filter_action=_filter)
-            except (TimeoutException, RuntimeError, WebDriverException) as exc:
-                log.error("test-actions error on '%s': %s", label, exc)
-            finally:
-                if driver and args.close:
-                    try:
-                        driver.quit()
-                    except Exception:
-                        pass
-            log.info("=" * 60)
-            log.info("Done (test-actions).")
-            return
-        # ─────────────────────────────────────────────────────────────────
-
-        warm_profile_attached(
-            debugger_address=address,
-            profile_id=label,
-            skip_preflight=args.no_preflight,
-            close_after=args.close,
-            weights=weights or None,
-        )
-        log.info("=" * 60)
-        log.info("Done.")
-        return
+    if profile_id:
+        # Check if profile is already open in NstBrowser
+        try:
+            running    = get_running_browsers()
+            running_ids = {b.get("id") or b.get("profileId") for b in running}
+            if profile_id in running_ids:
+                log.info("[MAIN]  profile %s is already open — attaching",
+                        profile_id[:12])
+                address = _resolve_attached_address(profile_id)
+                log.info("[MAIN]  resolved debug address: %s", address)
+            else:
+                log.info("[MAIN]  profile %s is not open — will launch",
+                        profile_id[:12])
+        except Exception as exc:
+            log.warning("[MAIN]  could not query running browsers (%s) — "
+                        "proceeding with normal launch", exc)
 
     # ---------------------------------------------------------------- #
     #  NORMAL MODE  ,  open every profile via the API
@@ -348,8 +259,8 @@ def main() -> None:
             driver.set_page_load_timeout(30)
             init_cursor_pos(driver)
 
-            if not args.no_preflight:
-                run_preflight(driver)
+            #if not args.no_preflight:
+            #    run_preflight(driver)
 
             log.info("Navigating to %s", TARGET_SOCIAL_URL)
             navigate_to(driver, TARGET_SOCIAL_URL)
@@ -406,19 +317,38 @@ def main() -> None:
 
     log.info("Target: %s  |  Profiles: %d", TARGET_SOCIAL_URL, len(PROFILE_IDS))
 
-    running = get_running_browsers()
-    if running:
-        log.info("Already running at startup: %s",
-                 [b.get("profileId") for b in running])
-
     profile_order = PROFILE_IDS.copy()
     random.shuffle(profile_order)
     log.info("Execution order: %s", profile_order)
 
-    for idx, profile_id in enumerate(profile_order):
+    # Get currently running profiles once before the loop
+    try:
+        running_browsers = get_running_browsers()
+        running_ids = {b.get("id") or b.get("profileId") for b in running_browsers}
+    except Exception as exc:
+        log.warning("[MAIN]  could not query running browsers: %s", exc)
+        running_ids = set()
+
+    for idx, pid in enumerate(profile_order):
         log.info("-" * 60)
-        log.info("[%d/%d] Starting: %s", idx + 1, len(profile_order), profile_id)
-        ran_session = warm_profile(profile_id, weights=weights or None, skip_preflight=args.no_preflight)
+        log.info("[%d/%d] Starting: %s", idx + 1, len(profile_order), pid)
+
+        if pid in running_ids:
+            # Profile already open — attach instead of launching
+            log.info("[MAIN]  %s is already open — attaching", pid[:12])
+            try:
+                address = _resolve_attached_address(pid)
+                ran_session = warm_profile_attached(
+                    debugger_address=address,
+                    profile_id=pid,
+                    skip_preflight=args.no_preflight,
+                    close_after=False,
+                )
+            except Exception as exc:
+                log.error("[MAIN]  attach failed for %s: %s", pid[:12], exc)
+                ran_session = False
+        else:
+            ran_session = warm_profile(pid, skip_preflight=args.no_preflight)
 
         if idx < len(profile_order) - 1:
             if ran_session:
@@ -430,8 +360,7 @@ def main() -> None:
                     log.info("Buffer: %.1f min before next profile...", buf / 60)
                 time.sleep(buf)
             else:
-                log.info("Profile failed before reaching Threads ,  skipping inter-profile buffer.")
-
+                log.info("Profile failed — skipping inter-profile buffer.")
     log.info("=" * 60)
     log.info("All profiles warmed. Done.")
 

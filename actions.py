@@ -32,7 +32,86 @@ from mouse import (
 )
 from scroll import stochastic_scroll, navigate_to, navigate_history, smooth_scroll_chunk, _close_media_overlay
 from pools import SEARCH_TOPIC_POOL, COMMENT_POOL
+'''
+def _score_post_relevance(post_text: str) -> str:
+    """Returns 'primary', 'secondary', 'negative', or 'neutral'."""
+    text_lower = post_text.lower()
+    
+    if any(kw in text_lower for kw in NICHE_KEYWORDS["negative"]):
+        return "negative"
+    if any(kw in text_lower for kw in NICHE_KEYWORDS["primary"]):
+        return "primary"
+    if any(kw in text_lower for kw in NICHE_KEYWORDS["secondary"]):
+        return "secondary"
+    return "neutral"
 
+
+def _should_engage_with_post(post_text: str) -> bool:
+    """Decide whether to engage based on topical relevance."""
+    relevance = _score_post_relevance(post_text)
+    
+    if relevance == "negative":
+        return False
+    if relevance == "primary":
+        return random.random() < NICHE_ENGAGEMENT_PROB
+    if relevance == "secondary":
+        return random.random() < (NICHE_ENGAGEMENT_PROB * 0.5)
+    # neutral
+    return random.random() < OFFTOPIC_ENGAGEMENT_PROB
+
+def _score_post_relevance(post_text: str) -> str:
+    """Returns 'primary', 'secondary', 'negative', or 'neutral'."""
+    text_lower = post_text.lower()
+    
+    if any(kw in text_lower for kw in NICHE_KEYWORDS["negative"]):
+        return "negative"
+    if any(kw in text_lower for kw in NICHE_KEYWORDS["primary"]):
+        return "primary"
+    if any(kw in text_lower for kw in NICHE_KEYWORDS["secondary"]):
+        return "secondary"
+    return "neutral"
+
+
+def _should_engage_with_post(post_text: str) -> bool:
+    """Decide whether to engage based on topical relevance."""
+    relevance = _score_post_relevance(post_text)
+    
+    if relevance == "negative":
+        return False
+    if relevance == "primary":
+        return random.random() < NICHE_ENGAGEMENT_PROB
+    if relevance == "secondary":
+        return random.random() < (NICHE_ENGAGEMENT_PROB * 0.5)
+    # neutral
+    return random.random() < OFFTOPIC_ENGAGEMENT_PROB
+
+def _get_post_text(driver, element) -> str:
+    """Extract visible text content from a post element."""
+    try:
+        post = driver.execute_script("""
+            var el = arguments[0];
+            var container = el.closest('article') ||
+                            el.closest('[data-pressable-container]');
+            if (!container) return null;
+            
+            // Exclude username spans which have translate="no"
+            // Post body spans have dir="auto" but NO translate attribute
+            var spans = container.querySelectorAll('span[dir="auto"]');
+            for (var i = 0; i < spans.length; i++) {
+                var span = spans[i];
+                if (span.getAttribute('translate') === 'no') continue;
+                var text = span.innerText.trim();
+                if (text.length > 15) return text;
+            }
+            return null;
+        """, element)
+
+        return (post or "").strip()
+
+    except Exception as exc:
+        log.debug("[GET_POST_TEXT]  failed: %s", exc)
+        return "" 
+'''
 def _find_unliked_buttons_fallback(driver) -> list:
     """Legacy XPath/CSS fallback for like buttons ,  used when JS scoring fails."""
     results = []
@@ -253,6 +332,14 @@ def _attempt_like(driver, element) -> bool:
       6. Post-click pause (watching the heart animation)
     Returns True on success.
     """
+    '''
+    post_text = _get_post_text(driver, element)
+    log.info("[LIKE]  post_text extracted: %r", post_text[:80] if post_text else "EMPTY")
+    
+    if post_text and not _should_engage_with_post(post_text):
+        log.debug("[LIKE]  skipping off-topic post")
+        return False
+    '''
     try:
         log.info("[ LIKE ]  scrolling post into view + clicking like")
         scroll_element_into_loose_view(driver, element)

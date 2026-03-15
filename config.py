@@ -115,3 +115,6 @@ CHALLENGE_DOM_SELECTORS = [
 
 HEARTBEAT_FILE = "heartbeat.json"
 _HEARTBEAT_INTERVAL_SEC = 300                    # 5 minutes
+
+#NICHE_ENGAGEMENT_PROB = 0.85   # probability of engaging with on-topic post
+#OFFTOPIC_ENGAGEMENT_PROB = 0.08  # probability of engaging with off-topic post

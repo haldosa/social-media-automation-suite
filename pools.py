@@ -20,6 +20,7 @@ COOKIE_SITE_POOL = data["COOKIE_SITE_POOL"]
 # Search query pool ,  generic topics typed into the Threads search bar.
 # 70 % of search visits type one of these to model real query behaviour.
 SEARCH_TOPIC_POOL = data["search_topics"]
+#NICHE_KEYWORDS = data["NICHE_KEYWORDS"]
 
 def _get_profile_pool_shard(pool: list, profile_id: str) -> list:
     """Return the deterministic subset of *pool* assigned to *profile_id*.
