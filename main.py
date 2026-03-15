@@ -265,15 +265,19 @@ def main() -> None:
             running_ids = {b.get("id") or b.get("profileId") for b in running}
             if profile_id in running_ids:
                 log.info("[MAIN]  profile %s is already open — attaching",
-                         profile_id[:12])
+                        profile_id[:12])
                 address = _resolve_attached_address(profile_id)
                 log.info("[MAIN]  resolved debug address: %s", address)
             else:
                 log.info("[MAIN]  profile %s is not open — will launch",
-                         profile_id[:12])
+                        profile_id[:12])
         except Exception as exc:
             log.warning("[MAIN]  could not query running browsers (%s) — "
                         "proceeding with normal launch", exc)
+
+        # Single profile specified — override the run list
+        profile_ids_to_run = [profile_id]
+
 
     # ── Test-actions mode ─────────────────────────────────────────────────────
     if args.test_actions:

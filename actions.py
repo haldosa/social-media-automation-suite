@@ -415,21 +415,29 @@ def check_login_status(driver) -> bool:
             except NoSuchElementException:
                 continue
 
-        # Feed present ,  logged in
+# Feed present — but verify not showing login wall
         articles = driver.find_elements(
             By.CSS_SELECTOR,
             "article, div[data-pressable-container='true']",
         )
         if articles:
+            # Check for login wall — logged-out users see public feed + login panel
+            try:
+                login_wall = driver.find_element(
+                    By.CSS_SELECTOR, 
+                    "a[href*='/login']"
+
+                )
+                if login_wall.is_displayed():
+                    log.warning("[LOGIN]  status=logged_out  reason=login_wall_present  url=%s",
+                                url[:80])
+                    return False
+            except NoSuchElementException:
+                pass
+
             log.info("[LOGIN]  status=logged_in  feed_items=%d  url=%s",
-                     len(articles), url[:80])
+                    len(articles), url[:80])
             return True
-
-        # Fallback: on threads domain with no challenge signals
-        if "threads.net" in url or "threads.com" in url:
-            log.info("[LOGIN]  status=logged_in(presumed)  url=%s", url[:80])
-            return True
-
     except CDPConnectionDead:
         raise   # circuit breaker ,  propagate immediately
     except WebDriverException as exc:
