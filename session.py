@@ -62,7 +62,7 @@ _MARKOV_STATES = [
 # Columns: passive  active  notify  profile  read  comment  follow  top  search  post
 # Each row sums to ~1.0.
 _BASE_TRANSITION_MATRIX = {
-    "passive":      [0.35, 0.22, 0.03, 0.08, 0.14, 0.04, 0.03, 0.04, 0.05, 0.02],
+    "passive":      [0.25, 0.24, 0.04, 0.09, 0.15, 0.05, 0.04, 0.05, 0.06, 0.03],
     "active":       [0.45, 0.08, 0.03, 0.06, 0.20, 0.05, 0.03, 0.04, 0.04, 0.02],
     "notify":       [0.40, 0.10, 0.02, 0.15, 0.15, 0.03, 0.04, 0.03, 0.06, 0.02],
     "profile_view": [0.45, 0.15, 0.03, 0.04, 0.15, 0.04, 0.03, 0.04, 0.05, 0.02],
