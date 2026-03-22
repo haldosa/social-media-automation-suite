@@ -271,18 +271,30 @@ def daemon_main(weights: dict | None = None) -> None:
         for i, pid in enumerate(PROFILE_IDS):
             _ensure_profile_in_state(pid, state)
             stored_ts = state[pid].get("next_run_ts", 0.0)
-            if stored_ts and stored_ts > now:
+            
+            # Validate stored_ts — must be a positive float in the future
+            try:
+                valid_ts = (
+                    stored_ts
+                    and isinstance(stored_ts, (int, float))
+                    and stored_ts > now
+                    and stored_ts < now + (365 * 24 * 3600)  # sanity cap: max 1 year ahead
+                )
+            except Exception:
+                valid_ts = False
+
+            if valid_ts:
                 ts = stored_ts
                 log.info("[ DAEMON ]  %s  scheduled from state: %s",
-                         pid[:12], datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M"))
+                        pid[:12], datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M"))
             else:
-                # First launch or stale — stagger 0–90 min from now
                 stagger = random.uniform(0, 90 * 60)
                 ts = _clamp_to_active_hours(now + stagger)
                 state[pid]["next_run_ts"] = ts
                 log.info("[ DAEMON ]  %s  initial schedule: %s  (stagger=%.1f min)",
-                         pid[:12], datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M"),
-                         stagger / 60)
+                        pid[:12], datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M"),
+                        stagger / 60)
+
             heapq.heappush(heap, (ts, pid))
         _save_post_state(state)
 
@@ -383,7 +395,7 @@ def daemon_main(weights: dict | None = None) -> None:
         _ensure_profile_logger(profile_id)
 
         try:
-            ran_session = warm_profile(profile_id, weights=weights)
+            ran_session = warm_profile(profile_id, weights=None)
         except Exception as exc:
             log.error("[ DAEMON ]  %s  uncaught exception: %s", profile_id[:12], exc)
             ran_session = False

@@ -592,7 +592,8 @@ def run_social_session(
 def warm_profile(
     profile_id: str,
     skip_preflight: bool = False,
-    ws_url: str | None = None,        # add this
+    weights: dict | None = None,   
+    ws_url: str | None = None,       
 ) -> bool:
     driver   = None
     launched = False
