@@ -12,7 +12,7 @@ from config import (
     HEARTBEAT_FILE, _HEARTBEAT_INTERVAL_SEC,
     PROFILE_IDS, _SCRIPT_DIR,
 )
-from utils import log, _ensure_profile_logger, _active_profile_id
+from utils import _PROFILE_LOGS_DIR, log, _ensure_profile_logger, _active_profile_id
 from state import _load_post_state, _save_post_state
 from session import warm_profile
 from api import get_running_browsers
@@ -257,6 +257,12 @@ def daemon_main(weights: dict | None = None) -> None:
     log.info("[ DAEMON ]  starting 24/7 scheduler  |  profiles=%d  |  pid=%d",
              len(PROFILE_IDS), os.getpid())
 
+    print(f"[DEBUG] profile logs dir: {_PROFILE_LOGS_DIR}")
+    log.info("[ DAEMON ]  starting 24/7 scheduler  |  profiles=%d  |  pid=%d",
+         len(PROFILE_IDS), os.getpid())
+    from utils import _profile_log_handlers
+    print(f"[DEBUG] existing profile log handlers at startup: {list(_profile_log_handlers.keys())}")
+
     # ── Initialise per-profile loggers ───────────────────────────────────
     for pid in PROFILE_IDS:
         _ensure_profile_logger(pid)
@@ -394,8 +400,14 @@ def daemon_main(weights: dict | None = None) -> None:
         _profile_token = _active_profile_id.set(profile_id)
         _ensure_profile_logger(profile_id)
 
+        # Verify the contextvar is readable from this thread
+        from utils import _active_profile_id as _cv_check, _profile_log_handlers as _ph_check
+        print(f"[CTX DEBUG] after set: get()={_cv_check.get('')[:12] if _cv_check.get('') else 'EMPTY'}")
+        print(f"[CTX DEBUG] handlers: {list(_ph_check.keys())[:2]}")
+
         try:
-            ran_session = warm_profile(profile_id, weights=None)
+            ran_session = warm_profile(profile_id)
+
         except Exception as exc:
             log.error("[ DAEMON ]  %s  uncaught exception: %s", profile_id[:12], exc)
             ran_session = False

@@ -15,7 +15,7 @@ from utils import log, precise_sleep, _get_ctx, _session_local, SessionContext, 
 from pools import COMMENT_POOL, POST_CAPTION_POOL, SEARCH_TOPIC_POOL, _get_profile_pool_shard
 from browser import _get_typing_dna
 from mouse import bezier_move_to_coords, CDPConnectionDead, init_cursor_pos
-from scroll import navigate_to
+from scroll import navigate_to, stochastic_scroll
 from actions import (
     passive_action, active_action, read_post_action,
     comment_on_post, check_notifications_action,
@@ -629,8 +629,29 @@ def warm_profile(
         ran_session = True
         session_sec = _sample_session_duration_sec()
         log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
-        run_social_session(driver, session_sec, profile_id=profile_id)
 
+        # ── Daily post guarantee ──────────────────────────────────────────────
+        # If account is >= 7 days old and hasn't posted today, force a post
+        # early in this session before the normal Markov session begins.
+        try:
+            _state = _load_post_state()
+            _ensure_profile_in_state(profile_id, _state)
+            _first = _state[profile_id].get("first_seen", "")
+            _account_days = (date.today() - date.fromisoformat(_first)).days if _first else 0
+            _today = date.today().isoformat()
+            _posts_today = _state[profile_id].get("daily", {}).get(_today, {}).get("posts", 0)
+
+            if _account_days >= 7 and _posts_today == 0:
+                log.info("[POST GUARANTEE]  account_days=%d  posts_today=0 — "
+                        "forcing post before session", _account_days)
+                # Small human-like delay before posting
+                precise_sleep(random.uniform(8, 20))
+                stochastic_scroll(driver, total_seconds=random.uniform(15, 30))
+                post_action(driver, profile_id)
+        except Exception as exc:
+            log.warning("[POST GUARANTEE]  check failed: %s", exc)
+
+        run_social_session(driver, session_sec, profile_id=profile_id)
     except (TimeoutException, RuntimeError, WebDriverException,
             CDPConnectionDead) as exc:
         log.error("Error on profile %s: %s", profile_id, exc)
