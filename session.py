@@ -600,11 +600,11 @@ def warm_profile(
     ran_session = False
     try:
         if ws_url:
-            # Demo mode — browser already launched externally
+            # Browser already launched externally
             launched = False  # don't call stop_profile in finally
             log.info("Connecting to pre-launched browser  |  ws=%s", ws_url)
         else:
-            # Normal mode — launch via NstBrowser API
+            # Normal mode — launch configured Chrome profile
             info   = start_profile(profile_id)
             ws_url = info["webSocketDebuggerUrl"]
             launched = True
@@ -684,19 +684,14 @@ def warm_profile_attached(
     weights: dict | None = None,
 ) -> None:
     """
-    Run a warm-up session on a browser that is *already open* in NstBrowser.
+    Run a warm-up session on a browser that is *already open*.
 
-    No ``start_profile`` / ``stop_profile`` API call is made, so the daily
-    open quota is not consumed.
+    No ``start_profile`` / ``stop_profile`` call is made.
 
     Parameters
     ----------
     debugger_address : str
-        CDP host:port, e.g. ``127.0.0.1:9222``.  Obtain it from:
-          - NstBrowser UI -> right-click running profile -> Remote Debug /
-            Copy Debug Address
-          - ``GET /api/v2/browsers`` -> ``port`` field  (use ``--attach-profile``
-            to resolve this automatically)
+        CDP host:port, e.g. ``127.0.0.1:9222``.
     profile_id : str
         Label for log messages and screenshot filenames only.
     skip_preflight : bool
