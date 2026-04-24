@@ -15,7 +15,6 @@ from config import (
 from utils import _PROFILE_LOGS_DIR, log, _ensure_profile_logger, _active_profile_id
 from state import _load_post_state, _save_post_state
 from session import warm_profile
-from api import get_running_browsers
 from state import _post_state_locked, _ensure_profile_in_state
 
 # ================================================================== #

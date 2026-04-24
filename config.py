@@ -19,21 +19,30 @@ if not os.path.isfile(_POOLS_PATH):
         "Set POOLS_JSON_PATH in your .env or place pools.json next to the script."
     )
 
-NSTBROWSER_BASE_URL = "http://localhost:8848/api/v2"  # official v2 base endpoint
+# ── Chrome profiles (primary runtime flow) ─────────────────────────────────────
+CHROME_PROFILES = [
+    {"id": "demo1", "port": 9222, "dir": r"C:\Users\User\AppData\Local\Google\Chrome\User Data\Profile 4"},
+    {"id": "demo2", "port": 9223, "dir": r"C:\Users\User\AppData\Local\Google\Chrome\User Data\Profile 5"},
+]
+_CHROME_PROFILE_IDS = {p["id"] for p in CHROME_PROFILES}
 
-NSTBROWSER_API_KEY  = os.getenv("NSTBROWSER_API_KEY")
-if not NSTBROWSER_API_KEY:
-    raise SystemExit("NSTBROWSER_API_KEY env var is not set. Add it to your .env file.")
+_raw_profiles = os.getenv("PROFILE_IDS", "").strip()
+if _raw_profiles:
+    _parsed_profiles = [p.strip() for p in _raw_profiles.split(",") if p.strip()]
+    PROFILE_IDS = [pid for pid in _parsed_profiles if pid in _CHROME_PROFILE_IDS]
+    if not PROFILE_IDS:
+        PROFILE_IDS = [p["id"] for p in CHROME_PROFILES]
+else:
+    PROFILE_IDS = [p["id"] for p in CHROME_PROFILES]
 
-_raw_profiles = os.getenv("PROFILE_IDS")
-if not _raw_profiles:
-    raise SystemExit("PROFILE_IDS env var is not set. Add it to your .env file (comma-separated).")
-PROFILE_IDS = [p.strip() for p in _raw_profiles.split(",") if p.strip()]
-
-_raw_cookie_profiles = os.getenv("COOKIE_PROFILE_IDS")
-#if not _raw_cookie_profiles:
-#    raise SystemExit("COOKIE_PROFILE_IDS env var is not set. Add it to your .env file (comma-separated).")
-COOKIE_PROFILE_IDS = [p.strip() for p in _raw_cookie_profiles.split(",") if p.strip()]
+_raw_cookie_profiles = os.getenv("COOKIE_PROFILE_IDS", "").strip()
+if _raw_cookie_profiles:
+    _parsed_cookie_profiles = [p.strip() for p in _raw_cookie_profiles.split(",") if p.strip()]
+    COOKIE_PROFILE_IDS = [pid for pid in _parsed_cookie_profiles if pid in _CHROME_PROFILE_IDS]
+    if not COOKIE_PROFILE_IDS:
+        COOKIE_PROFILE_IDS = PROFILE_IDS.copy()
+else:
+    COOKIE_PROFILE_IDS = PROFILE_IDS.copy()
 
 TARGET_SOCIAL_URL   = "https://www.threads.net"       # change to your target
 PREFLIGHT_SITES_MIN  = 2    # minimum number of pre-flight sites to visit
@@ -119,8 +128,5 @@ _HEARTBEAT_INTERVAL_SEC = 300                    # 5 minutes
 #NICHE_ENGAGEMENT_PROB = 0.85   # probability of engaging with on-topic post
 #OFFTOPIC_ENGAGEMENT_PROB = 0.08  # probability of engaging with off-topic post
 
-# ── Demo mode (plain Chrome, no anti-detect) ──────────────────────────────────
-DEMO_PROFILES = [
-    {"id": "demo1", "port": 9222, "dir": r"C:\Users\User\AppData\Local\Google\Chrome\User Data\Profile 4"},
-    {"id": "demo2", "port": 9223, "dir": r"C:\Users\User\AppData\Local\Google\Chrome\User Data\Profile 5"},
-]
+# Backward compatibility alias; Chrome profiles are now the primary flow.
+DEMO_PROFILES = CHROME_PROFILES
