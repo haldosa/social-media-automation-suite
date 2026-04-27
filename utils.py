@@ -67,19 +67,15 @@ class _ProfileLogFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         pid = _active_profile_id.get("")
-        if not pid:
-            return True  # no active profile, pass through normally
-        if pid in _profile_log_handlers:
+        if pid and pid in _profile_log_handlers:
             _profile_log_handlers[pid].handle(record)
-        else:
-            print(f"[FILTER DEBUG] pid={pid[:12]} but no handler found, handlers={list(_profile_log_handlers.keys())[:2]}")
-        return True
+        return True  # always pass through to the global handler
+
 
 def _ensure_profile_logger(profile_id: str) -> None:
+    """Create (once) a RotatingFileHandler for *profile_id* in logs/."""
     if profile_id in _profile_log_handlers or not profile_id:
-        print(f"[DEBUG] _ensure_profile_logger early return for {profile_id[:12]} — already registered: {profile_id in _profile_log_handlers}, empty: {not profile_id}")
         return
-    print(f"[DEBUG] creating profile log: {os.path.join(_PROFILE_LOGS_DIR, f'{profile_id}.log')}")
     os.makedirs(_PROFILE_LOGS_DIR, exist_ok=True)
     fh = logging.handlers.RotatingFileHandler(
         os.path.join(_PROFILE_LOGS_DIR, f"{profile_id}.log"),

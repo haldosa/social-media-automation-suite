@@ -343,7 +343,20 @@ def _humanize_caption(pool: list) -> str:
             base += " " + random.choice(POST_CAPTION_EMOJIS)
         return base
 
-    return _mutate_caption(random.choice(pool))
+    if tier < 0.75:
+        # Single sentence, mutated
+        return _mutate_caption(random.choice(pool))
+
+    # Double: two independently mutated sentences
+    a = _mutate_caption(random.choice(pool))
+    b = _mutate_caption(random.choice(pool))
+    join = random.choice(["newline", "comma", "dash"])
+    if join == "newline":
+        return f"{a}\n{b}"
+    if join == "comma":
+        return f"{a.rstrip('.!?…')}, {b}"
+    return f"{a.rstrip('.!?…')} ,  {b}"
+
 
 # ================================================================== #
 #  BEHAVIORAL TEXTBOX DETECTION
