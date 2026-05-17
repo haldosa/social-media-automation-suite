@@ -7,4 +7,3 @@ screenshots/
 *.log*
 *.json*
 *.pid
-node_modules

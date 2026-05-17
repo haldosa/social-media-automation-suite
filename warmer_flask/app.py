@@ -1,5 +1,5 @@
 """
-Threads Warmer — Flask Control Panel
+NstBrowser Warmer — Flask Control Panel
 Run with: python app.py
 Access at: http://localhost:5000
 """
@@ -57,6 +57,7 @@ _proc_start_times: dict[str, float] = {}
 PROC_LOG_FILES = {
     "daemon":         os.path.join(SCRIPT_DIR, "logs", "warmer.log"),
     "session":        os.path.join(SCRIPT_DIR, "logs", "warmer.log"),
+    "cookie_daemon":  os.path.join(SCRIPT_DIR, "logs", "cookie.log"),
     "cookie_session": os.path.join(SCRIPT_DIR, "logs", "cookie.log"),
     "test":           os.path.join(SCRIPT_DIR, "logs", "warmer.log"),
 }
@@ -130,6 +131,7 @@ def index():
 def api_status():
     return jsonify({
         "daemon":        _status("daemon"),
+        "cookie_daemon": _status("cookie_daemon"),
         "cookie_session":_status("cookie_session"),
         "session":       _status("session"),
         "test":          _status("test"),
@@ -148,6 +150,11 @@ def daemon_stop():
     return jsonify(_stop("daemon"))
 
 
+@app.route("/api/cookie/start", methods=["POST"])
+def cookie_daemon_start():
+    cmd = [PYTHON_EXE, COOKIE_SCRIPT, "--daemon", "--all-profiles"]
+    return jsonify(_launch("cookie_daemon", cmd))
+
 @app.route("/api/cookie/single/start", methods=["POST"])
 def cookie_single_start():
     data = request.json or {}
@@ -165,6 +172,11 @@ def cookie_single_start():
 @app.route("/api/cookie/single/stop", methods=["POST"])
 def cookie_single_stop():
     return jsonify(_stop("cookie_session"))  # was "cookie_single"
+
+@app.route("/api/cookie/stop", methods=["POST"])
+def cookie_daemon_stop():
+    return jsonify(_stop("cookie_daemon"))
+
 
 @app.route("/api/session/start", methods=["POST"])
 def session_start():
@@ -286,7 +298,7 @@ def _group_log_entries(entries: list[dict]) -> list[dict]:
                 label = "Cookie Bot"
             elif "TEST" in msg or "test-actions" in msg:
                 label = "Test Actions"
-            elif "Threads Warmer" in msg:
+            elif "NstBrowser Warmer" in msg:
                 label = f"Session {entry['ts'][11:16]}"
 
             current = {

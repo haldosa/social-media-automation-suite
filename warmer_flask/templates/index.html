@@ -626,6 +626,20 @@
         </div>
       </div>
 
+<!-- Cookie daemon -->
+<div class="proc-card" id="card-cookie">
+  <div class="proc-header">
+    <div class="proc-indicator" id="dot-cookie"></div>
+    <div class="proc-name">Cookie Bot</div>
+    <div class="proc-pid" id="pid-cookie"></div>
+  </div>
+  <div class="proc-uptime" id="uptime-cookie" style="display:none"></div>
+  <div class="btn-row">
+    <button class="btn btn-start" id="btn-cookie-start" onclick="cookieStart()">START</button>
+    <button class="btn btn-stop"  id="btn-cookie-stop"  onclick="cookieStop()" disabled>STOP</button>
+  </div>
+</div>
+
 <!-- Cookie single session -->
 <div class="proc-card" id="card-cookie-single">
   <div class="proc-header">
@@ -701,6 +715,17 @@
           <label for="session-no-preflight">--no-preflight</label>
         </div>
         <button class="btn btn-start btn-full" onclick="sessionStart()">RUN SESSION</button>
+      </div>
+    </div>
+
+    <!-- Cookie bot config -->
+    <div>
+      <div class="section-head">
+        <div class="section-title">Cookie Bot</div>
+        <div class="section-line"></div>
+      </div>
+      <div class="panel">
+        <button class="btn btn-start btn-full" onclick="cookieStart()">START COOKIE DAEMON</button>
       </div>
     </div>
 
@@ -852,15 +877,27 @@ async function daemonStop() {
   toast(r.msg, r.ok ? 'ok' : 'error');
 }
 
+async function cookieStart() {
+  const runs     = document.getElementById('cookie-runs').value.trim();
+  const body = {};
+  if (runs) body.runs = runs;
+  const r = await api('/api/cookie/start', 'POST', body);
+  toast(r.msg, r.ok ? 'ok' : 'error');
+}
+
 async function cookieSingleStart() { 
   const profile     = document.getElementById('cookie-profile').value.trim();
-  const runs        = document.getElementById('cookie-runs').value.trim();
   const body = {};
   if (profile) body.profile_id = profile;
-  if (runs) body.runs = runs;
   const r = await api('/api/cookie/single/start', 'POST', body);
   toast(r.msg, r.ok ? 'ok' : 'error');
 }
+
+async function cookieStop() {
+  const r = await api('/api/cookie/stop', 'POST');
+  toast(r.msg, r.ok ? 'ok' : 'error');
+}
+
 
 async function cookieSingleStop() {
   const r = await api('/api/cookie/single/stop', 'POST');
@@ -935,6 +972,7 @@ async function pollStatus() {
   try {
     const data = await api('/api/status');
     applyProcStatus('daemon',        data.daemon);
+    applyProcStatus('cookie',        data.cookie_daemon);
     applyProcStatus('cookie-single', data.cookie_session);  // was data.cookie_single
     applyProcStatus('session',       data.session);
     applyProcStatus('test',          data.test);
