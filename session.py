@@ -15,7 +15,7 @@ from utils import log, precise_sleep, _get_ctx, _session_local, SessionContext, 
 from pools import COMMENT_POOL, POST_CAPTION_POOL, SEARCH_TOPIC_POOL, _get_profile_pool_shard
 from browser import _get_typing_dna
 from mouse import bezier_move_to_coords, CDPConnectionDead, init_cursor_pos
-from scroll import navigate_to, stochastic_scroll
+from scroll import navigate_to
 from actions import (
     passive_action, active_action, read_post_action,
     comment_on_post, check_notifications_action,
@@ -36,17 +36,17 @@ from preflight import run_preflight
 # chain where P(next_action | current_action) encodes real behavioral
 # autocorrelation patterns:
 #
-#   • After reading → scroll (30%) or like (25%), rarely search (5%)
-#   • After liking  → scroll (45%), read (20%), rarely like again (8%)
-#   • After comment → forced passive pause (55%), scroll down (12%)
-#   • After notify  → profile visit (15%) or scroll (40%)
-#   • After posting → passive scroll (60%), never immediate re-post
+#   â€¢ After reading â†’ scroll (30%) or like (25%), rarely search (5%)
+#   â€¢ After liking  â†’ scroll (45%), read (20%), rarely like again (8%)
+#   â€¢ After comment â†’ forced passive pause (55%), scroll down (12%)
+#   â€¢ After notify  â†’ profile visit (15%) or scroll (40%)
+#   â€¢ After posting â†’ passive scroll (60%), never immediate re-post
 #
 # Context modifiers layer on top of the base transition matrix:
-#   • Session phase: early=passive, mid=active peak, late=wind-down
-#   • Cumulative fatigue: engagement probability decays per action count
-#   • Consecutive suppression: geometric penalty on same-action repeats
-#   • Account maturity: young accounts heavily favour passive actions
+#   â€¢ Session phase: early=passive, mid=active peak, late=wind-down
+#   â€¢ Cumulative fatigue: engagement probability decays per action count
+#   â€¢ Consecutive suppression: geometric penalty on same-action repeats
+#   â€¢ Account maturity: young accounts heavily favour passive actions
 #
 # The transition matrix can evolve per-profile over time ,  a new account's
 # matrix heavily favours passive, while a mature account allows full range.
@@ -152,26 +152,26 @@ def _normalize_probs(probs: list) -> list:
     return [p / total for p in probs]
 
 
-# ── Per-profile pool isolation ────────────────────────────────────────────────
+# â”€â”€ Per-profile pool isolation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 
 def _get_profile_transition_matrix(profile_id: str) -> dict:
     """Load or generate a stable per-profile perturbed Markov transition matrix.
 
-    Each profile receives a unique behavioral fingerprint derived by applying a
-    deterministic ±15 % noise vector (seeded from the MD5 of the profile ID)
+    Each profile receives a stable profile-specific variation derived by applying a
+    deterministic Â±15 % noise vector (seeded from the MD5 of the profile ID)
     to every row of _BASE_TRANSITION_MATRIX.  The result is persisted in
     post_state.json so the same profile always exhibits the same statistical
-    pattern across runs — providing stable uniqueness without drift.
+    pattern across runs, providing stable configuration without drift.
 
     Falls back to _BASE_TRANSITION_MATRIX for anonymous / manual sessions.
 
     Design notes
     ------------
-    - ±15 % per-weight perturbation keeps each profile clearly within the
-      realistic human-behaviour envelope while making cross-account Markov
-      fingerprints statistically distinguishable.
+    - Â±15 % per-weight perturbation keeps each profile clearly within the
+      reasonable interaction envelope while making cross-profile Markov
+      settings analytically distinguishable.
     - Seeding from the profile ID (not os.urandom) ensures determinism: the
       matrix is regenerated identically if post_state.json is wiped.
     - All rows are re-normalised after perturbation so they still sum to 1.0.
@@ -203,7 +203,7 @@ def _get_profile_transition_matrix(profile_id: str) -> dict:
 
         perturbed: dict = {}
         for state_name, base_row in _BASE_TRANSITION_MATRIX.items():
-            # Scale each weight by a factor in [0.85, 1.15] — same seed → same factors
+            # Scale each weight by a factor in [0.85, 1.15] â€” same seed â†’ same factors
             noisy_row = [max(0.0, w * rng.uniform(0.85, 1.15)) for w in base_row]
             total = sum(noisy_row) or 1.0
             perturbed[state_name] = [p / total for p in noisy_row]
@@ -217,7 +217,7 @@ def _get_profile_transition_matrix(profile_id: str) -> dict:
         return perturbed
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _markov_sample_next_action(
     current_state: str,
@@ -231,8 +231,8 @@ def _markov_sample_next_action(
 
     Parameters
     ----------
-    current_state         : what the bot just did
-    session_elapsed_frac  : 0.0 → 1.0 how far through the session
+    current_state         : what the session just did
+    session_elapsed_frac  : 0.0 â†’ 1.0 how far through the session
     metrics               : _session_metrics accumulator
     consecutive_same      : how many times current_state repeated in a row
     account_days_old      : for account-maturity adjustment
@@ -271,7 +271,7 @@ def _sample_session_duration_sec() -> float:
     """Sample session length from a smooth log-normal distribution.
 
     Eliminates the old bimodal uniform draw (6-32 / 40-70 min gap) that
-    created a fingerprint-level tell ,  real social-media sessions follow
+    created a repetitive timing pattern ,  real social-media sessions follow
     a right-skewed continuous curve.
     """
     minutes = random.lognormvariate(SESSION_LOGNORMAL_MU, SESSION_LOGNORMAL_SIGMA)
@@ -284,7 +284,7 @@ def _distraction_pause(driver) -> None:
 
     Real users don't maintain unbroken focus for an entire session ,  they
     check another tab, glance at their phone, reply to a message, etc.
-    This produces a visible pause (no scroll, no click) of 8–45 s that
+    This produces a visible pause (no scroll, no click) of 8â€“45 s that
     breaks the otherwise metronomic action cadence.
 
     ~12 % of session ticks trigger a distraction (called from the main loop).
@@ -335,14 +335,14 @@ def run_social_session(
     but no longer directly control dispatch.  They are used to scale
     the base transition matrix when explicitly overridden by the user.
     """
-    # ── Reset all per-session mutable state in this thread's context ──────────
+    # â”€â”€ Reset all per-session mutable state in this thread's context â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Replacing the SessionContext object atomically resets cursor_pos,
     # cdp_consecutive_failures, session_followed, session_metrics, and
     # active_typing_dna in one step ,  safe for concurrent profiles running in
     # separate threads because each has its own threading.local slot.
     _session_local.ctx = SessionContext()
     _session_local.ctx.active_typing_dna = _get_typing_dna(profile_id)
-    # ── Assign per-profile isolated content pools ─────────────────────────────
+    # â”€â”€ Assign per-profile isolated content pools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Each profile receives its own deterministic shard of COMMENT_POOL and
     # POST_CAPTION_POOL so no two accounts ever share the same surface text.
     _session_local.ctx.profile_comment_pool = _get_profile_pool_shard(COMMENT_POOL, profile_id)
@@ -355,9 +355,9 @@ def run_social_session(
         len(_session_local.ctx.profile_caption_pool), len(POST_CAPTION_POOL),
         len(_session_local.ctx.profile_search_topic_pool), len(SEARCH_TOPIC_POOL),
     )
-    # ─────────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    # ── Break cross-profile RNG correlation ───────────────────────────────
+    # â”€â”€ Break cross-profile RNG correlation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # The global random module uses a single Mersenne Twister.  Without
     # reseeding, sequential profiles produce statistically correlated
     # random sequences (same PRNG state continues).  Reseed with 32
@@ -385,11 +385,11 @@ def run_social_session(
     except Exception:
         pass
 
-    # ── Load or generate the stable per-profile perturbed transition matrix ────
+    # â”€â”€ Load or generate the stable per-profile perturbed transition matrix â”€â”€â”€â”€
     # Stored in post_state.json; generated once per profile from a seed derived
-    # from the profile ID so the same profile always has the same fingerprint.
+    # from the profile ID so the same profile always has the same configuration.
     _profile_transition_matrix = _get_profile_transition_matrix(profile_id)
-    # ─────────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     # Current Markov state ,  start with passive (user just opened the feed)
     current_state = "passive"
@@ -429,7 +429,7 @@ def run_social_session(
         _account_days, _user_weights or "none",
     )
 
-    # ── STATE SNAPSHOT: session start ────────────────────────────────────────
+    # â”€â”€ STATE SNAPSHOT: session start â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     try:
         _snap_url = driver.current_url
         _snap_vp  = driver.execute_script("return [window.innerWidth, window.innerHeight]")
@@ -441,7 +441,7 @@ def run_social_session(
         profile_id, session_seconds, _account_days,
         _get_ctx().cursor_pos[0], _get_ctx().cursor_pos[1], _snap_vp[0], _snap_vp[1], _snap_url[:80],
     )
-    # ────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     # Action dispatch map ,  maps Markov state names to callables.
     def _dispatch(action: str) -> None:
@@ -488,7 +488,7 @@ def run_social_session(
         # Fix #31: move the active_done guarantee to the middle 25-75% of the
         # session with a 10% per-tick probability, instead of a deterministic
         # forced like in the final 60 s.  The old last-minute pattern created
-        # a repeatable "like then exit" fingerprint visible across all sessions.
+        # a repeatable "like then exit" pattern visible across sessions.
         if not active_done and 0.25 <= elapsed_frac <= 0.75 and random.random() < 0.10:
             log.info("[ SESSION ]  mid-session active guarantee triggered (elapsed_frac=%.2f)",
                      elapsed_frac)
@@ -512,7 +512,7 @@ def run_social_session(
         # Update Markov state
         current_state = selected_action
 
-        # ── DEBUG LOGGING: [SESSION TICK] + consecutive-action tracking ───────
+        # â”€â”€ DEBUG LOGGING: [SESSION TICK] + consecutive-action tracking â”€â”€â”€â”€â”€â”€â”€
         _sess_elapsed = time.time() - session_start_ts
         if _get_ctx().session_metrics["last_action"] == selected_action:
             _get_ctx().session_metrics["consecutive_same"] += 1
@@ -535,11 +535,11 @@ def run_social_session(
                 "Markov suppression should reduce this",
                 _get_ctx().session_metrics["consecutive_same"] + 1, selected_action,
             )
-        # ───────────────────────────────────────────────────────────────────
+        # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
         count += 1
 
-        # ── Distraction / multitasking injection ─────────────────────────
+        # â”€â”€ Distraction / multitasking injection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # ~12 % of ticks: pause as if the user switched tabs or checked
         # their phone.  Skipped in the first 2 min (user is still engaged)
         # and the last 1 min (session is winding down).
@@ -549,17 +549,17 @@ def run_social_session(
                 and random.random() < 0.12):
             _distraction_pause(driver)
         else:
-            # Fix #8: log-normal inter-action gap ,  median 1.5 s, σ=0.6 on the
+            # Fix #8: log-normal inter-action gap ,  median 1.5 s, Ïƒ=0.6 on the
             # log scale.  Produces a right-skewed distribution that matches
-            # observed human reaction-time between browsing actions far better
+            # observed operator pacing between browsing actions better
             # than a flat uniform(1,3) which a classifier can trivially identify.
             precise_sleep(max(0.5, min(15.0, random.lognormvariate(math.log(1.5), 0.6))))
 
-    # ── POST-SESSION DIAGNOSTICS ─────────────────────────────────────────────
+    # â”€â”€ POST-SESSION DIAGNOSTICS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if _get_ctx().session_metrics["passive"] == 0:
         _dlog.warning(
             "[RISK WARN]  session ended with 0 passive actions "
-            "-- pure engagement bot pattern"
+            "-- engagement-only session pattern"
         )
     try:
         _end_url = driver.current_url
@@ -580,7 +580,7 @@ def run_social_session(
         _get_ctx().session_metrics["profile_visits"], _get_ctx().session_metrics["searches"],
         _end_url[:80],
     )
-    # ────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     log.info("Session complete. Total actions: %d", count)
 
@@ -592,22 +592,15 @@ def run_social_session(
 def warm_profile(
     profile_id: str,
     skip_preflight: bool = False,
-    weights: dict | None = None,   
-    ws_url: str | None = None,       
+    weights: dict | None = None,
 ) -> bool:
     driver   = None
     launched = False
     ran_session = False
     try:
-        if ws_url:
-            # Demo mode — browser already launched externally
-            launched = False  # don't call stop_profile in finally
-            log.info("Connecting to pre-launched browser  |  ws=%s", ws_url)
-        else:
-            # Normal mode — launch via NstBrowser API
-            info   = start_profile(profile_id)
-            ws_url = info["webSocketDebuggerUrl"]
-            launched = True
+        info   = start_profile(profile_id)
+        ws_url = info["webSocketDebuggerUrl"]
+        launched = True
 
         driver = connect_selenium(ws_url)
         driver.set_page_load_timeout(30)
@@ -623,35 +616,14 @@ def warm_profile(
         precise_sleep(random.uniform(2, 5))
 
         if not check_login_status(driver):
-            log.error("Profile %s appears logged out — skipping.", profile_id)
+            log.error("Profile %s appears logged out â€” skipping.", profile_id)
             return False
 
         ran_session = True
         session_sec = _sample_session_duration_sec()
         log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
 
-        # ── Daily post guarantee ──────────────────────────────────────────────
-        # If account is >= 7 days old and hasn't posted today, force a post
-        # early in this session before the normal Markov session begins.
-        try:
-            _state = _load_post_state()
-            _ensure_profile_in_state(profile_id, _state)
-            _first = _state[profile_id].get("first_seen", "")
-            _account_days = (date.today() - date.fromisoformat(_first)).days if _first else 0
-            _today = date.today().isoformat()
-            _posts_today = _state[profile_id].get("daily", {}).get(_today, {}).get("posts", 0)
-
-            if _account_days >= 7 and _posts_today == 0:
-                log.info("[POST GUARANTEE]  account_days=%d  posts_today=0 — "
-                        "forcing post before session", _account_days)
-                # Small human-like delay before posting
-                precise_sleep(random.uniform(8, 20))
-                stochastic_scroll(driver, total_seconds=random.uniform(15, 30))
-                post_action(driver, profile_id)
-        except Exception as exc:
-            log.warning("[POST GUARANTEE]  check failed: %s", exc)
-
-        run_social_session(driver, session_sec, profile_id=profile_id)
+        run_social_session(driver, session_sec, profile_id=profile_id, **(weights or {}))
     except (TimeoutException, RuntimeError, WebDriverException,
             CDPConnectionDead) as exc:
         log.error("Error on profile %s: %s", profile_id, exc)

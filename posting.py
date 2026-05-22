@@ -2,10 +2,8 @@ import os
 import re
 import time
 import random
-import hashlib
 import ctypes
 import glob as _glob
-from datetime import datetime
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
@@ -33,178 +31,46 @@ from state import (
 )
 from pools import POST_CAPTION_POOL, POST_CAPTION_EMOJIS, POST_CAPTION_SHORTS
 # ================================================================== #
-#  IMAGE UNIQUIFIER  (per-profile re-encode)
+#  MEDIA PREPARATION  (per-profile temp copy)
 # ================================================================== #
 
 def _prepare_image_for_profile(src_path: str, profile_id: str) -> str:
     """
-    Return a uniquified, re-encoded copy of src_path scoped to profile_id.
+    Return a sanitized per-profile temp copy of src_path.
 
-    Transformations applied every call so the output file always differs,
-    even when two profiles choose the same source image:
-
-      1. Random 1–3 px crop on every edge  (geometry changes)
-      1b. Horizontal flip ,  50 % chance    (pHash distance +8–15 bits)
-      1c. Random rotation 2–5 °            (geometry/DCT fingerprint shift)
-      2. ±12 % brightness adjustment       (DCT coefficient shift)
-      3. ±12 % contrast adjustment         (DCT coefficient shift)
-      3b. Invisible corner stamp           (raw pixel alteration)
-      4. Re-encode at randomised quality   (file bytes change)
-         JPEG/WebP: base-88 ± 2–5 pts;
-         PNG: lossless but fresh encoding.
-      5. Strip all original EXIF metadata.
-      6. Inject synthetic EXIF DateTimeOriginal within the last 48 h
-         (requires piexif; silently skipped if not installed).
-
-    The output is written to a per-profile scratch folder inside the OS
-    temp directory.  The folder is named after a prefix of profile_id so
-    stale copies from previous sessions are easy to identify and the same
-    profile never sees another profile's scratch files.
+    The preparation step validates the media, applies EXIF orientation, strips
+    metadata, and lightly compresses/resaves the file when possible. It performs
+    no metadata fabrication or hidden image modifications so the thesis-facing
+    implementation remains an ordinary approved-media upload workflow.
     """
-    from PIL import Image, ImageDraw, ImageEnhance  # Pillow – always installed
+    from PIL import Image, ImageOps
 
-    try:
-        import piexif as _piexif
-        _have_piexif = True
-    except ImportError:
-        _have_piexif = False
-        log.debug("_prepare_image_for_profile: piexif not installed ,  EXIF injection skipped")
+    ext = os.path.splitext(src_path)[1].lower()
+    if ext not in POST_MEDIA_EXTENSIONS:
+        raise ValueError(f"Unsupported media extension: {ext}")
 
-    # Per-profile scratch directory
     safe_pid = (profile_id or "anon")[:16].replace("-", "")
     profile_dir = os.path.join(_POST_TEMP_DIR, safe_pid)
     os.makedirs(profile_dir, exist_ok=True)
+    out_path = os.path.join(profile_dir, f"post_{time.time_ns()}{ext}")
 
-    img = Image.open(src_path).convert("RGB")
-    w, h = img.size
+    with Image.open(src_path) as original:
+        img = ImageOps.exif_transpose(original)
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGB")
+        if ext in (".jpg", ".jpeg"):
+            img = img.convert("RGB")
+            img.save(out_path, format="JPEG", quality=90, optimize=True)
+        elif ext == ".webp":
+            img.save(out_path, format="WEBP", quality=90)
+        else:
+            img.save(out_path, format="PNG", optimize=True)
 
-    # 1. Tiny random crop ,  different geometry per call
-    left   = random.randint(1, 3)
-    top    = random.randint(1, 3)
-    right  = random.randint(1, 3)
-    bottom = random.randint(1, 3)
-    img = img.crop((left, top, w - right, h - bottom))
-
-    # 1b. Horizontal flip ,  50 % chance.  A flip changes every pixel's
-    #     position, pushing the pHash distance to 8–15 bits vs the source,
-    #     which is well above any practical near-duplicate threshold.
-    _flip = random.random() < 0.5
-    if _flip:
-        img = img.transpose(Image.FLIP_LEFT_RIGHT)
-
-    # 1c. Small random rotation (2–5 °) in a random direction.  Combined with
-    #     the optional flip this ensures geometry-based hashes (dHash, aHash)
-    #     also differ significantly on every call.
-    angle = random.uniform(2.0, 5.0) * random.choice([-1, 1])
-    
-    # Calculate scale factor to cover black corners
-    import math
-    cw, ch = img.size
-    theta = math.radians(abs(angle))
-    z = math.cos(theta) + max(cw/ch, ch/cw) * math.sin(theta)
-    
-    # Zoom in first, then rotate
-    zoom_w = int(math.ceil(cw * z))
-    zoom_h = int(math.ceil(ch * z))
-    img = img.resize((zoom_w, zoom_h), resample=Image.BICUBIC)
-    
-    # Rotate with expand=True to avoid any clipping before the final crop
-    img = img.rotate(angle, resample=Image.BICUBIC, expand=True)
-    
-    # Crop back to original dimensions to remove the corners
-    rotated_w, rotated_h = img.size
-    crop_x = (rotated_w - cw) // 2
-    crop_y = (rotated_h - ch) // 2
-    img = img.crop((crop_x, crop_y, crop_x + cw, crop_y + ch))
-
-    # 2. Brightness ±12 % (was ±2 %) ,  wider luminance shift moves DCT
-    #    coefficients far outside the ±1-LSB neighbourhood that pHash
-    #    near-duplicate detection relies on.
-    b_factor = 1.0 + random.uniform(-0.12, 0.12)
-    img = ImageEnhance.Brightness(img).enhance(b_factor)
-
-    # 3. Contrast ±12 % (was ±2 %)
-    c_factor = 1.0 + random.uniform(-0.12, 0.12)
-    img = ImageEnhance.Contrast(img).enhance(c_factor)
-
-    # 3b. Invisible corner stamp ,  two-digit number drawn in a colour sampled
-    #     from the corner pixel ± a small random offset so it is imperceptible
-    #     to a human reviewer but alters the raw pixel values and the DCT block
-    #     in that corner region.
-    try:
-        _cw, _ch = img.size
-        _corner_x = random.choice([2, _cw - 14])
-        _corner_y = random.choice([2, _ch - 14])
-        _sample_rgb = img.getpixel((_corner_x, _corner_y))
-        _overlay_rgb = tuple(
-            max(0, min(255, _sample_rgb[c] + random.randint(-18, 18)))
-            for c in range(3)
-        )
-        _draw = ImageDraw.Draw(img)
-        _draw.text((_corner_x, _corner_y), f"{random.randint(10, 99)}", fill=_overlay_rgb)
-        del _draw
-    except Exception:
-        pass  # never block the upload path
-
-    # 4. Re-encode at randomised quality
-    ext = os.path.splitext(src_path)[1].lower()
-    if ext in (".jpg", ".jpeg"):
-        save_fmt  = "JPEG"
-        quality   = 88 + random.randint(-5, 5)
-    elif ext == ".webp":
-        save_fmt  = "WEBP"
-        quality   = 88 + random.randint(-5, 5)
-    else:  # .png
-        save_fmt  = "PNG"
-        quality   = None
-
-    # 5+6. Build synthetic EXIF ,  random timestamp in the last 48 h
-    exif_bytes = b""
-    if _have_piexif and save_fmt in ("JPEG", "WEBP"):
-        try:
-            ts = datetime.fromtimestamp(time.time() - random.randint(0, 48 * 3600))
-            ts_str = ts.strftime("%Y:%m:%d %H:%M:%S").encode()
-            exif_dict = {
-                "0th":  {},
-                "Exif": {
-                    _piexif.ExifIFD.DateTimeOriginal:  ts_str,
-                    _piexif.ExifIFD.DateTimeDigitized: ts_str,
-                },
-                "GPS":  {},
-                "1st":  {},
-            }
-            exif_bytes = _piexif.dump(exif_dict)
-        except Exception as exc:
-            log.debug("_prepare_image_for_profile: EXIF build failed (%s)", exc)
-            exif_bytes = b""
-
-    # Unique output filename ,  hash of inputs + wall clock so every call differs
-    uid = hashlib.md5(f"{src_path}{time.time_ns()}{profile_id}".encode()).hexdigest()[:10]
-    out_path = os.path.join(profile_dir, f"post_{uid}{ext}")
-
-    save_kwargs: dict = {}
-    if quality is not None:
-        save_kwargs["quality"] = quality
-    if save_fmt == "JPEG":
-        save_kwargs["optimize"] = True
-        if exif_bytes:
-            save_kwargs["exif"] = exif_bytes
-    elif save_fmt == "WEBP" and exif_bytes:
-        save_kwargs["exif"] = exif_bytes
-
-    img.save(out_path, format=save_fmt, **save_kwargs)
-    log.info(
-        "[ POST ]  image uniquified  |  crop=(%d,%d,%d,%d)  flip=%s  "
-        "rot=%.1f°  b=%.3f  c=%.3f  q=%s  → %s",
-        left, top, right, bottom, _flip, angle, b_factor, c_factor,
-        quality if quality else "lossless",
-        os.path.basename(out_path),
-    )
+    log.info("[ POST ]  media prepared for upload -> %s", os.path.basename(out_path))
     return out_path
 
-
 def _cleanup_post_scratch(profile_id: str, max_age_sec: float = 3600.0) -> None:
-    """Remove stale uniquified image files from the per-profile scratch dir.
+    """Remove stale prepared image files from the per-profile scratch dir.
 
     Called after every successful post so the temp directory doesn't grow
     indefinitely.  Removes files older than *max_age_sec* (default 1 hour)
@@ -265,7 +131,7 @@ def _cleanup_post_scratch(profile_id: str, max_age_sec: float = 3600.0) -> None:
 
 
 # ================================================================== #
-#  CAPTION HUMANISER
+#  CAPTION VARIATION
 # ================================================================== #
 
 def _mutate_caption(text: str) -> str:
@@ -274,13 +140,13 @@ def _mutate_caption(text: str) -> str:
     caption string.  Mutations are probabilistic and can stack.
 
     Rules:
-      • Remove Oxford comma (, and / , or)           ,  60 % of eligible
-      • Drop leading capital (casual register)        ,  30 %
-      • Strip terminal period                         ,  40 %  (leaves !? alone)
-      • Replace terminal period with "…"              ,  15 %
-      • Replace mid-sentence " I " with " i "         ,   8 % of eligible
-      • Append an emoji from POST_CAPTION_EMOJIS      ,  35 %
-      • Append a casual filler word (tbh/ngl/idk …)   ,  12 %
+      â€¢ Remove Oxford comma (, and / , or)           ,  60 % of eligible
+      â€¢ Drop leading capital (casual register)        ,  30 %
+      â€¢ Strip terminal period                         ,  40 %  (leaves !? alone)
+      â€¢ Replace terminal period with "â€¦"              ,  15 %
+      â€¢ Replace mid-sentence " I " with " i "         ,   8 % of eligible
+      â€¢ Append an emoji from POST_CAPTION_EMOJIS      ,  35 %
+      â€¢ Append a casual filler word (tbh/ngl/idk â€¦)   ,  12 %
     """
     # Oxford comma removal
     if random.random() < 0.60:
@@ -296,9 +162,9 @@ def _mutate_caption(text: str) -> str:
         if r < 0.40:
             text = text[:-1]        # bare end
         elif r < 0.55:
-            text = text[:-1] + "…"  # ellipsis
+            text = text[:-1] + "â€¦"  # ellipsis
 
-    # Mid-sentence "I" → "i" (casual / typo)
+    # Mid-sentence "I" â†’ "i" (casual / typo)
     if random.random() < 0.08:
         text = re.sub(r"(?<=\s)I(?=\s)", "i", text)
 
@@ -309,7 +175,7 @@ def _mutate_caption(text: str) -> str:
     # Casual filler
     if random.random() < 0.12:
         filler = random.choice(["tbh", "ngl", "idk", "lol", "honestly", "fr"])
-        text = text.rstrip(".!?…").rstrip() + f" {filler}"
+        text = text.rstrip(".!?â€¦").rstrip() + f" {filler}"
 
     return text
 
@@ -346,13 +212,13 @@ def _humanize_caption(pool: list) -> str:
     return _mutate_caption(random.choice(pool))
 
 # ================================================================== #
-#  BEHAVIORAL TEXTBOX DETECTION
+#  TEXTBOX IDENTIFICATION
 # ================================================================== #
 # Identifies the compose text input by behavioral characteristics rather
 # than framework-specific attributes (data-lexical-editor) which Meta
 # renames whenever the Lexical editor framework is refactored.
 #
-# Detection strategy (priority order):
+# Identification strategy (priority order):
 #   1. role="textbox" + contenteditable="true" in a modal/overlay context
 #      (ARIA role is legally mandated for accessibility ,  stable).
 #   2. Sole visible contenteditable="true" element above the fold
@@ -363,7 +229,7 @@ def _humanize_caption(pool: list) -> str:
 # ================================================================== #
 
 def _find_compose_textbox(driver, timeout: float = 10.0):
-    """Find the compose modal's text input using behavioral detection.
+    """Find the compose modal's text input using textbox identification.
 
     Returns the WebElement or None if no suitable textbox is found.
     """
@@ -488,8 +354,8 @@ def create_post(driver, profile_id: str) -> bool:
       3.  Find the compose / New post button in the nav sidebar.
       4.  Bezier-arc to the button and click to open the compose modal.
       5.  Attach image via the hidden <input type="file"> if a path was picked.
-      6.  Bezier-arc to the textbox and type the caption with human_type().
-      7.  Re-read pause (1.5–4 s) ,  mimics proof-reading before posting.
+      6.  Bezier-arc to the textbox and type the caption with type_text().
+      7.  Re-read pause (1.5â€“4 s) ,  mimics proof-reading before posting.
       8.  Find the Post button in the modal and click it.
       9.  Wait for the modal to dismiss, then call _record_post().
 
@@ -508,7 +374,7 @@ def create_post(driver, profile_id: str) -> bool:
     # Heavy browser automation below runs entirely outside the lock so parallel
     # profiles are not blocked for the duration of the UI interaction.
     image_path = None
-    _src_for_uniquify = None
+    _src_for_prepare = None
     with _post_state_locked():
         state = _load_post_state()
         if not _can_post_now(profile_id, state):
@@ -537,8 +403,8 @@ def create_post(driver, profile_id: str) -> bool:
                     log.info("[ POST ]  image pool fully cycled ,  resetting cross-profile dedup list")
                     fresh = all_images
 
-                _src_for_uniquify = random.choice(fresh)
-                basename = os.path.basename(_src_for_uniquify)
+                _src_for_prepare = random.choice(fresh)
+                basename = os.path.basename(_src_for_prepare)
 
                 if basename in used_list:
                     used_list.remove(basename)
@@ -552,16 +418,16 @@ def create_post(driver, profile_id: str) -> bool:
         _save_post_state(state)  # one atomic write covers gate + image reservation
     # ===========================================================================
 
-    if _src_for_uniquify:
+    if _src_for_prepare:
         try:
-            image_path = _prepare_image_for_profile(_src_for_uniquify, profile_id)
+            image_path = _prepare_image_for_profile(_src_for_prepare, profile_id)
         except Exception as exc:
-            log.warning("[ POST ]  image uniquification failed (%s) ,  using original", exc)
-            image_path = _src_for_uniquify
+            log.warning("[ POST ]  media preparation failed (%s) ,  using original", exc)
+            image_path = _src_for_prepare
 
-    # ── DEBUG LOGGING: POST FLOW timer ────────────────────────────────────────
+    # â”€â”€ DEBUG LOGGING: POST FLOW timer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _pf_t0 = time.perf_counter()
-    # ──────────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     caption = _humanize_caption(_get_ctx().profile_caption_pool or POST_CAPTION_POOL)
     log.info(
@@ -618,7 +484,7 @@ def create_post(driver, profile_id: str) -> bool:
         _cdp_click_element(driver, compose_btn)  # Fix 1.4: never JS .click()
 
         # 3. Wait for the compose modal's contenteditable text area.
-        #    Uses behavioral detection (role=textbox, contenteditable, modal
+        #    Uses textbox identification (role=textbox, contenteditable, modal
         #    context) rather than framework-specific data-lexical-editor.
         text_box = _find_compose_textbox(driver, timeout=10.0)
         if not text_box:
@@ -647,7 +513,7 @@ def create_post(driver, profile_id: str) -> bool:
 
                 _media_attached = False
 
-                # Primary: click the attach button → OS file dialog → pyautogui paste.
+                # Primary: click the attach button â†’ OS file dialog â†’ pyautogui paste.
                 try:
                     import pyautogui as _pag
                     import pyperclip as _ppc
@@ -735,8 +601,8 @@ def create_post(driver, profile_id: str) -> bool:
         #    The OS file dialog interaction (pyautogui paste + Enter) causes
         #    React to re-render the compose modal, which invalidates the
         #    WebElement reference captured before the dialog was opened.
-        #    Using a stale reference in human_type() raises
-        #    StaleElementReferenceException → the outer handler fires Escape
+        #    Using a stale reference in type_text() raises
+        #    StaleElementReferenceException â†’ the outer handler fires Escape
         #    and returns False, making the session loop retry indefinitely.
         if image_path:
             text_box = _find_compose_textbox(driver, timeout=8.0)
@@ -757,7 +623,7 @@ def create_post(driver, profile_id: str) -> bool:
 
         # 6. Re-read pause ,  mimics proof-reading before hitting Post
         reread_s = random.uniform(5.0, 10.0)
-        log.info("[ POST ]  re-reading before submit (%.1fs)…", reread_s)
+        log.info("[ POST ]  re-reading before submit (%.1fs)â€¦", reread_s)
         precise_sleep(reread_s)
 
         # 7. Find the Post submit button scoped to the compose modal.
@@ -779,7 +645,7 @@ def create_post(driver, profile_id: str) -> bool:
         post_btn = None
         
         for _attempt in range(3):
-            # Pass A: walk up from text_box → find Post button in same container
+            # Pass A: walk up from text_box â†’ find Post button in same container
             post_btn = driver.execute_script("""
                 var textbox = arguments[0];
                 // Walk up ancestors looking for a container that owns a Post button
@@ -868,7 +734,7 @@ def create_post(driver, profile_id: str) -> bool:
         # Do NOT call scroll_element_into_loose_view here.  The Post button
         # lives in the compose modal's sticky footer and is always visible.
         # scroll_element_into_loose_view fires mouseWheel CDP events at the
-        # current cursor position ,  which after human_type() is still inside
+        # current cursor position ,  which after type_text() is still inside
         # the modal's scrollable content area.  The wheel events are delivered
         # to that scroll container (not the page), causing the modal body to
         # scroll instead of the page.  Bezier-move directly to the button.
@@ -879,7 +745,7 @@ def create_post(driver, profile_id: str) -> bool:
         debug_cursor_state(driver, "post-submit-click")
 
         # 8. Wait for modal to close (compose textbox disappears on success)
-        #    Uses web-standards selectors for textbox detection.
+        #    Uses web-standards selectors for textbox identification.
         try:
             WebDriverWait(driver, 12).until(
                 lambda d: not [
@@ -925,15 +791,18 @@ def create_post(driver, profile_id: str) -> bool:
 
 def post_action(driver, profile_id: str) -> None:
     """Session-loop dispatch wrapper for create_post."""
-    # ── DEBUG LOGGING: ACTION START ────────────────────────────────────────────
+    # â”€â”€ DEBUG LOGGING: ACTION START â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _action_t0 = time.perf_counter()
     _get_ctx().session_metrics["actions_dispatched"] += 1
     log.info("[ACTION START]  action=post")
-    # ────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     result = create_post(driver, profile_id)
-    # ── DEBUG LOGGING: ACTION END ────────────────────────────────────────────
+    # â”€â”€ DEBUG LOGGING: ACTION END â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if result:
         _get_ctx().session_metrics["posts"] += 1
     log.info("[ACTION END]  action=post  result=%s  duration=%.1fs",
              "success" if result else "failure", time.perf_counter() - _action_t0)
-    # ────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+
+

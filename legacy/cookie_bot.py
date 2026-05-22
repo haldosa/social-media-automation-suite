@@ -13,6 +13,13 @@ Usage:
 Run once daily for 3-5 days before the profile's first Threads session.
 """
 
+if __name__ == "__main__":
+    print(
+        "legacy/cookie_bot.py is archived for reference only and is no longer "
+        "part of the thesis-facing automation suite."
+    )
+    raise SystemExit(0)
+
 import os
 import signal
 import heapq

@@ -35,7 +35,7 @@ def _navigate_and_settle(driver, action) -> None:
       5. Silent position set ,  cursor was at (park_x, 0) before navigation and
          is conceptually still there; no dispatch needed on the fresh page.
       6. Brief settle pause (user's eye scans the freshly rendered page).
-      7. Drift the cursor into the feed ,  the first synthetic event the new
+      7. Drift the cursor into the feed ,  the first browser input event the new
          page sees, arcing naturally from the address-bar area down into content.
     """
     # 1. Park at address-bar row
@@ -48,9 +48,9 @@ def _navigate_and_settle(driver, action) -> None:
 
     # 2. Navigate
     action()
-    # ── DEBUG LOGGING: NAV timing markers ────────────────────────────────────
+    # â”€â”€ DEBUG LOGGING: NAV timing markers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _nav_t0 = time.perf_counter()
-    # ─────────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Phase 1 ,  wait for the browser's resource-load signal.
     try:
         WebDriverWait(driver, 20).until(
@@ -94,15 +94,15 @@ def _navigate_and_settle(driver, action) -> None:
     # 4. Silent position set ,  fresh page has no cursor history.
     #    Cursor was at (park_x, 0) before navigation; it's still conceptually
     #    there.  No dispatch needed ,  the drift arc below is the first event
-    #    the new page sees, which avoids a detectable in-place jump on load.
+    #    the new page sees, which avoids a repetitive in-place jump on load.
     _set_cursor(park_x, 0, "fresh-page")
 
-    # 5. Settle ,  1.5–3.5 s to mimic a real user visually orienting
+    # 5. Settle ,  1.5â€“3.5 s to mimic a real user visually orienting
     #    after a full page navigation before moving the mouse.
     _nav_settle_s = random.uniform(1.5, 3.5)
     precise_sleep(_nav_settle_s)
 
-    # ── DEBUG LOGGING: [NAV] summary ─────────────────────────────────────────
+    # â”€â”€ DEBUG LOGGING: [NAV] summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _overlay_present = False
     try:
         _overlay_present = bool(driver.execute_script(
@@ -116,9 +116,9 @@ def _navigate_and_settle(driver, action) -> None:
         _nav_readystate_ms, _nav_spa_ms, _nav_settle_s * 1000,
         _overlay_present, _get_ctx().cursor_pos[0], _get_ctx().cursor_pos[1],
     )
-    # ─────────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    # 6. Drift into content ,  first synthetic event on the new page,
+    # 6. Drift into content ,  first browser input event on the new page,
     #    starting from (park_x, 0) and moving naturally into the feed area.
     try:
         vw2 = driver.execute_script("return window.innerWidth")
@@ -131,7 +131,7 @@ def _navigate_and_settle(driver, action) -> None:
 
 
 def navigate_to(driver, url: str) -> None:
-    """Navigate to url with human-like cursor park → restore → drift."""
+    """Navigate to url with operator-like cursor park â†’ restore â†’ drift."""
     try:
         _from = driver.current_url
     except Exception:
@@ -146,7 +146,7 @@ def navigate_to(driver, url: str) -> None:
 
 
 def navigate_history(driver, direction: str = "back") -> None:
-    """Go back or forward in history with human-like cursor park → restore → drift."""
+    """Go back or forward in history with operator-like cursor park â†’ restore â†’ drift."""
     try:
         _from = driver.current_url
     except Exception:
@@ -184,10 +184,10 @@ def smooth_scroll_chunk(driver, distance_px: int,
     step_px      pixels per step at peak velocity
     tick_ms      base milliseconds between steps
     """
-    # ── DEBUG LOGGING: SCROLL CHUNK tracking ──────────────────────────────────
+    # â”€â”€ DEBUG LOGGING: SCROLL CHUNK tracking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _sc_t0    = time.perf_counter()
     _sc_dir   = "down" if distance_px >= 0 else "up"
-    # ────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     total     = abs(distance_px)
     direction = 1 if distance_px >= 0 else -1
     steps     = int(max(1, total // max(1, step_px)))
@@ -197,7 +197,7 @@ def smooth_scroll_chunk(driver, distance_px: int,
         # Sine-based ease-in/ease-out: slow at start and end, fast in middle
         t        = (i + 0.5) / steps                        # normalised 0..1
         velocity = 0.5 - 0.5 * math.cos(math.pi * t)       # bell curve 0..1
-        # Step size scales with velocity: 1 px minimum, up to 2× step_px peak
+        # Step size scales with velocity: 1 px minimum, up to 2Ã— step_px peak
         move_f   = 1 + velocity * (step_px * 2 - 1)
         move     = max(1, min(int(move_f), total - scrolled))
         if move <= 0:
@@ -226,24 +226,24 @@ def smooth_scroll_chunk(driver, distance_px: int,
             "deltaY": direction * remainder,
             "pointerType": "mouse",
         })
-    # ── DEBUG LOGGING: [SCROLL CHUNK] summary ──────────────────────────────────
+    # â”€â”€ DEBUG LOGGING: [SCROLL CHUNK] summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _dlog.debug(
         "[SCROLL CHUNK]  distance=%dpx  direction=%s  step_px=%d  tick_ms=%d"
         "  steps=%d  actual_duration=%.0fms",
         total, _sc_dir, step_px, tick_ms, steps,
         (time.perf_counter() - _sc_t0) * 1000,
     )
-    # ────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def _sample_scroll_notches() -> int:
     """
     Fix #8: 3-component mixture distribution for scroll distance in wheel notches.
-    One notch = deltaY:100 deltaMode:1  ≈ 100-120 px at default browser line height.
+    One notch = deltaY:100 deltaMode:1  â‰ˆ 100-120 px at default browser line height.
 
-      40 % short   2–3 notches  (lazy one-finger flick)
-      40 % medium  4–7 notches  (normal reading scroll)
-      20 % long    8–14 notches (fast sweep / skipping section)
+      40 % short   2â€“3 notches  (lazy one-finger flick)
+      40 % medium  4â€“7 notches  (normal reading scroll)
+      20 % long    8â€“14 notches (fast sweep / skipping section)
     """
     r = random.random()
     if r < 0.40:
@@ -257,17 +257,17 @@ def _sample_scroll_notches() -> int:
 def _notched_scroll_burst(driver, n_notches: int, direction: int = 1) -> None:
     """
     Fix #7: Dispatch n_notches discrete mouse-wheel notches via CDP using
-    deltaMode:1 (line units, deltaY=±100) with natural burst-silence timing.
+    deltaMode:1 (line units, deltaY=Â±100) with natural burst-silence timing.
 
     Real USB mice report wheel events in firmware-timed bursts of 1-4 notches
     at the USB polling interval, followed by 80-800 ms of silence between
     mechanical detents.  A uniform pixel-delta stream (deltaMode:0) at 12-20 ms
-    intervals matches no real input device and is a detectable fingerprint.
+    intervals matches no real input device and is a repetitive timing pattern.
 
     This model:
       - fires 1-4 notches per burst (weighted toward smaller bursts)
-      - uses log-normal intra-burst gaps  (μ=25 ms, clamped 6-80 ms)
-      - uses log-normal inter-burst silences (μ=140 ms, clamped 80-250 ms)
+      - uses log-normal intra-burst gaps  (Î¼=25 ms, clamped 6-80 ms)
+      - uses log-normal inter-burst silences (Î¼=140 ms, clamped 80-250 ms)
 
     direction: 1 = scroll down, -1 = scroll up
     """
@@ -293,7 +293,7 @@ def _notched_scroll_burst(driver, n_notches: int, direction: int = 1) -> None:
                 _cdp_record_failure("notched_scroll", exc)
 
             if i < burst - 1:
-                # intra-burst: log-normal ≈ 25 ms (USB polling rhythm)
+                # intra-burst: log-normal â‰ˆ 25 ms (USB polling rhythm)
                 intra = max(0.006, min(
                     random.lognormvariate(math.log(0.025), 0.35),
                     0.080,
@@ -303,7 +303,7 @@ def _notched_scroll_burst(driver, n_notches: int, direction: int = 1) -> None:
         remaining -= burst
 
         if remaining > 0:
-            # inter-burst silence: log-normal ≈ 140 ms (hand pause between detents)
+            # inter-burst silence: log-normal â‰ˆ 140 ms (hand pause between detents)
             silence = max(0.080, min(
                 random.lognormvariate(math.log(0.140), 0.45),
                 0.250,
@@ -313,7 +313,7 @@ def _notched_scroll_burst(driver, n_notches: int, direction: int = 1) -> None:
 def _maybe_pause_for_video(driver) -> None:
     """
     Detect a <video> element visible in the viewport and, with 60 % chance,
-    pause for 3–15 s to simulate watching it.
+    pause for 3â€“15 s to simulate watching it.
 
     Called from stochastic_scroll so video watch-time accumulates naturally
     as the feed scrolls past video posts.  Only fires on threads.net/com URLs
@@ -345,10 +345,10 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
     Scroll the page for total_seconds with natural human variance.
 
     Reading pause tiers (per chunk):
-      3%  distraction  8–15 s  (phone buzz, looking away)
-     15%  long read    4.5–9 s  (interesting post)
-     17%  quick skim   0.3–1.2 s (nothing to see, keep scrolling)
-     65%  normal read  1.5–4 s
+      3%  distraction  8â€“15 s  (phone buzz, looking away)
+     15%  long read    4.5â€“9 s  (interesting post)
+     17%  quick skim   0.3â€“1.2 s (nothing to see, keep scrolling)
+     65%  normal read  1.5â€“4 s
     """
     def _browser_alive(driver, timeout: float = 5.0) -> bool:
     #Quick CDP ping to verify browser is still responsive.  
@@ -366,7 +366,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
         a user's eyes and hand moving across content they're reading.
 
         Rather than a flat sleep followed by a single wander, the pause is
-        broken into micro-segments of 0.6–2.0 s each.  After each segment there
+        broken into micro-segments of 0.6â€“2.0 s each.  After each segment there
         is a 72 % chance of a small cursor nudge.  Nudges are *local* ,  biased
         toward the current cursor position + Gaussian scatter ,  so the cursor
         drifts organically across the content area rather than teleporting.
@@ -409,7 +409,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
     # to model the hand resting on the desk and shifting while scrolling.
     _nudge_after  = random.randint(3, 5)
     _chunk_count  = 0
-    _total_chunks = 0   # ─ DEBUG: cumulative chunk counter for progress logs
+    _total_chunks = 0   # â”€ DEBUG: cumulative chunk counter for progress logs
     while time.time() < deadline:
         # Fix #7+#8: discrete notched wheel events with mixture distance distribution
         n_notches = _sample_scroll_notches()
@@ -417,7 +417,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
         _chunk_count  += 1
         _total_chunks += 1
 
-        # ── DEBUG LOGGING: scroll progress every 5 chunks ─────────────────────
+        # â”€â”€ DEBUG LOGGING: scroll progress every 5 chunks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if _total_chunks % 5 == 0:
             try:
                 _sy  = driver.execute_script("return window.scrollY")
@@ -432,7 +432,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
                 )
             except Exception:
                 pass
-        # ───────────────────────────────────────────────────────────────────────
+        # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
         # brief pause after scroll lands (hand leaving wheel)
         precise_sleep(random.uniform(0.15, 0.45))
@@ -471,7 +471,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
         else:
             _pause_tier = "normal"
             _pause_s    = random.uniform(1.5, 4.0)
-        # ── DEBUG LOGGING: [SCROLL CHUNK] with tier info ────────────────────────
+        # â”€â”€ DEBUG LOGGING: [SCROLL CHUNK] with tier info â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         _dlog.debug(
             "[SCROLL CHUNK]  pause_tier=%s  pause_duration=%.1fs",
             _pause_tier, _pause_s,
@@ -479,7 +479,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
         _timing_check(f"reading_pause_{_pause_tier}", _pause_s,
                       {"distraction": 8.0, "long": 4.5, "skim": 0.3, "normal": 1.5}[_pause_tier],
                       {"distraction": 15.0, "long": 9.0, "skim": 1.2, "normal": 4.0}[_pause_tier])
-        # ────────────────────────────────────────────────────────────────────
+        # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         _reading_pause(_pause_s)
         # Video dwell ,  fires on ~20% of normal/long chunks when a <video>
         # is visible in the viewport.  _maybe_pause_for_video() handles the
@@ -519,7 +519,7 @@ def _close_media_overlay(driver) -> bool:
          This avoids matching other Close SVGs (reply boxes, modals, etc.)
          that may also appear on the page.
       3. Bezier-arc to the button and click using ActionChains; JS .click()
-         is NOT used as it bypasses the real pointer event the overlay needs.
+         is NOT used as it skips the real pointer event the overlay needs.
       4. Wait up to 5 s for the URL to leave the /media path.
          Returns True ONLY when the URL has actually changed; returns False
          (so the caller can fall back to home nav) if the click had no effect.
@@ -618,3 +618,5 @@ def _close_media_overlay(driver) -> bool:
     except WebDriverException as exc:
         log.debug("[ PASSIVE ]  Close button click failed: %s", exc)
         return False
+
+

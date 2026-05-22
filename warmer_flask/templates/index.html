@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WARMER — Control Panel</title>
+<title>WARMER -- Control Panel</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow:wght@300;400;500;600&family=Barlow+Condensed:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
@@ -58,7 +58,7 @@
     z-index: 9999;
   }
 
-  /* ── Layout ── */
+  /* â”€â”€ Layout â”€â”€ */
   .shell {
     display: grid;
     grid-template-rows: 48px 1fr;
@@ -69,7 +69,7 @@
     height: 100vh;
   }
 
-  /* ── Header ── */
+  /* â”€â”€ Header â”€â”€ */
   header {
     grid-area: header;
     display: flex;
@@ -129,7 +129,7 @@
     50% { opacity: 0.4; }
   }
 
-  /* ── Sidebar ── */
+  /* â”€â”€ Sidebar â”€â”€ */
   .sidebar {
     grid-area: sidebar;
     background: var(--bg2);
@@ -153,7 +153,7 @@
     margin-bottom: 8px;
   }
 
-  /* ── Process cards in sidebar ── */
+  /* â”€â”€ Process cards in sidebar â”€â”€ */
   .proc-card {
     background: var(--bg3);
     border: 1px solid var(--border);
@@ -219,7 +219,7 @@
     gap: 4px;
   }
 
-  /* ── Buttons ── */
+  /* â”€â”€ Buttons â”€â”€ */
   .btn {
     font-family: var(--mono);
     font-size: 10px;
@@ -272,7 +272,7 @@
     font-size: 11px;
   }
 
-  /* ── Main content ── */
+  /* â”€â”€ Main content â”€â”€ */
   main {
     grid-area: main;
     padding: 16px;
@@ -282,7 +282,7 @@
     gap: 14px;
   }
 
-  /* ── Section headers ── */
+  /* â”€â”€ Section headers â”€â”€ */
   .section-head {
     display: flex;
     align-items: center;
@@ -305,7 +305,7 @@
     background: var(--border);
   }
 
-  /* ── Panels ── */
+  /* â”€â”€ Panels â”€â”€ */
   .panel {
     background: var(--bg2);
     border: 1px solid var(--border);
@@ -313,7 +313,7 @@
     padding: 14px 16px;
   }
 
-  /* ── Form elements ── */
+  /* â”€â”€ Form elements â”€â”€ */
   .field {
     margin-bottom: 10px;
   }
@@ -329,7 +329,8 @@
   }
 
   .field input,
-  .field select {
+  .field select,
+  .field textarea {
     width: 100%;
     background: var(--bg3);
     border: 1px solid var(--border);
@@ -343,11 +344,17 @@
   }
 
   .field input:focus,
-  .field select:focus {
+  .field select:focus,
+  .field textarea:focus {
     border-color: var(--cyan);
   }
 
   .field select option { background: var(--bg3); }
+
+  .field textarea {
+    min-height: 58px;
+    resize: vertical;
+  }
 
   .field-row {
     display: grid;
@@ -361,7 +368,26 @@
     gap: 8px;
   }
 
-  /* ── Checkbox toggle ── */
+  .weights-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+
+  .hint {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--dim);
+    margin: 6px 0 10px;
+  }
+
+  .config-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  /* â”€â”€ Checkbox toggle â”€â”€ */
   .toggle-row {
     display: flex;
     align-items: center;
@@ -394,7 +420,7 @@
   }
 
   input[type="checkbox"]:checked::after {
-    content: '✓';
+    content: 'x';
     position: absolute;
     top: -1px; left: 1px;
     font-size: 11px;
@@ -402,7 +428,7 @@
     font-weight: bold;
   }
 
-  /* ── Test action grid ── */
+  /* â”€â”€ Test action grid â”€â”€ */
   .action-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -437,7 +463,7 @@
     background: rgba(0, 212, 212, 0.08);
   }
 
-  /* ── Toast notifications ── */
+  /* â”€â”€ Toast notifications â”€â”€ */
   #toast-container {
     position: fixed;
     bottom: 20px;
@@ -469,7 +495,7 @@
     to   { opacity: 1; transform: translateX(0); }
   }
 
-  /* ── Log panel ── */
+  /* â”€â”€ Log panel â”€â”€ */
   .logs-panel {
     grid-area: logs;
     background: var(--bg2);
@@ -530,14 +556,13 @@
   .log-error   { color: var(--red); }
   .log-daemon  { color: #5a9aaa; }
   .log-action  { color: #7acf9a; }
-  .log-cookie  { color: #9a7acf; }
 
   /* Highlight keywords */
   .kw-pass    { color: var(--green); font-weight: bold; }
   .kw-fail    { color: var(--red); }
   .kw-start   { color: var(--cyan); }
 
-  /* ── Heartbeat strip ── */
+  /* â”€â”€ Heartbeat strip â”€â”€ */
   .heartbeat-strip {
     padding: 8px 14px;
     border-top: 1px solid var(--border);
@@ -555,7 +580,7 @@
   .hb-label { color: var(--dim); }
   .hb-value { color: var(--text2); }
 
-  /* ── Schedule table ── */
+  /* â”€â”€ Schedule table â”€â”€ */
   .sched-table {
     width: 100%;
     border-collapse: collapse;
@@ -585,7 +610,7 @@
   .sched-table td.next  { color: var(--amber); }
   .sched-table td.pid-col { color: var(--dim); font-size: 9px; }
 
-  /* ── Scrollbars ── */
+  /* â”€â”€ Scrollbars â”€â”€ */
   ::-webkit-scrollbar { width: 4px; height: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
@@ -596,17 +621,17 @@
 
 <div class="shell">
 
-  <!-- ── Header ── -->
+  <!-- â”€â”€ Header â”€â”€ -->
   <header>
     <div class="status-dot" id="conn-dot"></div>
     <div class="logo">NST<span>WARMER</span></div>
     <div class="header-sep"></div>
     <div class="sys-time">SYS <span id="clock">--:--:--</span></div>
     <div class="header-sep"></div>
-    <div class="sys-time">LAST UPDATE <span id="last-update">—</span></div>
+    <div class="sys-time">LAST UPDATE <span id="last-update">--</span></div>
   </header>
 
-  <!-- ── Sidebar ── -->
+  <!-- â”€â”€ Sidebar â”€â”€ -->
   <aside class="sidebar">
 
     <div class="sidebar-section">
@@ -625,34 +650,6 @@
           <button class="btn btn-stop"  id="btn-daemon-stop"  onclick="daemonStop()" disabled>STOP</button>
         </div>
       </div>
-
-<!-- Cookie daemon -->
-<div class="proc-card" id="card-cookie">
-  <div class="proc-header">
-    <div class="proc-indicator" id="dot-cookie"></div>
-    <div class="proc-name">Cookie Bot</div>
-    <div class="proc-pid" id="pid-cookie"></div>
-  </div>
-  <div class="proc-uptime" id="uptime-cookie" style="display:none"></div>
-  <div class="btn-row">
-    <button class="btn btn-start" id="btn-cookie-start" onclick="cookieStart()">START</button>
-    <button class="btn btn-stop"  id="btn-cookie-stop"  onclick="cookieStop()" disabled>STOP</button>
-  </div>
-</div>
-
-<!-- Cookie single session -->
-<div class="proc-card" id="card-cookie-single">
-  <div class="proc-header">
-    <div class="proc-indicator" id="dot-cookie-single"></div>
-    <div class="proc-name">Cookie Session</div>
-    <div class="proc-pid" id="pid-cookie-single"></div>
-  </div>
-  <div class="proc-uptime" id="uptime-cookie-single" style="display:none"></div>
-  <div class="btn-row">
-    <button class="btn btn-start" id="btn-cookie-single-start" onclick="cookieSingleStart()">START</button>
-    <button class="btn btn-stop"  id="btn-cookie-single-stop"  onclick="cookieSingleStop()" disabled>STOP</button>
-  </div>
-</div>
 
 <!-- One-shot session -->
       <div class="proc-card" id="card-session">
@@ -685,8 +682,59 @@
 
   </aside>
 
-  <!-- ── Main ── -->
+  <!-- â”€â”€ Main â”€â”€ -->
   <main>
+
+    <!-- Configuration -->
+    <div>
+      <div class="section-head">
+        <div class="section-title">Configuration</div>
+        <div class="section-line"></div>
+      </div>
+      <div class="panel">
+        <div class="field">
+          <label>NstBrowser API Key</label>
+          <input type="password" id="config-api-key" placeholder="API key">
+        </div>
+        <div class="field">
+          <label>Profile IDs</label>
+          <textarea id="config-profile-ids" placeholder="One profile ID per line"></textarea>
+        </div>
+        <div class="field">
+          <label>Target URL</label>
+          <input type="text" id="config-target-url" placeholder="https://www.threads.net">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Active Start</label>
+            <input type="number" id="config-active-start" min="0" max="23" step="1">
+          </div>
+          <div class="field">
+            <label>Active End</label>
+            <input type="number" id="config-active-end" min="0" max="23" step="1">
+          </div>
+        </div>
+        <div class="toggle-row">
+          <input type="checkbox" id="config-no-preflight">
+          <label for="config-no-preflight">Default --no-preflight</label>
+        </div>
+        <div class="hint">Blank weights keep built-in defaults. Numeric weights must be 0.0-1.0.</div>
+        <div class="weights-grid" id="weights-grid">
+          <div class="field"><label>Like</label><input type="number" id="weight-like" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Notify</label><input type="number" id="weight-notify" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Profile</label><input type="number" id="weight-profile" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Read Post</label><input type="number" id="weight-read_post" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Comment</label><input type="number" id="weight-comment" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Follow</label><input type="number" id="weight-follow" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Scroll</label><input type="number" id="weight-scroll" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Search</label><input type="number" id="weight-search" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Post</label><input type="number" id="weight-post" min="0" max="1" step="0.01" placeholder="default"></div>
+        </div>
+        <div class="config-actions">
+          <button class="btn btn-action btn-full" onclick="saveConfig()">SAVE CONFIG</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Daemon config -->
     <div>
@@ -708,43 +756,13 @@
       <div class="panel">
         <div class="field">
           <label>Profile ID</label>
-          <input type="text" id="session-profile" placeholder="UUID">
+          <select id="session-profile"></select>
         </div>
         <div class="toggle-row">
           <input type="checkbox" id="session-no-preflight">
           <label for="session-no-preflight">--no-preflight</label>
         </div>
         <button class="btn btn-start btn-full" onclick="sessionStart()">RUN SESSION</button>
-      </div>
-    </div>
-
-    <!-- Cookie bot config -->
-    <div>
-      <div class="section-head">
-        <div class="section-title">Cookie Bot</div>
-        <div class="section-line"></div>
-      </div>
-      <div class="panel">
-        <button class="btn btn-start btn-full" onclick="cookieStart()">START COOKIE DAEMON</button>
-      </div>
-    </div>
-
-    <!-- One-shot cookie session config -->
-    <div>
-      <div class="section-head">
-        <div class="section-title">Cookie Session</div>
-        <div class="section-line"></div>
-      </div>
-      <div class="panel">
-        <div class="field">
-          <label>Profile ID</label>
-          <input type="text" id="cookie-profile" placeholder="UUID">
-        </div>
-        <div class="field">
-            <label>Runs per session</label>
-            <input type="number" id="cookie-runs" value="1" min="1" max="5">
-          </div>
-        <button class="btn btn-start btn-full" onclick="cookieSingleStart()">RUN COOKIE SESSION</button>
       </div>
     </div>
 
@@ -757,10 +775,11 @@
       <div class="panel">
         <div class="field">
           <label>Profile ID</label>
-          <input type="text" id="test-profile" placeholder="UUID">
+          <select id="test-profile"></select>
         </div>
         <div class="action-grid">
-          <div class="action-btn selected" data-action="like"         onclick="selectAction(this)">like</div>
+          <div class="action-btn selected" data-action="all"          onclick="selectAction(this)">all</div>
+          <div class="action-btn"          data-action="like"         onclick="selectAction(this)">like</div>
           <div class="action-btn"          data-action="comment"      onclick="selectAction(this)">comment</div>
           <div class="action-btn"          data-action="follow"       onclick="selectAction(this)">follow</div>
           <div class="action-btn"          data-action="view_profile" onclick="selectAction(this)">profile</div>
@@ -800,7 +819,7 @@
 
   </main>
 
-  <!-- ── Logs ── -->
+  <!-- â”€â”€ Logs â”€â”€ -->
   <div class="logs-panel">
     <div class="logs-header">
   <div class="logs-title">Live Log</div>
@@ -809,17 +828,16 @@
     color: var(--text); font-family: var(--mono); font-size: 10px;
     padding: 2px 6px; border-radius: 2px;">
     <option value="warmer">warmer</option>
-    <option value="cookie">cookie</option>
     <option value="flask">flask</option>
   </select>
   <button class="logs-clear" onclick="clearLogs()">CLEAR</button>
 </div>
     <div id="log-box"></div>
     <div class="heartbeat-strip" id="hb-strip">
-      <div class="hb-item"><span class="hb-label">NEXT // </span><span class="hb-value" id="hb-next">—</span></div>
-      <div class="hb-item"><span class="hb-label">UPTIME // </span><span class="hb-value" id="hb-uptime">—</span></div>
-      <div class="hb-item"><span class="hb-label">PROFILE // </span><span class="hb-value" id="hb-profile">—</span></div>
-      <div class="hb-item"><span class="hb-label">BEAT // </span><span class="hb-value" id="hb-beat">—</span></div>
+      <div class="hb-item"><span class="hb-label">NEXT // </span><span class="hb-value" id="hb-next">--</span></div>
+      <div class="hb-item"><span class="hb-label">UPTIME // </span><span class="hb-value" id="hb-uptime">--</span></div>
+      <div class="hb-item"><span class="hb-label">PROFILE // </span><span class="hb-value" id="hb-profile">--</span></div>
+      <div class="hb-item"><span class="hb-label">BEAT // </span><span class="hb-value" id="hb-beat">--</span></div>
     </div>
   </div>
 
@@ -829,11 +847,15 @@
 <div id="toast-container"></div>
 
 <script>
-// ── State ─────────────────────────────────────────────────────────────────────
-let selectedAction = 'like';
+// â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+const ACTION_WEIGHT_KEYS = [
+  'like', 'notify', 'profile', 'read_post', 'comment',
+  'follow', 'scroll', 'search', 'post'
+];
+let selectedAction = 'all';
 let autoScroll = true;
 
-// ── Clock ─────────────────────────────────────────────────────────────────────
+// â”€â”€ Clock â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function updateClock() {
   const now = new Date();
   document.getElementById('clock').textContent =
@@ -842,7 +864,7 @@ function updateClock() {
 setInterval(updateClock, 1000);
 updateClock();
 
-// ── Toast ─────────────────────────────────────────────────────────────────────
+// â”€â”€ Toast â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function toast(msg, type = 'info') {
   const el = document.createElement('div');
   el.className = `toast ${type}`;
@@ -851,7 +873,7 @@ function toast(msg, type = 'info') {
   setTimeout(() => el.remove(), 3500);
 }
 
-// ── API helper ────────────────────────────────────────────────────────────────
+// â”€â”€ API helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function api(url, method = 'GET', body = null) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
@@ -859,15 +881,94 @@ async function api(url, method = 'GET', body = null) {
   return res.json();
 }
 
-// ── Action selector ───────────────────────────────────────────────────────────
+function collectWeights() {
+  const weights = {};
+  ACTION_WEIGHT_KEYS.forEach(key => {
+    const el = document.getElementById(`weight-${key}`);
+    const raw = el ? el.value.trim() : '';
+    weights[key] = raw === '' ? null : Number(raw);
+  });
+  return weights;
+}
+
+function collectConfigPayload() {
+  return {
+    nstbrowser_api_key: document.getElementById('config-api-key').value.trim(),
+    profile_ids: document.getElementById('config-profile-ids').value
+      .split(/[\n,]+/)
+      .map(v => v.trim())
+      .filter(Boolean),
+    target_social_url: document.getElementById('config-target-url').value.trim(),
+    active_hours: [
+      Number(document.getElementById('config-active-start').value),
+      Number(document.getElementById('config-active-end').value)
+    ],
+    default_no_preflight: document.getElementById('config-no-preflight').checked,
+    action_weights: collectWeights()
+  };
+}
+
+function populateProfileSelects(profileIds) {
+  const session = document.getElementById('session-profile');
+  const test = document.getElementById('test-profile');
+  session.innerHTML = '<option value="">All configured profiles</option>';
+  test.innerHTML = '<option value="">First configured profile</option>';
+  profileIds.forEach(pid => {
+    const label = pid.length > 18 ? `${pid.slice(0, 18)}...` : pid;
+    const option = `<option value="${pid}">${label}</option>`;
+    session.insertAdjacentHTML('beforeend', option);
+    test.insertAdjacentHTML('beforeend', option);
+  });
+}
+
+function applyConfigToForm(config) {
+  document.getElementById('config-api-key').value = '';
+  document.getElementById('config-api-key').placeholder =
+    config.api_key_set ? `Saved: ${config.api_key_masked}` : 'API key';
+  document.getElementById('config-profile-ids').value = (config.profile_ids || []).join('\n');
+  document.getElementById('config-target-url').value = config.target_social_url || 'https://www.threads.net';
+  document.getElementById('config-active-start').value = (config.active_hours || [8, 23])[0];
+  document.getElementById('config-active-end').value = (config.active_hours || [8, 23])[1];
+  document.getElementById('config-no-preflight').checked = !!config.default_no_preflight;
+  document.getElementById('session-no-preflight').checked = !!config.default_no_preflight;
+  const weights = config.action_weights || {};
+  ACTION_WEIGHT_KEYS.forEach(key => {
+    const el = document.getElementById(`weight-${key}`);
+    if (el) el.value = weights[key] ?? '';
+  });
+  populateProfileSelects(config.profile_ids || []);
+}
+
+async function loadConfig() {
+  try {
+    const r = await api('/api/config');
+    if (r.ok) applyConfigToForm(r.config);
+  } catch {
+    toast('config load failed', 'error');
+  }
+}
+
+async function saveConfig(opts = {}) {
+  const r = await api('/api/config', 'POST', collectConfigPayload());
+  if (!r.ok) {
+    toast(r.msg || 'config save failed', 'error');
+    throw new Error(r.msg || 'config save failed');
+  }
+  applyConfigToForm(r.config);
+  if (!opts.silent) toast(r.msg, 'ok');
+  return r.config;
+}
+
+// â”€â”€ Action selector â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function selectAction(el) {
   document.querySelectorAll('.action-btn').forEach(b => b.classList.remove('selected'));
   el.classList.add('selected');
   selectedAction = el.dataset.action;
 }
 
-// ── Process controls ──────────────────────────────────────────────────────────
+// â”€â”€ Process controls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function daemonStart() {
+  try { await saveConfig({ silent: true }); } catch { return; }
   const r = await api('/api/daemon/start', 'POST');
   toast(r.msg, r.ok ? 'ok' : 'error');
 }
@@ -877,37 +978,10 @@ async function daemonStop() {
   toast(r.msg, r.ok ? 'ok' : 'error');
 }
 
-async function cookieStart() {
-  const runs     = document.getElementById('cookie-runs').value.trim();
-  const body = {};
-  if (runs) body.runs = runs;
-  const r = await api('/api/cookie/start', 'POST', body);
-  toast(r.msg, r.ok ? 'ok' : 'error');
-}
-
-async function cookieSingleStart() { 
-  const profile     = document.getElementById('cookie-profile').value.trim();
-  const body = {};
-  if (profile) body.profile_id = profile;
-  const r = await api('/api/cookie/single/start', 'POST', body);
-  toast(r.msg, r.ok ? 'ok' : 'error');
-}
-
-async function cookieStop() {
-  const r = await api('/api/cookie/stop', 'POST');
-  toast(r.msg, r.ok ? 'ok' : 'error');
-}
-
-
-async function cookieSingleStop() {
-  const r = await api('/api/cookie/single/stop', 'POST');
-  toast(r.msg, r.ok ? 'ok' : 'error');
-}
-
-
 async function sessionStart() {
   const profile     = document.getElementById('session-profile').value.trim();
   const noPreflight = document.getElementById('session-no-preflight').checked;
+  try { await saveConfig({ silent: true }); } catch { return; }
   const body        = { no_preflight: noPreflight };
   if (profile) body.profile_id = profile;
 
@@ -923,6 +997,7 @@ async function sessionStop() {
 async function testStart() {
   const profile = document.getElementById('test-profile').value.trim();
   const body    = { action: selectedAction };
+  try { await saveConfig({ silent: true }); } catch { return; }
   if (profile) body.profile_id = profile;
 
   const r = await api('/api/test/start', 'POST', body);
@@ -934,7 +1009,7 @@ async function testStop() {
   toast(r.msg, r.ok ? 'ok' : 'error');
 }
 
-// ── Status polling ────────────────────────────────────────────────────────────
+// â”€â”€ Status polling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function applyProcStatus(key, data) {
   const card     = document.getElementById(`card-${key}`);
   const dot      = document.getElementById(`dot-${key}`);
@@ -972,8 +1047,6 @@ async function pollStatus() {
   try {
     const data = await api('/api/status');
     applyProcStatus('daemon',        data.daemon);
-    applyProcStatus('cookie',        data.cookie_daemon);
-    applyProcStatus('cookie-single', data.cookie_session);  // was data.cookie_single
     applyProcStatus('session',       data.session);
     applyProcStatus('test',          data.test);
     document.getElementById('last-update').textContent = data.timestamp;
@@ -985,9 +1058,10 @@ async function pollStatus() {
 
 
 setInterval(pollStatus, 2500);
+loadConfig();
 pollStatus();
 
-// ── Schedule polling ──────────────────────────────────────────────────────────
+// â”€â”€ Schedule polling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function pollSchedule() {
   try {
     const state = await api('/api/state');
@@ -1001,10 +1075,10 @@ async function pollSchedule() {
       const nextDate = nextTs ? new Date(nextTs * 1000).toLocaleString('en-US', {
         month: '2-digit', day: '2-digit',
         hour: '2-digit', minute: '2-digit', hour12: false
-      }) : '—';
+      }) : '--';
       const daily  = (data.daily || {})[today] || {};
-      const done   = daily.done   ?? '—';
-      const target = daily.target ?? '—';
+      const done   = daily.done   ?? '--';
+      const target = daily.target ?? '--';
       rows.push({ pid, nextTs, nextDate, done, target });
     }
 
@@ -1024,13 +1098,13 @@ async function pollSchedule() {
 setInterval(pollSchedule, 10000);
 pollSchedule();
 
-// ── Heartbeat polling ─────────────────────────────────────────────────────────
+// â”€â”€ Heartbeat polling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function pollHeartbeat() {
   try {
     const hb = await api('/api/heartbeat');
-    document.getElementById('hb-next').textContent    = hb.next_run    ? hb.next_run.slice(11, 16)    : '—';
-    document.getElementById('hb-profile').textContent = hb.next_profile ? hb.next_profile.slice(0, 8) : '—';
-    document.getElementById('hb-beat').textContent    = hb.last_heartbeat ? hb.last_heartbeat.slice(11, 19) : '—';
+    document.getElementById('hb-next').textContent    = hb.next_run    ? hb.next_run.slice(11, 16)    : '--';
+    document.getElementById('hb-profile').textContent = hb.next_profile ? hb.next_profile.slice(0, 8) : '--';
+    document.getElementById('hb-beat').textContent    = hb.last_heartbeat ? hb.last_heartbeat.slice(11, 19) : '--';
     const up = hb.uptime_seconds;
     if (up) {
       const h = Math.floor(up / 3600);
@@ -1043,7 +1117,7 @@ async function pollHeartbeat() {
 setInterval(pollHeartbeat, 8000);
 pollHeartbeat();
 
-// ── Log streaming ─────────────────────────────────────────────────────────────
+// â”€â”€ Log streaming â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const logBox = document.getElementById('log-box');
 
 function classifyLine(line) {
@@ -1051,7 +1125,6 @@ function classifyLine(line) {
   if (line.includes('WARNING'))              return 'log-warn';
   if (line.includes('DAEMON'))               return 'log-daemon';
   if (line.includes('ACTION') || line.includes('LIKE') || line.includes('FOLLOW')) return 'log-action';
-  if (line.includes('COOKIE'))               return 'log-cookie';
   if (line.includes('INFO') && (
     line.includes('session') || line.includes('profile') || line.includes('NAV')
   ))                                         return 'log-info-hi';

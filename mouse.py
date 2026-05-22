@@ -9,7 +9,7 @@ from config import MOUSE_TRACE, DEBUG_CURSOR_OVERLAY
 from utils import log, precise_sleep, _get_ctx, _dlog, _safe_tag, _timing_check, _mlog,_log_element_interaction
 
 # ================================================================== #
-#  HUMAN-LIKE INTERACTION PRIMITIVES
+#  INTERACTION PRIMITIVES
 # ================================================================== #
 
 # Bigram pairs that are naturally slow for most touch-typists ,  awkward
@@ -30,148 +30,17 @@ _SLOW_BIGRAMS = {
     'ct', 'ft', 'lt', 'pt', 'ny', 'ly', 'my', 'ry', 'ty', 'gy',
 }
 
-# QWERTY keyboard adjacency map for realistic typo generation.
-# Each key maps to its physically adjacent keys on a standard US layout.
-_QWERTY_ADJACENCY = {
-    'q': ['w', 'a'],           'w': ['q', 'e', 'a', 's'],
-    'e': ['w', 'r', 's', 'd'], 'r': ['e', 't', 'd', 'f'],
-    't': ['r', 'y', 'f', 'g'], 'y': ['t', 'u', 'g', 'h'],
-    'u': ['y', 'i', 'h', 'j'], 'i': ['u', 'o', 'j', 'k'],
-    'o': ['i', 'p', 'k', 'l'], 'p': ['o', 'l'],
-    'a': ['q', 'w', 's', 'z'], 's': ['w', 'e', 'a', 'd', 'z', 'x'],
-    'd': ['e', 'r', 's', 'f', 'x', 'c'],
-    'f': ['r', 't', 'd', 'g', 'c', 'v'],
-    'g': ['t', 'y', 'f', 'h', 'v', 'b'],
-    'h': ['y', 'u', 'g', 'j', 'b', 'n'],
-    'j': ['u', 'i', 'h', 'k', 'n', 'm'],
-    'k': ['i', 'o', 'j', 'l', 'm'],       'l': ['o', 'p', 'k'],
-    'z': ['a', 's', 'x'],     'x': ['s', 'd', 'z', 'c'],
-    'c': ['d', 'f', 'x', 'v'], 'v': ['f', 'g', 'c', 'b'],
-    'b': ['g', 'h', 'v', 'n'], 'n': ['h', 'j', 'b', 'm'],
-    'm': ['j', 'k', 'n'],
-}
+# Typo injection was intentionally removed from the thesis-facing workflow.
+# The suite keeps per-profile pacing but types approved text as written.
 
-# Active typing DNA is now tracked per-thread in SessionContext.active_typing_dna.
-# See _get_ctx() and _get_typing_dna().
-
-
-
-def _pick_error_char(char: str):
-    """Pick an error replacement character based on QWERTY adjacency.
-
-    Error taxonomy (weights):
-      Adjacent key:       45 %  (neighbouring QWERTY key)
-      Same key repeat:    15 %  (double-strike)
-      Second-order:       10 %  (2 keys away -- wrong-hand mirror)
-      Random adjacent:    30 %  (fallback to any adjacent key)
-    Returns None if no error can be generated for this character.
-    """
-    lower = char.lower()
-    is_upper = char.isupper()
-    adj = _QWERTY_ADJACENCY.get(lower, [])
-    if not adj:
-        return None
-
-    roll = random.random()
-    if roll < 0.45:
-        result = random.choice(adj)
-    elif roll < 0.60:
-        result = lower  # double-strike
-    elif roll < 0.70:
-        second = []
-        for a in adj:
-            second.extend(_QWERTY_ADJACENCY.get(a, []))
-        second = [k for k in set(second) if k != lower]
-        result = random.choice(second) if second else random.choice(adj)
-    else:
-        result = random.choice(adj)
-
-    return result.upper() if is_upper else result
-
-
-def _build_typo_sequence(text: str, error_rate: float,
-                         correction_prob: float,
-                         detection_delay_mean: float) -> list:
-    """Build a character-action sequence with realistic typos and corrections.
-
-    For each character position, with probability *error_rate* an error is
-    injected.  The wrong character is typed, then *detection_delay* more
-    correct characters follow before the error is noticed.  Backspace
-    erases back to the error, then the correct characters are retyped.
-
-    Errors are more likely near word boundaries (first/last 2 chars of a
-    word) where motor-planning transitions are less rehearsed.
-
-    Returns a list of action dicts:
-      {"char": "a"}                    -- type character 'a'
-      {"char": "", "backspace": True}  -- press Backspace
-    """
-    if error_rate <= 0:
-        return [{"char": c} for c in text]
-
-    actions = []
-    i = 0
-    # Pre-compute word boundary positions for error clustering
-    word_positions = set()
-    word_start = 0
-    for idx, ch in enumerate(text):
-        if ch == ' ':
-            if idx > 0:
-                word_positions.add(idx - 1)
-                word_positions.add(max(0, idx - 2))
-            word_start = idx + 1
-        elif idx == word_start or idx == word_start + 1:
-            word_positions.add(idx)
-
-    while i < len(text):
-        char = text[i]
-        eff_rate = error_rate * (1.5 if i in word_positions else 1.0)
-
-        if char.isalpha() and random.random() < eff_rate:
-            error_char = _pick_error_char(char)
-            if error_char is None:
-                actions.append({"char": char})
-                i += 1
-                continue
-
-            # Type the wrong character
-            actions.append({"char": error_char})
-
-            if random.random() < correction_prob:
-                # Detection delay: type a few more correct chars before noticing
-                delay = min(
-                    max(0, int(random.expovariate(
-                        1.0 / max(0.5, detection_delay_mean)))),
-                    min(4, len(text) - i - 1),
-                )
-                lookahead = text[i + 1: i + 1 + delay]
-                for la in lookahead:
-                    actions.append({"char": la})
-                # Backspace over lookahead + error
-                for _ in range(len(lookahead) + 1):
-                    actions.append({"char": "", "backspace": True})
-                # Retype correctly
-                actions.append({"char": char})
-                for la in lookahead:
-                    actions.append({"char": la})
-                i += 1 + len(lookahead)
-            else:
-                i += 1  # uncorrected error
-        else:
-            actions.append({"char": char})
-            i += 1
-
-    return actions
-
-
-# ── CDP keystroke dispatch ────────────────────────────────────────────────────
+# â”€â”€ CDP keystroke dispatch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Replaces Selenium element.send_keys() to avoid StaleElementReferenceException
 # when React/Lexical re-renders the contenteditable <div> mid-typing.
 # Also produces isTrusted:true keyboard events.
 
-# Fix #13: mapping from printable ASCII char → (code, windowsVirtualKeyCode, modifiers).
+# Fix #13: mapping from printable ASCII char â†’ (code, windowsVirtualKeyCode, modifiers).
 # `code` is the KeyboardEvent.code (physical key); `modifiers` bit 3 = Shift.
-# Absence of `code` causes KeyboardEvent.code to read as "" in JS ,  detectable.
+# Absence of `code` causes KeyboardEvent.code to read as "" in JS ,  repetitive.
 _ASCII_KEY_INFO: dict[str, tuple[str, int, int]] = {
     # Lowercase letters ,  location 0, no shift
     **{c: (f"Key{c.upper()}", ord(c.upper()), 0) for c in "abcdefghijklmnopqrstuvwxyz"},
@@ -211,16 +80,16 @@ def _cdp_type_key(driver, char: str) -> None:
 
     This exactly mirrors the CDP event sequence that Chrome records for
     physical hardware key presses.  The original two-event (keyDown+keyUp)
-    sequence omitted 'keypress', which is detectable by behavioral analytics
-    that fingerprint the full keyboard event chain (keydown → keypress →
-    beforeinput → input → keyup).
+    sequence omitted 'keypress', which is repetitive by behavioral analytics
+    that profile the full keyboard event chain (keydown â†’ keypress â†’
+    beforeinput â†’ input â†’ keyup).
 
     Note: the 'char' CDP type is deprecated in the spec but still the only
     way to generate a trusted DOM 'keypress' event via CDP.  It matches what
     Chrome DevTools itself records when you reproduce typing via the Recorder.
 
     Non-ASCII (emoji, accented chars) use Input.insertText which fires
-    beforeinput → input ,  matching real IME / emoji-picker behaviour.
+    beforeinput â†’ input ,  matching real IME / emoji-picker behaviour.
     """
     if len(char) == 1 and 32 <= ord(char) < 127:
         info = _ASCII_KEY_INFO.get(char)
@@ -270,20 +139,11 @@ def _cdp_backspace(driver) -> None:
 
 def human_type(element, text: str, driver=None, typing_dna: dict = None) -> None:
     """
-    Type text with a realistic, per-profile keystroke timing model.
+    Type text with a configurable per-profile keystroke timing model.
 
-    Improvements over the baseline:
-    1. Per-profile 'typing DNA' -- each profile has its own stable rhythm
-       parameters (mu, sigma, burst range, error rate) persisted in
-       post_state.json.
-    2. Typo/correction model -- injects realistic errors (adjacent-key,
-       double-strike, wrong-hand) with delayed detection and backspace
-       correction.
-    3. Fatigue drift -- typing gradually slows over a long text.
-
-    When typing_dna is None, falls back to the session-level
-    _get_ctx().active_typing_dna set by run_social_session(), or default mid-range
-    parameters if neither exists.
+    When typing_dna is None, falls back to the session-level typing profile set
+    by run_social_session(), or default mid-range parameters if neither exists.
+    The current thesis-facing configuration disables automatic typo injection.
     """
     # -- DEBUG LOGGING: typing audit ----------------------------------------
     _type_t0 = time.perf_counter()
@@ -299,7 +159,7 @@ def human_type(element, text: str, driver=None, typing_dna: dict = None) -> None
         element.click()   # fallback when driver is unavailable
     precise_sleep(random.uniform(0.08, 0.25))   # focus-settle after click
 
-    # Resolve typing DNA (session-level or defaults)
+    # Resolve typing profile (session-level or defaults)
     dna        = typing_dna or _get_ctx().active_typing_dna or {}
     _mu        = dna.get("base_mu",            math.log(0.08))
     _sigma     = dna.get("base_sigma",         0.40)
@@ -316,14 +176,9 @@ def human_type(element, text: str, driver=None, typing_dna: dict = None) -> None
     _hes_hi    = dna.get("hesitation_hi",      0.80)
     _bp_lo     = dna.get("bigram_penalty_lo",  1.4)
     _bp_hi     = dna.get("bigram_penalty_hi",  2.0)
-    _err_rate  = dna.get("error_rate",         0.0)
-    _corr_prob = dna.get("correction_prob",    0.85)
-    _det_delay = dna.get("detection_delay_mean", 1.5)
     _fatigue   = dna.get("fatigue_drift",      0.005)
 
-    # Build the character sequence with injected typos
-    typed_sequence = _build_typo_sequence(text, _err_rate, _corr_prob,
-                                          _det_delay)
+    typed_sequence = [{"char": c} for c in text]
 
     prev        = ''
     word_len    = 0
@@ -398,7 +253,7 @@ def human_type(element, text: str, driver=None, typing_dna: dict = None) -> None
 
     # -- DEBUG LOGGING: type complete ---------------------------------------
     _n_typos = sum(1 for a in typed_sequence if a.get("backspace"))
-    log.info("[TYPE END]  chars=%d  duration=%.1fs  typos_injected=%d",
+    log.info("[TYPE END]  chars=%d  duration=%.1fs  corrections=%d",
              len(text), time.perf_counter() - _type_t0, _n_typos)
     # -----------------------------------------------------------------------
 
@@ -410,9 +265,9 @@ def human_type(element, text: str, driver=None, typing_dna: dict = None) -> None
 #  DEBUG CURSOR OVERLAY
 # ------------------------------------------------------------------ #
 # Injects a visible red dot + coordinate label into the live browser page.
-# Responds to real DOM mousemove events fired by Selenium’s ActionChains,
+# Responds to real DOM mousemove events fired by Seleniumâ€™s ActionChains,
 # so it follows every bezier step in real time.
-# Injected via execute_script after each page load ,  safe, no fingerprint risk.
+# Injected via execute_script after each page load ,  safe, no profile risk.
 
 _CURSOR_OVERLAY_JS = """
 (function () {
@@ -490,15 +345,15 @@ def inject_cursor_overlay(driver) -> None:
         log.debug("Cursor overlay injection failed: %s", exc)
 
 # ------------------------------------------------------------------ #
-#  SHARED BÉZIER PATH ENGINE
+#  SHARED BÃ‰ZIER PATH ENGINE
 # ------------------------------------------------------------------ #
 # Fix #27: The JS batch-dispatch approach (_BEZIER_DISPATCH_JS) was removed.
 # MouseEvent() created inside execute_script() is always isTrusted:false , 
 # a property that cannot be overridden by user-land JS and is explicitly
-# checked by Meta's bot-detection pipeline via trusted-events heuristics.
+# checked by Meta's platform-integrity pipeline via trusted-events heuristics.
 # CDP Input.dispatchMouseEvent generates isTrusted:true events with the full
-# pointermove → mousemove chain identical to physical hardware input, at the
-# cost of ~1–2 ms per-step round-trip over localhost.  The per-step overhead
+# pointermove â†’ mousemove chain identical to physical hardware input, at the
+# cost of ~1â€“2 ms per-step round-trip over localhost.  The per-step overhead
 # is subtracted from the subsequent sleep (fix #29) so arc timing accuracy
 # is unaffected.
 
@@ -539,7 +394,7 @@ def _fire_bezier_arc(
     exact_end: bool = False,
 ) -> tuple:
     """
-    Build a randomised quadratic Bézier path from (x0,y0) to (x1,y1),
+    Build a randomised quadratic BÃ©zier path from (x0,y0) to (x1,y1),
     dispatch it step-by-step via CDP Input.dispatchMouseEvent (isTrusted:true),
     and subtract each CDP round-trip from the subsequent sleep so arc timing
     matches the Fitts's Law model precisely.  Returns (points, delays) for
@@ -547,13 +402,13 @@ def _fire_bezier_arc(
 
     Why CDP per-step dispatch instead of a single JS batch call (fix #27):
       JS-constructed MouseEvent()/PointerEvent() objects produced inside
-      execute_script() always have isTrusted=false (Web spec §4.2.2).  This
+      execute_script() always have isTrusted=false (Web spec Â§4.2.2).  This
       property is read-only and cannot be overridden by user-land JS.  Meta's
-      bot-detection layer explicitly checks isTrusted for pointer events
+      platform-integrity layer explicitly checks isTrusted for pointer events
       during engagement actions.  CDP Input.dispatchMouseEvent injects events
       at the browser input pipeline level, so they arrive as isTrusted:true
-      with the complete pointermove → mousemove event sequence that real
-      hardware produces.  The ~1–2 ms per-step round-trip overhead over
+      with the complete pointermove â†’ mousemove event sequence that real
+      hardware produces.  The ~1â€“2 ms per-step round-trip overhead over
       localhost is subtracted from each inter-step sleep (fix #29), keeping
       the arc's velocity profile faithful to the Fitts's Law model.
 
@@ -561,22 +416,22 @@ def _fire_bezier_arc(
     ----------------------
     The cp is always offset perpendicular to the travel direction so the
     curve has genuine curvature even on vertical or horizontal arcs.
-    • 25 % of arcs use a large lateral deviation (more visible sweep).
-    • 35 % let the cp bulge outside the viewport bbox ,  real paths often
+    â€¢ 25 % of arcs use a large lateral deviation (more visible sweep).
+    â€¢ 35 % let the cp bulge outside the viewport bbox ,  real paths often
       arc beyond the straight-line trajectory on diagonal moves.
-    • The sign is flipped when the chosen direction would be eaten by the
+    â€¢ The sign is flipped when the chosen direction would be eaten by the
       viewport edge, guaranteeing a real perpendicular offset.
 
     Tremor model
     ------------
-    Two-factor: velocity × distance.
-    • velocity bell (sin π·t): tremor is low at mid-arc (fast movement)
+    Two-factor: velocity Ã— distance.
+    â€¢ velocity bell (sin Ï€Â·t): tremor is low at mid-arc (fast movement)
       and rises at endpoints.  The approach phase (t > 0.80) adds extra
       corrective wobble, matching Fitts's Law biomechanics.
-    • dist_scale: short arcs get proportionally less absolute tremor.
+    â€¢ dist_scale: short arcs get proportionally less absolute tremor.
     The last step is not tremored:
-      exact_end=True  → forced to exactly (x1, y1) (coord-based arcs).
-      exact_end=False → bare Bézier point used (bezier_move, where the
+      exact_end=True  â†’ forced to exactly (x1, y1) (coord-based arcs).
+      exact_end=False â†’ bare BÃ©zier point used (bezier_move, where the
                         Phase 2 ActionChains snap corrects the position).
     """
     _arc_dist = math.hypot(x1 - x0, y1 - y0)
@@ -691,7 +546,7 @@ def _fire_bezier_arc(
         "ARC  from=(%d,%d)  cp=(%d,%d)  to=(%d,%d)  steps=%d  ms/step=%.1f  dur=%.0fms",
         x0, y0, cp[0], cp[1], x1, y1, steps, step_ms, cum_ms,
     )
-    # ── DEBUG LOGGING: MOUSE ARC structured audit ─────────────────────────────
+    # â”€â”€ DEBUG LOGGING: MOUSE ARC structured audit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _cp_offset = int(math.hypot(cp[0] - _mid_x, cp[1] - _mid_y))
     _dlog.debug(
         "[MOUSE ARC]  from=(%d,%d)  to=(%d,%d)  arc_dist=%.0fpx"
@@ -706,23 +561,23 @@ def _fire_bezier_arc(
         )
     _timing_check("bezier_arc", cum_ms / 1000.0,
                   max(0.10, _arc_dist / 4000.0), max(1.0, _arc_dist / 500.0))
-    # ─────────────────────────────────────────────────────────────────────────
-    # ── DEBUG LOGGING: update arc-completion timestamp for _cdp_click RISK WARN ──
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â”€â”€ DEBUG LOGGING: update arc-completion timestamp for _cdp_click RISK WARN â”€â”€
     _get_ctx().last_bezier_end_ts = time.perf_counter()
-    # ─────────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if MOUSE_TRACE:
         for i, ((nx, ny, dx, dy), t_ms) in enumerate(zip(points, step_times), 1):
             _mlog.debug("STEP  i=%02d  t=+%.0fms  pos=(%d,%d)  delta=(%+d,%+d)",
                         i, t_ms, nx, ny, dx, dy)
     # Dispatch via CDP Input.dispatchMouseEvent ,  produces isTrusted:true
-    # events with the full pointermove → mousemove chain that real hardware
+    # events with the full pointermove â†’ mousemove chain that real hardware
     # input generates.  JS-constructed MouseEvent() via execute_script() would
-    # always be isTrusted:false (Web spec §4.2.2) ,  a read-only flag checked by
-    # Meta's bot-detection layer for pointer events during engagement actions.
+    # always be isTrusted:false (Web spec Â§4.2.2) ,  a read-only flag checked by
+    # Meta's platform-integrity layer for pointer events during engagement actions.
     for pt, d_ms in zip(points, delays):
         # Fix #6/#29: measure CDP round-trip time and subtract it from the
         # inter-step sleep so the actual inter-step interval matches the
-        # biomechanical model instead of inflating it by the ~1–2 ms localhost
+        # biomechanical model instead of inflating it by the ~1â€“2 ms localhost
         # RTT on every step (~25% slowdown across a full arc without this).
         _step_t0 = time.perf_counter()
         try:
@@ -732,7 +587,7 @@ def _fire_bezier_arc(
                 "y": pt[1],
                 # Fix #5: pointer fields required for a fully-spec-compliant
                 # PointerEvent; absent fields default to undefined in Chrome's
-                # input pipeline, which is detectable via performance.getEntries.
+                # input pipeline, which is repetitive via performance.getEntries.
                 "pointerType": "mouse",
                 "pressure": 0.0,
                 "tiltX": 0,
@@ -751,14 +606,14 @@ def _cdp_click(driver, x: int = None, y: int = None) -> None:
 
     If x, y are omitted, clicks at the current _cursor_pos.
     Produces mousePressed + mouseReleased with a realistic inter-event
-    gap drawn from a human-like distribution.
+    gap drawn from a operator-like distribution.
     """
     cx = x if x is not None else _get_ctx().cursor_pos[0]
     cy = y if y is not None else _get_ctx().cursor_pos[1]
-    # ── DEBUG LOGGING: every click ───────────────────────────────────────────
+    # â”€â”€ DEBUG LOGGING: every click â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     log.debug("[CLICK]  pos=(%d,%d)  source=%s", cx, cy,
              "explicit" if x is not None else "cursor_pos")
-    # ────────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
         "type": "mousePressed",
         "x": cx, "y": cy,
@@ -782,7 +637,7 @@ def _cdp_click(driver, x: int = None, y: int = None) -> None:
         "tiltY": 0,
         "twist": 0,
     })
-    # ── DEBUG LOGGING: RISK WARN ,  click within 50ms of bezier completion ────
+    # â”€â”€ DEBUG LOGGING: RISK WARN ,  click within 50ms of bezier completion â”€â”€â”€â”€
     try:
         gap_ms = (time.perf_counter() - _get_ctx().last_bezier_end_ts) * 1000
         if 0 < gap_ms < 50:
@@ -795,7 +650,7 @@ def _cdp_click(driver, x: int = None, y: int = None) -> None:
             _dlog.debug("[CLICK]  pos=(%d,%d)  gap_from_arc=%.1fms", cx, cy, gap_ms)
     except Exception:
         pass
-    # ────────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _cdp_click_element(driver, element) -> None:
     """CDP click on a specific element ,  single event pair, no retry.
@@ -803,13 +658,13 @@ def _cdp_click_element(driver, element) -> None:
     Fix 6.4: the old two-attempt strategy (cursor_pos first, then bbox-centre
     fallback) fired mousePressed+mouseReleased *twice* when the primary missed.
     A mousePressed/Released pair that produces no click event followed
-    immediately by one that does is a detectable bot-detection signal.
+    immediately by one that does is a unwanted automation signal.
 
     New strategy: read the element's bounding rect BEFORE any mouse events,
     then fire exactly ONE mousePressed/mouseReleased pair:
-      • Normal path ,  cursor_pos is already inside the element bounds
+      â€¢ Normal path ,  cursor_pos is already inside the element bounds
                       (expected after every bezier_move): click there.
-      • Snap path   ,  cursor_pos is outside the element (page reflux / stale
+      â€¢ Snap path   ,  cursor_pos is outside the element (page reflux / stale
                       pos): silently update cursor to element centre first,
                       then click there.  Still one event pair, no failed attempt.
 
@@ -844,7 +699,7 @@ def init_cursor_pos(driver) -> None:
     Silently set _cursor_pos to a random position within the current viewport.
 
     No DOM event is dispatched ,  a single-step jump from (0,0) to a random
-    coordinate is a detectable bot signal.  The first real cursor event the
+    coordinate is a unwanted automation signal.  The first real cursor event the
     page sees will be the drift arc from _navigate_and_settle or the first
     bezier_move call, both of which start from this seeded position.
     """
@@ -865,17 +720,17 @@ def bezier_move(driver, target_element) -> None:
 
     All Bezier points are pre-computed in Python and dispatched via CDP,
     producing isTrusted:true mouseMoved events with the full
-    pointermove → mousemove chain.
+    pointermove â†’ mousemove chain.
 
     Cursor continuity: _cursor_pos is used as the start point and updated
     after each call so every arc begins from where the cursor last rested.
     """
-    # ── DEBUG LOGGING: element interaction audit ──────────────────────────────
+    # â”€â”€ DEBUG LOGGING: element interaction audit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     try:
         _log_element_interaction(driver, target_element, "hover")
     except Exception:
         pass
-    # ─────────────────────────────────────────────────────────────────────────
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     try:
         vw   = driver.execute_script("return window.innerWidth")
         vh   = driver.execute_script("return window.innerHeight")
@@ -888,7 +743,7 @@ def bezier_move(driver, target_element) -> None:
         x1 = int(rect["x"])
         y1 = int(rect["y"])
         # Aim offset: humans don't land on the geometric centre.
-        # Sigma scales with element size; clamped to ±35 % of dimension.
+        # Sigma scales with element size; clamped to Â±35 % of dimension.
         _ew = max(1, int(rect["w"]))
         _eh = max(1, int(rect["h"]))
         off_dx = int(max(-_ew * 0.35, min(random.gauss(0, max(2.0, _ew * 0.12)), _ew * 0.35)))
@@ -951,7 +806,7 @@ def bezier_move(driver, target_element) -> None:
                     "SNAP GAP  last_synthetic=(%d,%d)  snap_target=(%d,%d)  gap=%.1fpx",
                     last_syn_x, last_syn_y, snap_x, snap_y, snap_gap,
                 )
-            # ── DEBUG LOGGING: MOUSE SNAP structured audit ────────────────────
+            # â”€â”€ DEBUG LOGGING: MOUSE SNAP structured audit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             _dlog.debug(
                 "[MOUSE SNAP]  python_pos=(%d,%d)  snap_target=(%d,%d)  drift=%.1fpx",
                 last_syn_x, last_syn_y, snap_x, snap_y, snap_gap,
@@ -962,7 +817,7 @@ def bezier_move(driver, target_element) -> None:
                     "  python=(%d,%d)  target=(%d,%d)",
                     snap_gap, last_syn_x, last_syn_y, snap_x, snap_y,
                 )
-            # ──────────────────────────────────────────────────────────────────
+            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # CDP dispatch already produced trusted events at the exact
         # endpoint ,  no Phase 2 ActionChains snap needed.
         _set_cursor(snap_x, snap_y, "elem-hover")
@@ -979,11 +834,11 @@ def bezier_move_to_coords(driver, x1: int, y1: int, tag: str = "arc-end") -> Non
     (x1, y1) along a randomised quadratic Bezier arc at ~60 fps.
 
     Unlike bezier_move(), no DOM element is required.  Used for:
-      • parking the cursor at y=0 before page navigation  ("nav-park")
-      • idle cursor drift onto content after page load     ("idle-settle")
-      • cursor wanders during reading pauses               ("reading-wander")
-      • hand-shift nudges between scroll chunks            ("scroll-drift")
-      • pre-aim drifts toward a UI region                  ("nav-hover")
+      â€¢ parking the cursor at y=0 before page navigation  ("nav-park")
+      â€¢ idle cursor drift onto content after page load     ("idle-settle")
+      â€¢ cursor wanders during reading pauses               ("reading-wander")
+      â€¢ hand-shift nudges between scroll chunks            ("scroll-drift")
+      â€¢ pre-aim drifts toward a UI region                  ("nav-hover")
 
     CDP mouseMoved dispatch via _fire_bezier_arc() with exact_end=True
     so the arc lands exactly on the target coordinate.  CDP produces
@@ -998,10 +853,10 @@ def bezier_move_to_coords(driver, x1: int, y1: int, tag: str = "arc-end") -> Non
         y1 = max(0, min(y1, int(vh) - 1))
         if x0 == x1 and y0 == y1:
             return
-        # ── DEBUG LOGGING ──────────────────────────────────────────────────
+        # â”€â”€ DEBUG LOGGING â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         _dlog.debug("[CURSOR MOVE]  tag=%s  from=(%d,%d)  to=(%d,%d)  dist=%.0fpx",
                     tag, x0, y0, x1, y1, math.hypot(x1 - x0, y1 - y0))
-        # ──────────────────────────────────────────────────────────────────
+        # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         _fire_bezier_arc(driver, x0, y0, x1, y1, vw, vh, exact_end=True)
         _set_cursor(x1, y1, tag)
         debug_cursor_state(driver, f"bezier-coords/{tag}")
@@ -1017,8 +872,8 @@ def _bezier_point(p0, p1, p2, t):
     return int(x), int(y)
 
 
-# _ease_in_out_sine() REMOVED ,  symmetric sine ease was a fingerprint-level
-# tell detectable by trajectory classifiers.  Replaced by _min_jerk_basis()
+# _ease_in_out_sine() REMOVED ,  symmetric sine ease was a profile-level
+# tell repetitive by trajectory classifiers.  Replaced by _min_jerk_basis()
 # which produces the asymmetric velocity profile of real arm movements.
 
 
@@ -1028,7 +883,7 @@ def _min_jerk_basis(t: float) -> float:
     Produces an asymmetric velocity profile peaking at t ~ 0.47 -- faster
     acceleration and slower deceleration -- matching real arm-movement
     kinematics.  Replaces the symmetric _ease_in_out_sine() which was a
-    fingerprint-level tell detectable by trajectory classifiers.
+    repetitive timing pattern repetitive by trajectory classifiers.
     """
     t2 = t * t
     t3 = t2 * t
@@ -1118,3 +973,6 @@ def _set_cursor(x: int, y: int, tag: str = "") -> None:
     _get_ctx().cursor_pos[0], _get_ctx().cursor_pos[1] = x, y
     label = f"  [{tag}]" if tag else ""
     _mlog.debug("CURSOR  (%d, %d)%s", x, y, label)
+
+
+

@@ -237,7 +237,7 @@ def _heartbeat_writer(heap: list) -> None:
 
 # ── Daemon main function ────────────────────────────────────────────────────
 
-def daemon_main(weights: dict | None = None) -> None:
+def daemon_main(weights: dict | None = None, skip_preflight: bool = False) -> None:
     """Persistent 24/7 scheduler with per-profile independent scheduling.
 
     Never returns unless SIGINT/SIGTERM is received.  Each profile is
@@ -256,6 +256,10 @@ def daemon_main(weights: dict | None = None) -> None:
     log.info("=" * 60)
     log.info("[ DAEMON ]  starting 24/7 scheduler  |  profiles=%d  |  pid=%d",
              len(PROFILE_IDS), os.getpid())
+    if weights:
+        log.info("[ DAEMON ]  action weight overrides: %s", weights)
+    if skip_preflight:
+        log.info("[ DAEMON ]  preflight disabled by launch option")
 
     print(f"[DEBUG] profile logs dir: {_PROFILE_LOGS_DIR}")
     log.info("[ DAEMON ]  starting 24/7 scheduler  |  profiles=%d  |  pid=%d",
@@ -406,7 +410,11 @@ def daemon_main(weights: dict | None = None) -> None:
         print(f"[CTX DEBUG] handlers: {list(_ph_check.keys())[:2]}")
 
         try:
-            ran_session = warm_profile(profile_id)
+            ran_session = warm_profile(
+                profile_id,
+                skip_preflight=skip_preflight,
+                weights=weights,
+            )
 
         except Exception as exc:
             log.error("[ DAEMON ]  %s  uncaught exception: %s", profile_id[:12], exc)

@@ -13,6 +13,12 @@ import time
 from datetime import datetime
 from flask import Flask, Response, jsonify, render_template, request
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"))
+except Exception:
+    pass
+
 app = Flask(__name__)
 
 # ── Path to your script directory ─────────────────────────────────────────────
@@ -23,10 +29,30 @@ SCRIPT_DIR = os.environ.get(
 )
 PYTHON_EXE  = sys.executable
 MAIN_SCRIPT = os.path.join(SCRIPT_DIR, "main.py")
-COOKIE_SCRIPT = os.path.join(SCRIPT_DIR, "cookie_bot.py")
 STATE_FILE  = os.path.join(SCRIPT_DIR, "post_state.json")
 HEARTBEAT_FILE = os.path.join(SCRIPT_DIR, "heartbeat.json")
-COOKIE_STATE_FILE = os.path.join(SCRIPT_DIR, "cookie_state.json")
+UI_CONFIG_FILE = os.path.join(SCRIPT_DIR, "warmer_ui_config.json")
+
+ACTION_WEIGHT_FLAGS = {
+    "like": "--like",
+    "notify": "--notify",
+    "profile": "--profile",
+    "read_post": "--read-post",
+    "comment": "--comment",
+    "follow": "--follow",
+    "scroll": "--scroll",
+    "search": "--search",
+    "post": "--post",
+}
+
+DEFAULT_UI_CONFIG = {
+    "nstbrowser_api_key": "",
+    "profile_ids": [],
+    "target_social_url": "https://www.threads.net",
+    "active_hours": [8, 23],
+    "default_no_preflight": False,
+    "action_weights": {key: None for key in ACTION_WEIGHT_FLAGS},
+}
 
 import logging
 
@@ -57,17 +83,159 @@ _proc_start_times: dict[str, float] = {}
 PROC_LOG_FILES = {
     "daemon":         os.path.join(SCRIPT_DIR, "logs", "warmer.log"),
     "session":        os.path.join(SCRIPT_DIR, "logs", "warmer.log"),
-    "cookie_daemon":  os.path.join(SCRIPT_DIR, "logs", "cookie.log"),
-    "cookie_session": os.path.join(SCRIPT_DIR, "logs", "cookie.log"),
     "test":           os.path.join(SCRIPT_DIR, "logs", "warmer.log"),
 }
 
 # Used by /api/logs/stream/<log_name>
 LOG_FILES = {
     "warmer": os.path.join(SCRIPT_DIR, "logs", "warmer.log"),
-    "cookie": os.path.join(SCRIPT_DIR, "logs", "cookie.log"),
     "flask":  os.path.join(SCRIPT_DIR, "logs", "flask.log"),
 }
+
+
+def _deepcopy_default_config() -> dict:
+    return json.loads(json.dumps(DEFAULT_UI_CONFIG))
+
+
+def _load_ui_config_raw() -> dict:
+    config = _deepcopy_default_config()
+    config["nstbrowser_api_key"] = os.getenv("NSTBROWSER_API_KEY", "")
+    env_profiles = os.getenv("PROFILE_IDS", "")
+    if env_profiles:
+        config["profile_ids"] = [p.strip() for p in env_profiles.split(",") if p.strip()]
+    env_target = os.getenv("TARGET_SOCIAL_URL", "")
+    if env_target:
+        config["target_social_url"] = env_target
+    env_hours = os.getenv("ACTIVE_HOURS_RANGE", "")
+    if env_hours:
+        parts = [p.strip() for p in env_hours.split(",")]
+        if len(parts) == 2 and all(p.isdigit() for p in parts):
+            config["active_hours"] = [int(parts[0]), int(parts[1])]
+
+    try:
+        with open(UI_CONFIG_FILE, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+    except FileNotFoundError:
+        saved = {}
+    except json.JSONDecodeError:
+        saved = {}
+
+    if isinstance(saved, dict):
+        for key in ("nstbrowser_api_key", "profile_ids", "target_social_url",
+                    "active_hours", "default_no_preflight"):
+            if key in saved:
+                config[key] = saved[key]
+        weights = saved.get("action_weights")
+        if isinstance(weights, dict):
+            for key in ACTION_WEIGHT_FLAGS:
+                if key in weights:
+                    config["action_weights"][key] = weights[key]
+    return config
+
+
+def _mask_secret(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def _public_config(config: dict) -> dict:
+    public = {
+        "profile_ids": config.get("profile_ids", []),
+        "target_social_url": config.get("target_social_url", DEFAULT_UI_CONFIG["target_social_url"]),
+        "active_hours": config.get("active_hours", [8, 23]),
+        "default_no_preflight": bool(config.get("default_no_preflight", False)),
+        "action_weights": {
+            key: (config.get("action_weights") or {}).get(key)
+            for key in ACTION_WEIGHT_FLAGS
+        },
+    }
+    api_key = str(config.get("nstbrowser_api_key") or "")
+    public["api_key_set"] = bool(api_key)
+    public["api_key_masked"] = _mask_secret(api_key)
+    return public
+
+
+def _parse_profile_ids(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str):
+        return [v.strip() for v in value.replace("\n", ",").split(",") if v.strip()]
+    return []
+
+
+def _validate_ui_config(payload: dict, existing: dict) -> tuple[dict | None, str | None]:
+    api_key = str(payload.get("nstbrowser_api_key") or "").strip()
+    if not api_key:
+        api_key = str(existing.get("nstbrowser_api_key") or "").strip()
+    if not api_key:
+        return None, "NstBrowser API key is required."
+
+    profile_ids = _parse_profile_ids(payload.get("profile_ids"))
+    if not profile_ids:
+        return None, "At least one profile ID is required."
+
+    target_url = str(payload.get("target_social_url") or "").strip()
+    if not (target_url.startswith("http://") or target_url.startswith("https://")):
+        return None, "Target URL must start with http:// or https://."
+
+    hours = payload.get("active_hours")
+    if not isinstance(hours, list) or len(hours) != 2:
+        return None, "Active hours must contain start and end hours."
+    try:
+        start_hour, end_hour = int(hours[0]), int(hours[1])
+    except (TypeError, ValueError):
+        return None, "Active hours must be integers."
+    if not (0 <= start_hour <= end_hour <= 23):
+        return None, "Active hours must be within 0-23 and start must be <= end."
+
+    raw_weights = payload.get("action_weights") or {}
+    if not isinstance(raw_weights, dict):
+        return None, "Action weights must be an object."
+    weights = {}
+    for key in ACTION_WEIGHT_FLAGS:
+        raw = raw_weights.get(key)
+        if raw in ("", None):
+            weights[key] = None
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None, f"Weight '{key}' must be blank or a number."
+        if not 0.0 <= value <= 1.0:
+            return None, f"Weight '{key}' must be between 0.0 and 1.0."
+        weights[key] = value
+
+    config = {
+        "nstbrowser_api_key": api_key,
+        "profile_ids": profile_ids,
+        "target_social_url": target_url,
+        "active_hours": [start_hour, end_hour],
+        "default_no_preflight": bool(payload.get("default_no_preflight", False)),
+        "action_weights": weights,
+    }
+    return config, None
+
+
+def _save_ui_config(config: dict) -> None:
+    tmp = UI_CONFIG_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, UI_CONFIG_FILE)
+
+
+def _append_weight_flags(cmd: list[str], weights: dict | None = None) -> list[str]:
+    weights = weights if weights is not None else _load_ui_config_raw().get("action_weights", {})
+    for key, flag in ACTION_WEIGHT_FLAGS.items():
+        value = (weights or {}).get(key)
+        if value is not None:
+            cmd += [flag, str(value)]
+    return cmd
+
 
 def _launch(key: str, cmd: list[str]) -> dict:
     with _proc_lock:
@@ -125,14 +293,29 @@ def _status(key: str) -> dict:
 def index():
     return render_template("index.html")
 
+@app.route("/api/config", methods=["GET"])
+def get_ui_config():
+    return jsonify({"ok": True, "config": _public_config(_load_ui_config_raw())})
+
+
+@app.route("/api/config", methods=["POST"])
+def save_ui_config():
+    existing = _load_ui_config_raw()
+    config, error = _validate_ui_config(request.json or {}, existing)
+    if error:
+        return jsonify({"ok": False, "msg": error}), 400
+    try:
+        _save_ui_config(config)
+    except Exception as exc:
+        return jsonify({"ok": False, "msg": f"Could not save config: {exc}"}), 500
+    return jsonify({"ok": True, "msg": "configuration saved", "config": _public_config(config)})
+
 # ── Routes: process control ───────────────────────────────────────────────────
 
 @app.route("/api/status")
 def api_status():
     return jsonify({
         "daemon":        _status("daemon"),
-        "cookie_daemon": _status("cookie_daemon"),
-        "cookie_session":_status("cookie_session"),
         "session":       _status("session"),
         "test":          _status("test"),
         "timestamp":     datetime.now().strftime("%H:%M:%S"),
@@ -141,7 +324,12 @@ def api_status():
 
 @app.route("/api/daemon/start", methods=["POST"])
 def daemon_start():
+    config = _load_ui_config_raw()
+    data = request.json or {}
     cmd = [PYTHON_EXE, MAIN_SCRIPT, "--daemon"]
+    if data.get("no_preflight", config.get("default_no_preflight", False)):
+        cmd.append("--no-preflight")
+    _append_weight_flags(cmd, config.get("action_weights"))
     return jsonify(_launch("daemon", cmd))
 
 
@@ -150,43 +338,17 @@ def daemon_stop():
     return jsonify(_stop("daemon"))
 
 
-@app.route("/api/cookie/start", methods=["POST"])
-def cookie_daemon_start():
-    cmd = [PYTHON_EXE, COOKIE_SCRIPT, "--daemon", "--all-profiles"]
-    return jsonify(_launch("cookie_daemon", cmd))
-
-@app.route("/api/cookie/single/start", methods=["POST"])
-def cookie_single_start():
-    data = request.json or {}
-    profile = data.get("profile_id", "")
-    runs = data.get("runs")
-    cmd = [PYTHON_EXE, COOKIE_SCRIPT]
-    if runs:
-        cmd += ["--runs", runs]
-    if profile:
-        cmd += ["--profile", profile]
-    else:
-        cmd += ["--all-profiles"]
-    return jsonify(_launch("cookie_session", cmd))  # was "cookie_single"
-
-@app.route("/api/cookie/single/stop", methods=["POST"])
-def cookie_single_stop():
-    return jsonify(_stop("cookie_session"))  # was "cookie_single"
-
-@app.route("/api/cookie/stop", methods=["POST"])
-def cookie_daemon_stop():
-    return jsonify(_stop("cookie_daemon"))
-
-
 @app.route("/api/session/start", methods=["POST"])
 def session_start():
+    config = _load_ui_config_raw()
     data = request.json or {}
     profile = data.get("profile_id", "")
     cmd = [PYTHON_EXE, MAIN_SCRIPT]
     if profile:
         cmd += ["--profile-id", profile]
-    if data.get("no_preflight"):
+    if data.get("no_preflight", config.get("default_no_preflight", False)):
         cmd.append("--no-preflight")
+    _append_weight_flags(cmd, config.get("action_weights"))
     return jsonify(_launch("session", cmd))
 
 
@@ -195,7 +357,9 @@ def test_start():
     data = request.json or {}
     action  = data.get("action", "like")
     profile = data.get("profile_id", "")
-    cmd = [PYTHON_EXE, MAIN_SCRIPT, "--test-actions", action]
+    cmd = [PYTHON_EXE, MAIN_SCRIPT, "--test-actions"]
+    if action and action != "all":
+        cmd.append(action)
     if profile:
         cmd += ["--profile-id", profile]
     cmd.append("--no-preflight")
@@ -227,15 +391,6 @@ def heartbeat():
 def state():
     try:
         with open(STATE_FILE, "r") as f:
-            return jsonify(json.load(f))
-    except Exception:
-        return jsonify({})
-
-
-@app.route("/api/cookie_state")
-def cookie_state():
-    try:
-        with open(COOKIE_STATE_FILE, "r") as f:
             return jsonify(json.load(f))
     except Exception:
         return jsonify({})
@@ -294,8 +449,6 @@ def _group_log_entries(entries: list[dict]) -> list[dict]:
             label = "Session"
             if "DAEMON" in msg:
                 label = "Daemon"
-            elif "COOKIE" in msg:
-                label = "Cookie Bot"
             elif "TEST" in msg or "test-actions" in msg:
                 label = "Test Actions"
             elif "NstBrowser Warmer" in msg:
