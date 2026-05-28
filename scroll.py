@@ -48,9 +48,9 @@ def _navigate_and_settle(driver, action) -> None:
 
     # 2. Navigate
     action()
-    # â”€â”€ DEBUG LOGGING: NAV timing markers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  DEBUG LOGGING: NAV timing markers 
     _nav_t0 = time.perf_counter()
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â”€
     # Phase 1 ,  wait for the browser's resource-load signal.
     try:
         WebDriverWait(driver, 20).until(
@@ -102,7 +102,7 @@ def _navigate_and_settle(driver, action) -> None:
     _nav_settle_s = random.uniform(1.5, 3.5)
     precise_sleep(_nav_settle_s)
 
-    # â”€â”€ DEBUG LOGGING: [NAV] summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  DEBUG LOGGING: [NAV] summary â”€
     _overlay_present = False
     try:
         _overlay_present = bool(driver.execute_script(
@@ -116,7 +116,7 @@ def _navigate_and_settle(driver, action) -> None:
         _nav_readystate_ms, _nav_spa_ms, _nav_settle_s * 1000,
         _overlay_present, _get_ctx().cursor_pos[0], _get_ctx().cursor_pos[1],
     )
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â”€
 
     # 6. Drift into content ,  first browser input event on the new page,
     #    starting from (park_x, 0) and moving naturally into the feed area.
@@ -184,10 +184,10 @@ def smooth_scroll_chunk(driver, distance_px: int,
     step_px      pixels per step at peak velocity
     tick_ms      base milliseconds between steps
     """
-    # â”€â”€ DEBUG LOGGING: SCROLL CHUNK tracking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  DEBUG LOGGING: SCROLL CHUNK tracking 
     _sc_t0    = time.perf_counter()
     _sc_dir   = "down" if distance_px >= 0 else "up"
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # 
     total     = abs(distance_px)
     direction = 1 if distance_px >= 0 else -1
     steps     = int(max(1, total // max(1, step_px)))
@@ -226,14 +226,14 @@ def smooth_scroll_chunk(driver, distance_px: int,
             "deltaY": direction * remainder,
             "pointerType": "mouse",
         })
-    # â”€â”€ DEBUG LOGGING: [SCROLL CHUNK] summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  DEBUG LOGGING: [SCROLL CHUNK] summary 
     _dlog.debug(
         "[SCROLL CHUNK]  distance=%dpx  direction=%s  step_px=%d  tick_ms=%d"
         "  steps=%d  actual_duration=%.0fms",
         total, _sc_dir, step_px, tick_ms, steps,
         (time.perf_counter() - _sc_t0) * 1000,
     )
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # 
 
 
 def _sample_scroll_notches() -> int:
@@ -417,7 +417,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
         _chunk_count  += 1
         _total_chunks += 1
 
-        # â”€â”€ DEBUG LOGGING: scroll progress every 5 chunks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  DEBUG LOGGING: scroll progress every 5 chunks â”€
         if _total_chunks % 5 == 0:
             try:
                 _sy  = driver.execute_script("return window.scrollY")
@@ -432,7 +432,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
                 )
             except Exception:
                 pass
-        # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # â”€
 
         # brief pause after scroll lands (hand leaving wheel)
         precise_sleep(random.uniform(0.15, 0.45))
@@ -471,7 +471,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
         else:
             _pause_tier = "normal"
             _pause_s    = random.uniform(1.5, 4.0)
-        # â”€â”€ DEBUG LOGGING: [SCROLL CHUNK] with tier info â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  DEBUG LOGGING: [SCROLL CHUNK] with tier info 
         _dlog.debug(
             "[SCROLL CHUNK]  pause_tier=%s  pause_duration=%.1fs",
             _pause_tier, _pause_s,
@@ -479,7 +479,7 @@ def stochastic_scroll(driver, total_seconds: float) -> None:
         _timing_check(f"reading_pause_{_pause_tier}", _pause_s,
                       {"distraction": 8.0, "long": 4.5, "skim": 0.3, "normal": 1.5}[_pause_tier],
                       {"distraction": 15.0, "long": 9.0, "skim": 1.2, "normal": 4.0}[_pause_tier])
-        # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # 
         _reading_pause(_pause_s)
         # Video dwell ,  fires on ~20% of normal/long chunks when a <video>
         # is visible in the viewport.  _maybe_pause_for_video() handles the

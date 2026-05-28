@@ -33,7 +33,7 @@ _SLOW_BIGRAMS = {
 # Typo injection was intentionally removed from the thesis-facing workflow.
 # The suite keeps per-profile pacing but types approved text as written.
 
-# â”€â”€ CDP keystroke dispatch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  CDP keystroke dispatch 
 # Replaces Selenium element.send_keys() to avoid StaleElementReferenceException
 # when React/Lexical re-renders the contenteditable <div> mid-typing.
 # Also produces isTrusted:true keyboard events.
@@ -546,7 +546,7 @@ def _fire_bezier_arc(
         "ARC  from=(%d,%d)  cp=(%d,%d)  to=(%d,%d)  steps=%d  ms/step=%.1f  dur=%.0fms",
         x0, y0, cp[0], cp[1], x1, y1, steps, step_ms, cum_ms,
     )
-    # â”€â”€ DEBUG LOGGING: MOUSE ARC structured audit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  DEBUG LOGGING: MOUSE ARC structured audit â”€
     _cp_offset = int(math.hypot(cp[0] - _mid_x, cp[1] - _mid_y))
     _dlog.debug(
         "[MOUSE ARC]  from=(%d,%d)  to=(%d,%d)  arc_dist=%.0fpx"
@@ -561,10 +561,10 @@ def _fire_bezier_arc(
         )
     _timing_check("bezier_arc", cum_ms / 1000.0,
                   max(0.10, _arc_dist / 4000.0), max(1.0, _arc_dist / 500.0))
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # â”€â”€ DEBUG LOGGING: update arc-completion timestamp for _cdp_click RISK WARN â”€â”€
+    # â”€
+    #  DEBUG LOGGING: update arc-completion timestamp for _cdp_click RISK WARN 
     _get_ctx().last_bezier_end_ts = time.perf_counter()
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â”€
     if MOUSE_TRACE:
         for i, ((nx, ny, dx, dy), t_ms) in enumerate(zip(points, step_times), 1):
             _mlog.debug("STEP  i=%02d  t=+%.0fms  pos=(%d,%d)  delta=(%+d,%+d)",
@@ -610,10 +610,10 @@ def _cdp_click(driver, x: int = None, y: int = None) -> None:
     """
     cx = x if x is not None else _get_ctx().cursor_pos[0]
     cy = y if y is not None else _get_ctx().cursor_pos[1]
-    # â”€â”€ DEBUG LOGGING: every click â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  DEBUG LOGGING: every click â”€
     log.debug("[CLICK]  pos=(%d,%d)  source=%s", cx, cy,
              "explicit" if x is not None else "cursor_pos")
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # 
     driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
         "type": "mousePressed",
         "x": cx, "y": cy,
@@ -637,7 +637,7 @@ def _cdp_click(driver, x: int = None, y: int = None) -> None:
         "tiltY": 0,
         "twist": 0,
     })
-    # â”€â”€ DEBUG LOGGING: RISK WARN ,  click within 50ms of bezier completion â”€â”€â”€â”€
+    #  DEBUG LOGGING: RISK WARN ,  click within 50ms of bezier completion 
     try:
         gap_ms = (time.perf_counter() - _get_ctx().last_bezier_end_ts) * 1000
         if 0 < gap_ms < 50:
@@ -650,7 +650,7 @@ def _cdp_click(driver, x: int = None, y: int = None) -> None:
             _dlog.debug("[CLICK]  pos=(%d,%d)  gap_from_arc=%.1fms", cx, cy, gap_ms)
     except Exception:
         pass
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # 
 
 def _cdp_click_element(driver, element) -> None:
     """CDP click on a specific element ,  single event pair, no retry.
@@ -725,12 +725,12 @@ def bezier_move(driver, target_element) -> None:
     Cursor continuity: _cursor_pos is used as the start point and updated
     after each call so every arc begins from where the cursor last rested.
     """
-    # â”€â”€ DEBUG LOGGING: element interaction audit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  DEBUG LOGGING: element interaction audit 
     try:
         _log_element_interaction(driver, target_element, "hover")
     except Exception:
         pass
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â”€
     try:
         vw   = driver.execute_script("return window.innerWidth")
         vh   = driver.execute_script("return window.innerHeight")
@@ -806,7 +806,7 @@ def bezier_move(driver, target_element) -> None:
                     "SNAP GAP  last_synthetic=(%d,%d)  snap_target=(%d,%d)  gap=%.1fpx",
                     last_syn_x, last_syn_y, snap_x, snap_y, snap_gap,
                 )
-            # â”€â”€ DEBUG LOGGING: MOUSE SNAP structured audit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            #  DEBUG LOGGING: MOUSE SNAP structured audit 
             _dlog.debug(
                 "[MOUSE SNAP]  python_pos=(%d,%d)  snap_target=(%d,%d)  drift=%.1fpx",
                 last_syn_x, last_syn_y, snap_x, snap_y, snap_gap,
@@ -817,7 +817,7 @@ def bezier_move(driver, target_element) -> None:
                     "  python=(%d,%d)  target=(%d,%d)",
                     snap_gap, last_syn_x, last_syn_y, snap_x, snap_y,
                 )
-            # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # 
         # CDP dispatch already produced trusted events at the exact
         # endpoint ,  no Phase 2 ActionChains snap needed.
         _set_cursor(snap_x, snap_y, "elem-hover")
@@ -853,10 +853,10 @@ def bezier_move_to_coords(driver, x1: int, y1: int, tag: str = "arc-end") -> Non
         y1 = max(0, min(y1, int(vh) - 1))
         if x0 == x1 and y0 == y1:
             return
-        # â”€â”€ DEBUG LOGGING â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  DEBUG LOGGING 
         _dlog.debug("[CURSOR MOVE]  tag=%s  from=(%d,%d)  to=(%d,%d)  dist=%.0fpx",
                     tag, x0, y0, x1, y1, math.hypot(x1 - x0, y1 - y0))
-        # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # 
         _fire_bezier_arc(driver, x0, y0, x1, y1, vw, vh, exact_end=True)
         _set_cursor(x1, y1, tag)
         debug_cursor_state(driver, f"bezier-coords/{tag}")

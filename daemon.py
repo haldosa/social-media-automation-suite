@@ -10,13 +10,14 @@ from datetime import datetime, timedelta, date
 from config import (
     ACTIVE_HOURS_RANGE,
     HEARTBEAT_FILE, _HEARTBEAT_INTERVAL_SEC,
-    PROFILE_IDS, _SCRIPT_DIR,
+    PROFILE_IDS, TARGET_SOCIAL_URL, _SCRIPT_DIR,
 )
 from utils import _PROFILE_LOGS_DIR, log, _ensure_profile_logger, _active_profile_id
 from state import _load_post_state, _save_post_state
 from session import warm_profile
 from api import get_running_browsers
 from state import _post_state_locked, _ensure_profile_in_state
+from reporting import append_run, encode_json, iso_now, make_run_id
 
 # ================================================================== #
 #  24/7 DAEMON SCHEDULER
@@ -237,7 +238,11 @@ def _heartbeat_writer(heap: list) -> None:
 
 # ── Daemon main function ────────────────────────────────────────────────────
 
-def daemon_main(weights: dict | None = None, skip_preflight: bool = False) -> None:
+def daemon_main(
+    weights: dict | None = None,
+    skip_preflight: bool = False,
+    run_id: str | None = None,
+) -> None:
     """Persistent 24/7 scheduler with per-profile independent scheduling.
 
     Never returns unless SIGINT/SIGTERM is received.  Each profile is
@@ -245,6 +250,9 @@ def daemon_main(weights: dict | None = None, skip_preflight: bool = False) -> No
     next_run_ts.  All state survives restarts via post_state.json.
     """
     global _daemon_start_ts
+    run_id = run_id or make_run_id("daemon")
+    run_started_at = iso_now()
+    run_status = "stopped"
     _daemon_start_ts = time.time()
     _pid_file = os.path.join(_SCRIPT_DIR, "daemon.pid")
     with open(_pid_file, "w") as f:
@@ -414,6 +422,7 @@ def daemon_main(weights: dict | None = None, skip_preflight: bool = False) -> No
                 profile_id,
                 skip_preflight=skip_preflight,
                 weights=weights,
+                run_id=run_id,
             )
 
         except Exception as exc:
@@ -449,3 +458,17 @@ def daemon_main(weights: dict | None = None, skip_preflight: bool = False) -> No
 
     log.info("[ DAEMON ]  shutdown complete — schedule saved")
     log.info("=" * 60)
+    try:
+        append_run({
+            "run_id": run_id,
+            "process_type": "daemon",
+            "started_at": run_started_at,
+            "ended_at": iso_now(),
+            "status": run_status,
+            "profiles_requested": ";".join(PROFILE_IDS),
+            "target_url": TARGET_SOCIAL_URL,
+            "skip_preflight": skip_preflight,
+            "weight_overrides_json": encode_json(weights or {}),
+        })
+    except Exception as exc:
+        log.warning("[REPORT]  daemon run CSV write failed: %s", exc)

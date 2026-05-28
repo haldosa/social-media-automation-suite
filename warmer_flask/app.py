@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from datetime import datetime
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, send_file
 
 try:
     from dotenv import load_dotenv
@@ -32,6 +32,10 @@ MAIN_SCRIPT = os.path.join(SCRIPT_DIR, "main.py")
 STATE_FILE  = os.path.join(SCRIPT_DIR, "post_state.json")
 HEARTBEAT_FILE = os.path.join(SCRIPT_DIR, "heartbeat.json")
 UI_CONFIG_FILE = os.path.join(SCRIPT_DIR, "warmer_ui_config.json")
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+from reporting import REPORT_SCHEMAS, read_rows, report_path
 
 ACTION_WEIGHT_FLAGS = {
     "like": "--like",
@@ -398,6 +402,62 @@ def state():
 
 # ── Routes: log streaming (SSE) ───────────────────────────────────────────────
 
+def _limit_arg(default: int, maximum: int) -> int:
+    try:
+        value = int(request.args.get("limit", default))
+    except (TypeError, ValueError):
+        value = default
+    return max(1, min(value, maximum))
+
+
+@app.route("/api/reports/sessions")
+def report_sessions():
+    rows = read_rows(
+        "sessions",
+        limit=_limit_arg(100, 1000),
+        filters={"profile_id": request.args.get("profile_id", "")},
+    )
+    return jsonify({"rows": rows})
+
+
+@app.route("/api/reports/actions")
+def report_actions():
+    rows = read_rows(
+        "actions",
+        limit=_limit_arg(200, 2000),
+        filters={
+            "profile_id": request.args.get("profile_id", ""),
+            "session_id": request.args.get("session_id", ""),
+        },
+    )
+    return jsonify({"rows": rows})
+
+
+@app.route("/api/reports/diagnostics")
+def report_diagnostics():
+    rows = read_rows(
+        "diagnostics",
+        limit=_limit_arg(100, 1000),
+        filters={"profile_id": request.args.get("profile_id", "")},
+    )
+    return jsonify({"rows": rows})
+
+
+@app.route("/api/reports/download/<report_name>")
+def report_download(report_name):
+    if report_name not in REPORT_SCHEMAS:
+        return "Not found", 404
+    path = report_path(report_name)
+    if not os.path.exists(path):
+        return "Report has no rows yet.", 404
+    return send_file(
+        path,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=f"{report_name}.csv",
+    )
+
+
 import re
 from collections import defaultdict
 
@@ -532,7 +592,7 @@ def log_stream(log_name="warmer"):
 if __name__ == "__main__":
     try:
         from waitress import serve
-        print("Starting on http://0.0.0.0:5000")
-        serve(app, host="0.0.0.0", port=5000, threads=16)
+        print("Starting on http://127.0.0.1:5000")
+        serve(app, host="127.0.0.1", port=5000, threads=16)
     except ImportError:
-        app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+        app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)

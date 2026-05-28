@@ -59,7 +59,7 @@ def _parse_active_hours(value, default=(8, 23)) -> tuple[int, int]:
                 pass
     return default
 
-# â”€â”€ Content pools (comments, captions, search topics) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Content pools (comments, captions, search topics) 
 # POOLS_JSON_PATH can be:
 #   1. Set via env var POOLS_JSON_PATH (absolute or relative to CWD)
 #   2. Default: pools.json next to this script
@@ -122,7 +122,7 @@ ACTIVE_HOURS_RANGE  = _parse_active_hours(
 # Models the natural days when a real user simply doesn't open Threads.
 INACTIVE_DAY_PROB   = 0     # replaced by daemon scheduler's per-profile day-off logic
 
-# â”€â”€ Content posting â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ #
+#  Content posting  #
 # Set MEDIA_POOL_DIR to a local folder of images to attach to new posts.
 # Leave as None to post text-only captions.
 # Relative paths are resolved against the directory that contains this script

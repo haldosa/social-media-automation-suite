@@ -6,5 +6,7 @@ logs/
 screenshots/
 *.log*
 *.json*
+reports/*.csv
 *.pid
 docs/
+legacy/

@@ -33,6 +33,7 @@ from config import (
 from daemon import daemon_main
 from diagnostics import run_test_actions
 from mouse import init_cursor_pos
+from reporting import append_run, encode_json, iso_now, make_run_id
 from scroll import navigate_to
 from session import warm_profile, warm_profile_attached
 from utils import cleanup_screenshots, log, precise_sleep
@@ -146,7 +147,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _run_test_actions(args: argparse.Namespace, profile_ids_to_run: list[str]) -> None:
+def _run_test_actions(args: argparse.Namespace, profile_ids_to_run: list[str], run_id: str) -> None:
     pid = profile_ids_to_run[0] if profile_ids_to_run else None
     if not pid:
         log.error("No profiles configured -- cannot run test-actions.")
@@ -168,7 +169,7 @@ def _run_test_actions(args: argparse.Namespace, profile_ids_to_run: list[str]) -
             log.error("Profile '%s' appears logged out -- cannot run test-actions.", pid)
             return
         action_filter = args.test_actions if args.test_actions != "__all__" else None
-        run_test_actions(driver, profile_id=pid, filter_action=action_filter)
+        run_test_actions(driver, profile_id=pid, filter_action=action_filter, run_id=run_id)
     except (TimeoutException, RuntimeError, WebDriverException) as exc:
         log.error("test-actions error on '%s': %s", pid, exc)
     finally:
@@ -207,83 +208,116 @@ def _wait_for_active_hours() -> None:
 def main() -> None:
     args = _build_parser().parse_args()
     weights = _build_weight_kwargs(args)
+    process_type = "daemon" if args.daemon else "test_actions" if args.test_actions else "session"
+    run_id = make_run_id(process_type)
+    run_started_at = iso_now()
+    run_status = "completed"
 
     log.info("=" * 60)
     log.info("NstBrowser Warmer (API v2) -- %s", datetime.now().strftime("%Y-%m-%d %H:%M"))
+    log.info("Run ID: %s", run_id)
     if weights:
         log.info("Action weight overrides: %s", weights)
 
     profile_ids_to_run = [args.profile_id] if args.profile_id else list(PROFILE_IDS)
 
-    if args.daemon:
-        if args.test_actions:
-            log.error("--daemon cannot be combined with --test-actions")
-            return
-        daemon_main(weights=weights, skip_preflight=args.no_preflight)
-        return
-
-    if args.test_actions:
-        _run_test_actions(args, profile_ids_to_run)
-        return
-
-    if random.random() < INACTIVE_DAY_PROB:
-        log.info(
-            "Simulating inactive day (%.0f%% probability) -- no profiles run today.",
-            INACTIVE_DAY_PROB * 100,
-        )
-        return
-
-    _wait_for_active_hours()
-
-    log.info("Target: %s  |  Profiles: %d", TARGET_SOCIAL_URL, len(profile_ids_to_run))
-    profile_order = profile_ids_to_run.copy()
-    random.shuffle(profile_order)
-    log.info("Execution order: %s", profile_order)
-
-    running_ids = set()
     try:
-        running_browsers = get_running_browsers()
-        running_ids = {b.get("id") or b.get("profileId") for b in running_browsers}
-        if running_browsers:
-            log.info("Already running at startup: %s", [b.get("profileId") for b in running_browsers])
-    except Exception as exc:
-        log.warning("[MAIN]  could not query running browsers: %s", exc)
+        if args.daemon:
+            if args.test_actions:
+                log.error("--daemon cannot be combined with --test-actions")
+                run_status = "failed"
+                return
+            daemon_main(weights=weights, skip_preflight=args.no_preflight, run_id=run_id)
+            return
 
-    for idx, pid in enumerate(profile_order):
-        log.info("-" * 60)
-        log.info("[%d/%d] Starting: %s", idx + 1, len(profile_order), pid)
+        if args.test_actions:
+            _run_test_actions(args, profile_ids_to_run, run_id)
+            return
 
-        if pid in running_ids:
-            log.info("[MAIN]  %s is already open -- attaching", pid[:12])
-            try:
-                address = _resolve_attached_address(pid)
-                ran_session = warm_profile_attached(
-                    debugger_address=address,
-                    profile_id=pid,
-                    skip_preflight=args.no_preflight,
-                    close_after=args.close,
-                    weights=weights,
-                )
-            except Exception as exc:
-                log.error("[MAIN]  attach failed for %s: %s", pid[:12], exc)
-                ran_session = False
-        else:
-            ran_session = warm_profile(pid, skip_preflight=args.no_preflight, weights=weights)
+        if random.random() < INACTIVE_DAY_PROB:
+            log.info(
+                "Simulating inactive day (%.0f%% probability) -- no profiles run today.",
+                INACTIVE_DAY_PROB * 100,
+            )
+            run_status = "skipped"
+            return
 
-        if idx < len(profile_order) - 1:
-            if ran_session:
-                if random.random() < BUFFER_LONG_PROB:
-                    buf = random.uniform(BUFFER_LONG_MIN * 60, BUFFER_LONG_MAX * 60)
-                    log.info("Extended buffer: %.1f min before next profile...", buf / 60)
-                else:
-                    buf = random.uniform(BUFFER_MIN_MIN * 60, BUFFER_MAX_MIN * 60)
-                    log.info("Buffer: %.1f min before next profile...", buf / 60)
-                time.sleep(buf)
+        _wait_for_active_hours()
+
+        log.info("Target: %s  |  Profiles: %d", TARGET_SOCIAL_URL, len(profile_ids_to_run))
+        profile_order = profile_ids_to_run.copy()
+        random.shuffle(profile_order)
+        log.info("Execution order: %s", profile_order)
+
+        running_ids = set()
+        try:
+            running_browsers = get_running_browsers()
+            running_ids = {b.get("id") or b.get("profileId") for b in running_browsers}
+            if running_browsers:
+                log.info("Already running at startup: %s", [b.get("profileId") for b in running_browsers])
+        except Exception as exc:
+            log.warning("[MAIN]  could not query running browsers: %s", exc)
+
+        for idx, pid in enumerate(profile_order):
+            log.info("-" * 60)
+            log.info("[%d/%d] Starting: %s", idx + 1, len(profile_order), pid)
+
+            if pid in running_ids:
+                log.info("[MAIN]  %s is already open -- attaching", pid[:12])
+                try:
+                    address = _resolve_attached_address(pid)
+                    ran_session = warm_profile_attached(
+                        debugger_address=address,
+                        profile_id=pid,
+                        skip_preflight=args.no_preflight,
+                        close_after=args.close,
+                        weights=weights,
+                        run_id=run_id,
+                    )
+                except Exception as exc:
+                    log.error("[MAIN]  attach failed for %s: %s", pid[:12], exc)
+                    ran_session = False
             else:
-                log.info("Profile failed -- skipping inter-profile buffer.")
+                ran_session = warm_profile(
+                    pid,
+                    skip_preflight=args.no_preflight,
+                    weights=weights,
+                    run_id=run_id,
+                )
 
-    log.info("=" * 60)
-    log.info("All profiles warmed. Done.")
+            if idx < len(profile_order) - 1:
+                if ran_session:
+                    if random.random() < BUFFER_LONG_PROB:
+                        buf = random.uniform(BUFFER_LONG_MIN * 60, BUFFER_LONG_MAX * 60)
+                        log.info("Extended buffer: %.1f min before next profile...", buf / 60)
+                    else:
+                        buf = random.uniform(BUFFER_MIN_MIN * 60, BUFFER_MAX_MIN * 60)
+                        log.info("Buffer: %.1f min before next profile...", buf / 60)
+                    time.sleep(buf)
+                else:
+                    log.info("Profile failed -- skipping inter-profile buffer.")
+
+        log.info("=" * 60)
+        log.info("All profiles warmed. Done.")
+    except Exception:
+        run_status = "failed"
+        raise
+    finally:
+        if not args.daemon:
+            try:
+                append_run({
+                    "run_id": run_id,
+                    "process_type": process_type,
+                    "started_at": run_started_at,
+                    "ended_at": iso_now(),
+                    "status": run_status,
+                    "profiles_requested": ";".join(profile_ids_to_run),
+                    "target_url": TARGET_SOCIAL_URL,
+                    "skip_preflight": args.no_preflight,
+                    "weight_overrides_json": encode_json(weights),
+                })
+            except Exception as exc:
+                log.warning("[REPORT]  run CSV write failed: %s", exc)
 
 
 if __name__ == "__main__":

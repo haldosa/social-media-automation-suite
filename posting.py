@@ -425,9 +425,9 @@ def create_post(driver, profile_id: str) -> bool:
             log.warning("[ POST ]  media preparation failed (%s) ,  using original", exc)
             image_path = _src_for_prepare
 
-    # â”€â”€ DEBUG LOGGING: POST FLOW timer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  DEBUG LOGGING: POST FLOW timer 
     _pf_t0 = time.perf_counter()
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # 
 
     caption = _humanize_caption(_get_ctx().profile_caption_pool or POST_CAPTION_POOL)
     log.info(
@@ -791,18 +791,19 @@ def create_post(driver, profile_id: str) -> bool:
 
 def post_action(driver, profile_id: str) -> None:
     """Session-loop dispatch wrapper for create_post."""
-    # â”€â”€ DEBUG LOGGING: ACTION START â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  DEBUG LOGGING: ACTION START 
     _action_t0 = time.perf_counter()
     _get_ctx().session_metrics["actions_dispatched"] += 1
     log.info("[ACTION START]  action=post")
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # 
     result = create_post(driver, profile_id)
-    # â”€â”€ DEBUG LOGGING: ACTION END â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  DEBUG LOGGING: ACTION END 
     if result:
         _get_ctx().session_metrics["posts"] += 1
     log.info("[ACTION END]  action=post  result=%s  duration=%.1fs",
              "success" if result else "failure", time.perf_counter() - _action_t0)
-    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    return result
+    # 
 
 
 
