@@ -1,4 +1,4 @@
-# nstbrowser-threads-warmer
+# Social-Media-Automation-Suite
 
 A local Python automation prototype for running controlled Threads browsing sessions through existing Chrome / NstBrowser-style browser profiles.
 
