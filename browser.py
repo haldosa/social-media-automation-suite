@@ -1,22 +1,29 @@
-import os
-import re
-import random
-import math
 import glob as _glob
+import math
+import os
+import random
+import re
+
 import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
-from utils import log
+
 from state import (
-    _post_state_locked,
-    _load_post_state,
-    _save_post_state,
     _ensure_profile_in_state,
+    _load_post_state,
+    _post_state_locked,
+    _save_post_state,
 )
+from utils import log
+
+
+# ================================================================== #
+#  CHROMEDRIVER RESOLUTION
+# ================================================================== #
 
 
 def _get_browser_major_version(ws_url: str) -> int:
-    """Read Chrome major version from the debugger endpoint."""
+    """Query /json/version on the running browser to get the Chrome major version."""
     host_port = ws_url.replace("ws://", "").split("/")[0]
     try:
         resp = requests.get(f"http://{host_port}/json/version", timeout=5)
@@ -30,10 +37,10 @@ def _get_browser_major_version(ws_url: str) -> int:
 
 def _get_chromedriver_path(major: int) -> str:
     """
-    Resolve chromedriver with a simple deterministic order:
-      1. NstBrowser bundled driver
-      2. webdriver-manager
-      3. PATH fallback
+    Resolve the correct chromedriver in priority order:
+      1. NstBrowser's bundled chromedriver when present
+      2. webdriver-manager auto-download
+      3. System PATH fallback
     """
     search_roots = [
         os.path.expandvars(r"%LOCALAPPDATA%\Programs\NstBrowser\resources\app\browser"),
@@ -44,8 +51,10 @@ def _get_chromedriver_path(major: int) -> str:
         "/opt/NstBrowser/resources/app/browser",
     ]
     for root in search_roots:
-        for pat in (os.path.join(root, "**", "chromedriver.exe"),
-                    os.path.join(root, "**", "chromedriver")):
+        for pat in (
+            os.path.join(root, "**", "chromedriver.exe"),
+            os.path.join(root, "**", "chromedriver"),
+        ):
             hits = _glob.glob(pat, recursive=True)
             if hits:
                 log.info("Using bundled chromedriver: %s", hits[0])
@@ -53,27 +62,25 @@ def _get_chromedriver_path(major: int) -> str:
 
     try:
         from webdriver_manager.chrome import ChromeDriverManager
-        if major > 0:
-            path = ChromeDriverManager(driver_version=str(major)).install()
-        else:
-            path = ChromeDriverManager().install()
+
+        path = ChromeDriverManager(driver_version=str(major)).install()
         log.info("webdriver-manager chromedriver: %s", path)
         return path
     except ImportError:
         log.warning("webdriver-manager not installed; run: pip install webdriver-manager")
     except Exception as exc:
-        log.warning("webdriver-manager failed (%s), falling back to PATH", exc)
+        log.warning("webdriver-manager failed (%s); falling back to PATH", exc)
 
-    log.warning("Using system chromedriver from PATH (version mismatch possible).")
+    log.warning("Using system chromedriver from PATH (may fail if version mismatches).")
     return "chromedriver"
 
 
 def connect_selenium(ws_debugger_url: str) -> webdriver.Chrome:
     """
-    Attach Selenium to an already-running browser via debuggerAddress.
+    Attach Selenium to an already-running NstBrowser/Chrome profile.
 
-    This thesis version intentionally avoids stealth/evasion-specific runtime
-    patching and keeps the connection layer minimal and auditable.
+    When attaching via debuggerAddress, the only launch option needed is the
+    debugger address because the browser process is already running.
     """
     address = ws_debugger_url.replace("ws://", "").split("/")[0]
     log.info("Connecting Selenium -> debuggerAddress: %s", address)
@@ -92,52 +99,72 @@ def connect_selenium(ws_debugger_url: str) -> webdriver.Chrome:
     return driver
 
 
+# ================================================================== #
+#  TYPING PROFILE
+# ================================================================== #
+
+
 def _generate_typing_dna() -> dict:
-    """Generate a stable per-profile typing fingerprint."""
+    """Generate a stable per-profile typing profile.
+
+    The function name is kept for compatibility with existing imports. New
+    thesis-facing wording treats this as a configurable typing pace profile,
+    not as a behavioral identity marker.
+    """
     burst_min = random.randint(2, 5)
     burst_max = burst_min + random.randint(2, 5)
     return {
-        "base_mu":              random.uniform(math.log(0.065), math.log(0.110)),
-        "base_sigma":           random.uniform(0.30, 0.55),
-        "burst_min":            burst_min,
-        "burst_max":            burst_max,
-        "space_pause_lo":       random.uniform(0.03, 0.08),
-        "space_pause_hi":       random.uniform(0.12, 0.22),
-        "punct_pause_lo":       random.uniform(0.15, 0.30),
-        "punct_pause_hi":       random.uniform(0.40, 0.70),
-        "burst_gap_lo":         random.uniform(0.04, 0.08),
-        "burst_gap_hi":         random.uniform(0.12, 0.25),
-        "hesitation_prob":      random.uniform(0.02, 0.07),
-        "hesitation_lo":        random.uniform(0.20, 0.40),
-        "hesitation_hi":        random.uniform(0.60, 1.00),
-        "bigram_penalty_lo":    random.uniform(1.2, 1.6),
-        "bigram_penalty_hi":    random.uniform(1.6, 2.2),
-        "error_rate":           random.uniform(0.01, 0.06),
-        "correction_prob":      random.uniform(0.70, 0.95),
-        "detection_delay_mean": random.uniform(0.5, 2.5),
-        "fatigue_drift":        random.uniform(0.002, 0.012),
+        "base_mu": random.uniform(math.log(0.065), math.log(0.110)),
+        "base_sigma": random.uniform(0.30, 0.50),
+        "burst_min": burst_min,
+        "burst_max": burst_max,
+        "space_pause_lo": random.uniform(0.03, 0.08),
+        "space_pause_hi": random.uniform(0.12, 0.22),
+        "punct_pause_lo": random.uniform(0.15, 0.30),
+        "punct_pause_hi": random.uniform(0.35, 0.65),
+        "burst_gap_lo": random.uniform(0.04, 0.08),
+        "burst_gap_hi": random.uniform(0.12, 0.25),
+        "hesitation_prob": random.uniform(0.01, 0.04),
+        "hesitation_lo": random.uniform(0.20, 0.40),
+        "hesitation_hi": random.uniform(0.50, 0.90),
+        "bigram_penalty_lo": random.uniform(1.1, 1.4),
+        "bigram_penalty_hi": random.uniform(1.4, 1.8),
+        "error_rate": 0.0,
+        "correction_prob": 0.0,
+        "correction_delay_mean": 0.0,
+        "fatigue_drift": random.uniform(0.001, 0.006),
     }
 
 
 def _get_typing_dna(profile_id: str) -> dict:
-    """Load or create the typing DNA for a profile."""
+    """Load or generate the typing profile for a profile.
+
+    Existing persisted ``typing_dna`` keys are still accepted for compatibility.
+    """
     if not profile_id:
         return _generate_typing_dna()
 
     with _post_state_locked():
         state = _load_post_state()
         _ensure_profile_in_state(profile_id, state)
-        profile = state.get(profile_id, {})
-        dna = profile.get("typing_dna")
-        if dna and isinstance(dna, dict) and "base_mu" in dna:
-            return dna
 
-        dna = _generate_typing_dna()
-        state[profile_id]["typing_dna"] = dna
+        profile = state.get(profile_id, {})
+        typing_profile = profile.get("typing_dna")
+        if typing_profile and isinstance(typing_profile, dict) and "base_mu" in typing_profile:
+            typing_profile["error_rate"] = 0.0
+            typing_profile["correction_prob"] = 0.0
+            typing_profile["correction_delay_mean"] = 0.0
+            return typing_profile
+
+        typing_profile = _generate_typing_dna()
+        state[profile_id]["typing_dna"] = typing_profile
         _save_post_state(state)
 
     log.info(
-        "[ TYPING DNA ]  generated fingerprint for %s  mu=%.3f sigma=%.2f err=%.1f%%",
-        profile_id[:8], dna["base_mu"], dna["base_sigma"], dna["error_rate"] * 100,
+        "[ TYPING PROFILE ]  generated pace profile for %s  mu=%.3f sigma=%.2f",
+        profile_id[:8],
+        typing_profile["base_mu"],
+        typing_profile["base_sigma"],
     )
-    return dna
+    return typing_profile
+

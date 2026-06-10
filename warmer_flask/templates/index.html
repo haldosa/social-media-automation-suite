@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WARMER — Control Panel</title>
+<title>WARMER -- Control Panel</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow:wght@300;400;500;600&family=Barlow+Condensed:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
@@ -58,7 +58,7 @@
     z-index: 9999;
   }
 
-  /* ── Layout ── */
+  /*  Layout  */
   .shell {
     display: grid;
     grid-template-rows: 48px 1fr;
@@ -69,7 +69,7 @@
     height: 100vh;
   }
 
-  /* ── Header ── */
+  /*  Header  */
   header {
     grid-area: header;
     display: flex;
@@ -129,7 +129,7 @@
     50% { opacity: 0.4; }
   }
 
-  /* ── Sidebar ── */
+  /*  Sidebar  */
   .sidebar {
     grid-area: sidebar;
     background: var(--bg2);
@@ -153,7 +153,7 @@
     margin-bottom: 8px;
   }
 
-  /* ── Process cards in sidebar ── */
+  /*  Process cards in sidebar  */
   .proc-card {
     background: var(--bg3);
     border: 1px solid var(--border);
@@ -219,7 +219,7 @@
     gap: 4px;
   }
 
-  /* ── Buttons ── */
+  /*  Buttons  */
   .btn {
     font-family: var(--mono);
     font-size: 10px;
@@ -272,7 +272,7 @@
     font-size: 11px;
   }
 
-  /* ── Main content ── */
+  /*  Main content  */
   main {
     grid-area: main;
     padding: 16px;
@@ -282,7 +282,7 @@
     gap: 14px;
   }
 
-  /* ── Section headers ── */
+  /*  Section headers  */
   .section-head {
     display: flex;
     align-items: center;
@@ -305,7 +305,7 @@
     background: var(--border);
   }
 
-  /* ── Panels ── */
+  /*  Panels  */
   .panel {
     background: var(--bg2);
     border: 1px solid var(--border);
@@ -313,7 +313,7 @@
     padding: 14px 16px;
   }
 
-  /* ── Form elements ── */
+  /*  Form elements  */
   .field {
     margin-bottom: 10px;
   }
@@ -329,7 +329,8 @@
   }
 
   .field input,
-  .field select {
+  .field select,
+  .field textarea {
     width: 100%;
     background: var(--bg3);
     border: 1px solid var(--border);
@@ -343,11 +344,17 @@
   }
 
   .field input:focus,
-  .field select:focus {
+  .field select:focus,
+  .field textarea:focus {
     border-color: var(--cyan);
   }
 
   .field select option { background: var(--bg3); }
+
+  .field textarea {
+    min-height: 58px;
+    resize: vertical;
+  }
 
   .field-row {
     display: grid;
@@ -361,7 +368,26 @@
     gap: 8px;
   }
 
-  /* ── Checkbox toggle ── */
+  .weights-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+
+  .hint {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--dim);
+    margin: 6px 0 10px;
+  }
+
+  .config-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  /*  Checkbox toggle  */
   .toggle-row {
     display: flex;
     align-items: center;
@@ -394,7 +420,7 @@
   }
 
   input[type="checkbox"]:checked::after {
-    content: '✓';
+    content: 'x';
     position: absolute;
     top: -1px; left: 1px;
     font-size: 11px;
@@ -402,7 +428,7 @@
     font-weight: bold;
   }
 
-  /* ── Test action grid ── */
+  /*  Test action grid  */
   .action-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -437,7 +463,7 @@
     background: rgba(0, 212, 212, 0.08);
   }
 
-  /* ── Toast notifications ── */
+  /*  Toast notifications  */
   #toast-container {
     position: fixed;
     bottom: 20px;
@@ -469,7 +495,7 @@
     to   { opacity: 1; transform: translateX(0); }
   }
 
-  /* ── Log panel ── */
+  /*  Log panel  */
   .logs-panel {
     grid-area: logs;
     background: var(--bg2);
@@ -479,11 +505,10 @@
   }
 
   .logs-header {
-    padding: 10px 14px;
+    padding: 10px 12px;
     border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
-    gap: 8px;
     flex-shrink: 0;
   }
 
@@ -495,6 +520,83 @@
     text-transform: uppercase;
     color: var(--text2);
     flex: 1;
+  }
+
+  .logs-menu {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+  }
+
+  .view-tab {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 7px 8px;
+    border: 1px solid var(--border2);
+    border-radius: 2px;
+    color: var(--text);
+    background: var(--bg3);
+    cursor: pointer;
+    text-align: center;
+  }
+
+  .view-tab.active {
+    color: var(--cyan);
+    border-color: var(--cyan);
+    background: rgba(0, 212, 212, 0.08);
+  }
+
+  .view-tab:hover {
+    color: var(--cyan);
+    border-color: var(--cyan);
+  }
+
+  .logs-toolbar {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+  }
+
+  .logs-toolbar-spacer {
+    flex: 1;
+  }
+
+  .toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .toolbar-label {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 1px;
+    color: var(--dim);
+    text-transform: uppercase;
+  }
+
+  .toolbar-select {
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: 2px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 3px 6px;
+    outline: none;
+    max-width: 150px;
+  }
+
+  .toolbar-select:focus {
+    border-color: var(--cyan);
   }
 
   .logs-clear {
@@ -530,14 +632,105 @@
   .log-error   { color: var(--red); }
   .log-daemon  { color: #5a9aaa; }
   .log-action  { color: #7acf9a; }
-  .log-cookie  { color: #9a7acf; }
+
+  .logs-view {
+    display: none;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .logs-view.active {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .report-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 10px 12px;
+  }
+
+  .live-log-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .report-downloads {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+
+  .report-link {
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 5px 7px;
+    border: 1px solid var(--border2);
+    border-radius: 2px;
+    color: var(--text);
+    background: var(--bg3);
+    cursor: pointer;
+    text-decoration: none;
+  }
+
+  .report-link:hover {
+    color: var(--cyan);
+    border-color: var(--cyan);
+  }
+
+  .report-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+  }
+
+  .report-table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 620px;
+  }
+
+  .report-table th,
+  .report-table td {
+    font-family: var(--mono);
+    font-size: 9px;
+    padding: 5px 7px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    white-space: nowrap;
+  }
+
+  .report-table th {
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    background: var(--bg3);
+  }
+
+  .report-table td {
+    color: var(--text);
+  }
+
+  .report-empty {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--dim);
+    padding: 14px 4px;
+  }
 
   /* Highlight keywords */
   .kw-pass    { color: var(--green); font-weight: bold; }
   .kw-fail    { color: var(--red); }
   .kw-start   { color: var(--cyan); }
 
-  /* ── Heartbeat strip ── */
+  /*  Heartbeat strip  */
   .heartbeat-strip {
     padding: 8px 14px;
     border-top: 1px solid var(--border);
@@ -555,7 +748,7 @@
   .hb-label { color: var(--dim); }
   .hb-value { color: var(--text2); }
 
-  /* ── Schedule table ── */
+  /*  Schedule table  */
   .sched-table {
     width: 100%;
     border-collapse: collapse;
@@ -585,7 +778,7 @@
   .sched-table td.next  { color: var(--amber); }
   .sched-table td.pid-col { color: var(--dim); font-size: 9px; }
 
-  /* ── Scrollbars ── */
+  /*  Scrollbars  */
   ::-webkit-scrollbar { width: 4px; height: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
@@ -596,17 +789,17 @@
 
 <div class="shell">
 
-  <!-- ── Header ── -->
+  <!--  Header  -->
   <header>
     <div class="status-dot" id="conn-dot"></div>
     <div class="logo">NST<span>WARMER</span></div>
     <div class="header-sep"></div>
     <div class="sys-time">SYS <span id="clock">--:--:--</span></div>
     <div class="header-sep"></div>
-    <div class="sys-time">LAST UPDATE <span id="last-update">—</span></div>
+    <div class="sys-time">LAST UPDATE <span id="last-update">--</span></div>
   </header>
 
-  <!-- ── Sidebar ── -->
+  <!--  Sidebar  -->
   <aside class="sidebar">
 
     <div class="sidebar-section">
@@ -625,20 +818,6 @@
           <button class="btn btn-stop"  id="btn-daemon-stop"  onclick="daemonStop()" disabled>STOP</button>
         </div>
       </div>
-
-<!-- Cookie single session -->
-<div class="proc-card" id="card-cookie-single">
-  <div class="proc-header">
-    <div class="proc-indicator" id="dot-cookie-single"></div>
-    <div class="proc-name">Cookie Session</div>
-    <div class="proc-pid" id="pid-cookie-single"></div>
-  </div>
-  <div class="proc-uptime" id="uptime-cookie-single" style="display:none"></div>
-  <div class="btn-row">
-    <button class="btn btn-start" id="btn-cookie-single-start" onclick="cookieSingleStart()">START</button>
-    <button class="btn btn-stop"  id="btn-cookie-single-stop"  onclick="cookieSingleStop()" disabled>STOP</button>
-  </div>
-</div>
 
 <!-- One-shot session -->
       <div class="proc-card" id="card-session">
@@ -671,8 +850,59 @@
 
   </aside>
 
-  <!-- ── Main ── -->
+  <!--  Main  -->
   <main>
+
+    <!-- Configuration -->
+    <div>
+      <div class="section-head">
+        <div class="section-title">Configuration</div>
+        <div class="section-line"></div>
+      </div>
+      <div class="panel">
+        <div class="field">
+          <label>NstBrowser API Key</label>
+          <input type="password" id="config-api-key" placeholder="API key">
+        </div>
+        <div class="field">
+          <label>Profile IDs</label>
+          <textarea id="config-profile-ids" placeholder="One profile ID per line"></textarea>
+        </div>
+        <div class="field">
+          <label>Target URL</label>
+          <input type="text" id="config-target-url" placeholder="https://www.threads.net">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Active Start</label>
+            <input type="number" id="config-active-start" min="0" max="23" step="1">
+          </div>
+          <div class="field">
+            <label>Active End</label>
+            <input type="number" id="config-active-end" min="0" max="23" step="1">
+          </div>
+        </div>
+        <div class="toggle-row">
+          <input type="checkbox" id="config-no-preflight">
+          <label for="config-no-preflight">Default --no-preflight</label>
+        </div>
+        <div class="hint">Blank weights keep built-in defaults. Numeric weights must be 0.0-1.0.</div>
+        <div class="weights-grid" id="weights-grid">
+          <div class="field"><label>Like</label><input type="number" id="weight-like" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Notify</label><input type="number" id="weight-notify" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Profile</label><input type="number" id="weight-profile" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Read Post</label><input type="number" id="weight-read_post" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Comment</label><input type="number" id="weight-comment" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Follow</label><input type="number" id="weight-follow" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Scroll</label><input type="number" id="weight-scroll" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Search</label><input type="number" id="weight-search" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Post</label><input type="number" id="weight-post" min="0" max="1" step="0.01" placeholder="default"></div>
+        </div>
+        <div class="config-actions">
+          <button class="btn btn-action btn-full" onclick="saveConfig()">SAVE CONFIG</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Daemon config -->
     <div>
@@ -694,32 +924,13 @@
       <div class="panel">
         <div class="field">
           <label>Profile ID</label>
-          <input type="text" id="session-profile" placeholder="UUID">
+          <select id="session-profile"></select>
         </div>
         <div class="toggle-row">
           <input type="checkbox" id="session-no-preflight">
           <label for="session-no-preflight">--no-preflight</label>
         </div>
         <button class="btn btn-start btn-full" onclick="sessionStart()">RUN SESSION</button>
-      </div>
-    </div>
-
-    <!-- One-shot cookie session config -->
-    <div>
-      <div class="section-head">
-        <div class="section-title">Cookie Session</div>
-        <div class="section-line"></div>
-      </div>
-      <div class="panel">
-        <div class="field">
-          <label>Profile ID</label>
-          <input type="text" id="cookie-profile" placeholder="UUID">
-        </div>
-        <div class="field">
-            <label>Runs per session</label>
-            <input type="number" id="cookie-runs" value="1" min="1" max="5">
-          </div>
-        <button class="btn btn-start btn-full" onclick="cookieSingleStart()">RUN COOKIE SESSION</button>
       </div>
     </div>
 
@@ -732,10 +943,11 @@
       <div class="panel">
         <div class="field">
           <label>Profile ID</label>
-          <input type="text" id="test-profile" placeholder="UUID">
+          <select id="test-profile"></select>
         </div>
         <div class="action-grid">
-          <div class="action-btn selected" data-action="like"         onclick="selectAction(this)">like</div>
+          <div class="action-btn selected" data-action="all"          onclick="selectAction(this)">all</div>
+          <div class="action-btn"          data-action="like"         onclick="selectAction(this)">like</div>
           <div class="action-btn"          data-action="comment"      onclick="selectAction(this)">comment</div>
           <div class="action-btn"          data-action="follow"       onclick="selectAction(this)">follow</div>
           <div class="action-btn"          data-action="view_profile" onclick="selectAction(this)">profile</div>
@@ -775,26 +987,63 @@
 
   </main>
 
-  <!-- ── Logs ── -->
+  <!--  Logs  -->
   <div class="logs-panel">
     <div class="logs-header">
-  <div class="logs-title">Live Log</div>
-  <select id="log-source" onchange="switchLog()" style="
-    background: var(--bg3); border: 1px solid var(--border2);
-    color: var(--text); font-family: var(--mono); font-size: 10px;
-    padding: 2px 6px; border-radius: 2px;">
-    <option value="warmer">warmer</option>
-    <option value="cookie">cookie</option>
-    <option value="flask">flask</option>
-  </select>
-  <button class="logs-clear" onclick="clearLogs()">CLEAR</button>
-</div>
-    <div id="log-box"></div>
+      <div class="logs-menu" role="tablist" aria-label="Monitor view">
+        <button class="view-tab active" id="tab-results" data-view="results" role="tab" aria-controls="results-view" aria-selected="true" onclick="switchPanelView('results')">Results</button>
+        <button class="view-tab" id="tab-live-log" data-view="live-log" role="tab" aria-controls="live-log-view" aria-selected="false" onclick="switchPanelView('live-log')">Live Log</button>
+      </div>
+    </div>
+
+    <div class="logs-view active" id="results-view" role="tabpanel" aria-labelledby="tab-results">
+      <div class="logs-toolbar">
+        <div class="toolbar-group">
+          <label class="toolbar-label" for="report-source">Report</label>
+          <select id="report-source" class="toolbar-select" onchange="selectReport(this.value)">
+            <option value="sessions">sessions</option>
+            <option value="actions">actions</option>
+            <option value="diagnostics">diagnostics</option>
+          </select>
+        </div>
+        <div class="logs-toolbar-spacer"></div>
+        <button class="logs-clear" onclick="loadReports()">REFRESH</button>
+      </div>
+      <div class="report-body">
+        <div class="report-downloads">
+          <a class="report-link" href="/api/reports/download/runs">runs.csv</a>
+          <a class="report-link" href="/api/reports/download/sessions">sessions.csv</a>
+          <a class="report-link" href="/api/reports/download/actions">actions.csv</a>
+          <a class="report-link" href="/api/reports/download/diagnostics">diagnostics.csv</a>
+        </div>
+        <div id="report-table" class="report-table-wrap">
+          <div class="report-empty">No CSV rows yet</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="logs-view" id="live-log-view" role="tabpanel" aria-labelledby="tab-live-log" hidden>
+      <div class="logs-toolbar">
+        <div class="toolbar-group">
+          <label class="toolbar-label" for="log-source">Source</label>
+          <select id="log-source" class="toolbar-select" onchange="switchLog()">
+            <option value="warmer">warmer</option>
+            <option value="flask">flask</option>
+          </select>
+        </div>
+        <div class="logs-toolbar-spacer"></div>
+        <button class="logs-clear" onclick="clearLogs()">CLEAR</button>
+      </div>
+      <div class="live-log-body">
+        <div id="log-box"></div>
+      </div>
+    </div>
+
     <div class="heartbeat-strip" id="hb-strip">
-      <div class="hb-item"><span class="hb-label">NEXT // </span><span class="hb-value" id="hb-next">—</span></div>
-      <div class="hb-item"><span class="hb-label">UPTIME // </span><span class="hb-value" id="hb-uptime">—</span></div>
-      <div class="hb-item"><span class="hb-label">PROFILE // </span><span class="hb-value" id="hb-profile">—</span></div>
-      <div class="hb-item"><span class="hb-label">BEAT // </span><span class="hb-value" id="hb-beat">—</span></div>
+      <div class="hb-item"><span class="hb-label">NEXT // </span><span class="hb-value" id="hb-next">--</span></div>
+      <div class="hb-item"><span class="hb-label">UPTIME // </span><span class="hb-value" id="hb-uptime">--</span></div>
+      <div class="hb-item"><span class="hb-label">PROFILE // </span><span class="hb-value" id="hb-profile">--</span></div>
+      <div class="hb-item"><span class="hb-label">BEAT // </span><span class="hb-value" id="hb-beat">--</span></div>
     </div>
   </div>
 
@@ -804,11 +1053,37 @@
 <div id="toast-container"></div>
 
 <script>
-// ── State ─────────────────────────────────────────────────────────────────────
-let selectedAction = 'like';
+//  State â”€
+const ACTION_WEIGHT_KEYS = [
+  'like', 'notify', 'profile', 'read_post', 'comment',
+  'follow', 'scroll', 'search', 'post'
+];
+let selectedAction = 'all';
 let autoScroll = true;
+let selectedPanelView = 'results';
+let reportsRefreshTimer = null;
 
-// ── Clock ─────────────────────────────────────────────────────────────────────
+function switchPanelView(view) {
+  selectedPanelView = view;
+  document.querySelectorAll('.view-tab').forEach(btn => {
+    const isActive = btn.dataset.view === view;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+  document.querySelectorAll('.logs-view').forEach(panel => {
+    const isActive = panel.id === `${view}-view`;
+    panel.classList.toggle('active', isActive);
+    panel.hidden = !isActive;
+  });
+  if (view === 'results') {
+    stopLogStream();
+    loadReports();
+  } else if (view === 'live-log') {
+    switchLog();
+  }
+}
+
+//  Clock â”€
 function updateClock() {
   const now = new Date();
   document.getElementById('clock').textContent =
@@ -817,7 +1092,7 @@ function updateClock() {
 setInterval(updateClock, 1000);
 updateClock();
 
-// ── Toast ─────────────────────────────────────────────────────────────────────
+//  Toast â”€
 function toast(msg, type = 'info') {
   const el = document.createElement('div');
   el.className = `toast ${type}`;
@@ -826,7 +1101,7 @@ function toast(msg, type = 'info') {
   setTimeout(() => el.remove(), 3500);
 }
 
-// ── API helper ────────────────────────────────────────────────────────────────
+//  API helper
 async function api(url, method = 'GET', body = null) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
@@ -834,15 +1109,94 @@ async function api(url, method = 'GET', body = null) {
   return res.json();
 }
 
-// ── Action selector ───────────────────────────────────────────────────────────
+function collectWeights() {
+  const weights = {};
+  ACTION_WEIGHT_KEYS.forEach(key => {
+    const el = document.getElementById(`weight-${key}`);
+    const raw = el ? el.value.trim() : '';
+    weights[key] = raw === '' ? null : Number(raw);
+  });
+  return weights;
+}
+
+function collectConfigPayload() {
+  return {
+    nstbrowser_api_key: document.getElementById('config-api-key').value.trim(),
+    profile_ids: document.getElementById('config-profile-ids').value
+      .split(/[\n,]+/)
+      .map(v => v.trim())
+      .filter(Boolean),
+    target_social_url: document.getElementById('config-target-url').value.trim(),
+    active_hours: [
+      Number(document.getElementById('config-active-start').value),
+      Number(document.getElementById('config-active-end').value)
+    ],
+    default_no_preflight: document.getElementById('config-no-preflight').checked,
+    action_weights: collectWeights()
+  };
+}
+
+function populateProfileSelects(profileIds) {
+  const session = document.getElementById('session-profile');
+  const test = document.getElementById('test-profile');
+  session.innerHTML = '<option value="">All configured profiles</option>';
+  test.innerHTML = '<option value="">First configured profile</option>';
+  profileIds.forEach(pid => {
+    const label = pid.length > 18 ? `${pid.slice(0, 18)}...` : pid;
+    const option = `<option value="${pid}">${label}</option>`;
+    session.insertAdjacentHTML('beforeend', option);
+    test.insertAdjacentHTML('beforeend', option);
+  });
+}
+
+function applyConfigToForm(config) {
+  document.getElementById('config-api-key').value = '';
+  document.getElementById('config-api-key').placeholder =
+    config.api_key_set ? `Saved: ${config.api_key_masked}` : 'API key';
+  document.getElementById('config-profile-ids').value = (config.profile_ids || []).join('\n');
+  document.getElementById('config-target-url').value = config.target_social_url || 'https://www.threads.net';
+  document.getElementById('config-active-start').value = (config.active_hours || [8, 23])[0];
+  document.getElementById('config-active-end').value = (config.active_hours || [8, 23])[1];
+  document.getElementById('config-no-preflight').checked = !!config.default_no_preflight;
+  document.getElementById('session-no-preflight').checked = !!config.default_no_preflight;
+  const weights = config.action_weights || {};
+  ACTION_WEIGHT_KEYS.forEach(key => {
+    const el = document.getElementById(`weight-${key}`);
+    if (el) el.value = weights[key] ?? '';
+  });
+  populateProfileSelects(config.profile_ids || []);
+}
+
+async function loadConfig() {
+  try {
+    const r = await api('/api/config');
+    if (r.ok) applyConfigToForm(r.config);
+  } catch {
+    toast('config load failed', 'error');
+  }
+}
+
+async function saveConfig(opts = {}) {
+  const r = await api('/api/config', 'POST', collectConfigPayload());
+  if (!r.ok) {
+    toast(r.msg || 'config save failed', 'error');
+    throw new Error(r.msg || 'config save failed');
+  }
+  applyConfigToForm(r.config);
+  if (!opts.silent) toast(r.msg, 'ok');
+  return r.config;
+}
+
+//  Action selector â”€
 function selectAction(el) {
   document.querySelectorAll('.action-btn').forEach(b => b.classList.remove('selected'));
   el.classList.add('selected');
   selectedAction = el.dataset.action;
 }
 
-// ── Process controls ──────────────────────────────────────────────────────────
+//  Process controls
 async function daemonStart() {
+  try { await saveConfig({ silent: true }); } catch { return; }
   const r = await api('/api/daemon/start', 'POST');
   toast(r.msg, r.ok ? 'ok' : 'error');
 }
@@ -852,25 +1206,10 @@ async function daemonStop() {
   toast(r.msg, r.ok ? 'ok' : 'error');
 }
 
-async function cookieSingleStart() { 
-  const profile     = document.getElementById('cookie-profile').value.trim();
-  const runs        = document.getElementById('cookie-runs').value.trim();
-  const body = {};
-  if (profile) body.profile_id = profile;
-  if (runs) body.runs = runs;
-  const r = await api('/api/cookie/single/start', 'POST', body);
-  toast(r.msg, r.ok ? 'ok' : 'error');
-}
-
-async function cookieSingleStop() {
-  const r = await api('/api/cookie/single/stop', 'POST');
-  toast(r.msg, r.ok ? 'ok' : 'error');
-}
-
-
 async function sessionStart() {
   const profile     = document.getElementById('session-profile').value.trim();
   const noPreflight = document.getElementById('session-no-preflight').checked;
+  try { await saveConfig({ silent: true }); } catch { return; }
   const body        = { no_preflight: noPreflight };
   if (profile) body.profile_id = profile;
 
@@ -886,6 +1225,7 @@ async function sessionStop() {
 async function testStart() {
   const profile = document.getElementById('test-profile').value.trim();
   const body    = { action: selectedAction };
+  try { await saveConfig({ silent: true }); } catch { return; }
   if (profile) body.profile_id = profile;
 
   const r = await api('/api/test/start', 'POST', body);
@@ -897,7 +1237,7 @@ async function testStop() {
   toast(r.msg, r.ok ? 'ok' : 'error');
 }
 
-// ── Status polling ────────────────────────────────────────────────────────────
+//  Status polling
 function applyProcStatus(key, data) {
   const card     = document.getElementById(`card-${key}`);
   const dot      = document.getElementById(`dot-${key}`);
@@ -935,7 +1275,6 @@ async function pollStatus() {
   try {
     const data = await api('/api/status');
     applyProcStatus('daemon',        data.daemon);
-    applyProcStatus('cookie-single', data.cookie_session);  // was data.cookie_single
     applyProcStatus('session',       data.session);
     applyProcStatus('test',          data.test);
     document.getElementById('last-update').textContent = data.timestamp;
@@ -947,9 +1286,10 @@ async function pollStatus() {
 
 
 setInterval(pollStatus, 2500);
+loadConfig();
 pollStatus();
 
-// ── Schedule polling ──────────────────────────────────────────────────────────
+//  Schedule polling
 async function pollSchedule() {
   try {
     const state = await api('/api/state');
@@ -963,10 +1303,10 @@ async function pollSchedule() {
       const nextDate = nextTs ? new Date(nextTs * 1000).toLocaleString('en-US', {
         month: '2-digit', day: '2-digit',
         hour: '2-digit', minute: '2-digit', hour12: false
-      }) : '—';
+      }) : '--';
       const daily  = (data.daily || {})[today] || {};
-      const done   = daily.done   ?? '—';
-      const target = daily.target ?? '—';
+      const done   = daily.done   ?? '--';
+      const target = daily.target ?? '--';
       rows.push({ pid, nextTs, nextDate, done, target });
     }
 
@@ -986,13 +1326,13 @@ async function pollSchedule() {
 setInterval(pollSchedule, 10000);
 pollSchedule();
 
-// ── Heartbeat polling ─────────────────────────────────────────────────────────
+//  Heartbeat polling â”€
 async function pollHeartbeat() {
   try {
     const hb = await api('/api/heartbeat');
-    document.getElementById('hb-next').textContent    = hb.next_run    ? hb.next_run.slice(11, 16)    : '—';
-    document.getElementById('hb-profile').textContent = hb.next_profile ? hb.next_profile.slice(0, 8) : '—';
-    document.getElementById('hb-beat').textContent    = hb.last_heartbeat ? hb.last_heartbeat.slice(11, 19) : '—';
+    document.getElementById('hb-next').textContent    = hb.next_run    ? hb.next_run.slice(11, 16)    : '--';
+    document.getElementById('hb-profile').textContent = hb.next_profile ? hb.next_profile.slice(0, 8) : '--';
+    document.getElementById('hb-beat').textContent    = hb.last_heartbeat ? hb.last_heartbeat.slice(11, 19) : '--';
     const up = hb.uptime_seconds;
     if (up) {
       const h = Math.floor(up / 3600);
@@ -1005,63 +1345,121 @@ async function pollHeartbeat() {
 setInterval(pollHeartbeat, 8000);
 pollHeartbeat();
 
-// ── Log streaming ─────────────────────────────────────────────────────────────
+//  Log streaming â”€
+let selectedReport = 'sessions';
+const REPORT_COLUMNS = {
+  sessions: ['started_at', 'profile_id', 'status', 'actual_duration_sec', 'actions_dispatched', 'likes', 'comments', 'follows', 'posts'],
+  actions: ['started_at', 'profile_id', 'sequence', 'action', 'status', 'duration_sec', 'note'],
+  diagnostics: ['started_at', 'profile_id', 'action', 'status', 'duration_ms', 'health_ok', 'cursor_drift']
+};
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+
+function selectReport(name) {
+  selectedReport = name;
+  const source = document.getElementById('report-source');
+  if (source && source.value !== name) source.value = name;
+  loadReports();
+}
+
+function renderReportTable(rows, columns) {
+  const target = document.getElementById('report-table');
+  if (!rows.length) {
+    target.innerHTML = '<div class="report-empty">No CSV rows yet</div>';
+    return;
+  }
+  const head = columns.map(col => `<th>${escapeHtml(col.replaceAll('_', ' '))}</th>`).join('');
+  const body = rows.map(row => `
+    <tr>${columns.map(col => {
+      const value = row[col] || '--';
+      return `<td title="${escapeHtml(value)}">${escapeHtml(value)}</td>`;
+    }).join('')}</tr>
+  `).join('');
+  target.innerHTML = `<table class="report-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+async function loadReports() {
+  try {
+    const r = await api(`/api/reports/${selectedReport}`);
+    renderReportTable(r.rows || [], REPORT_COLUMNS[selectedReport]);
+  } catch {
+    document.getElementById('report-table').innerHTML =
+      '<div class="report-empty">Could not load CSV report rows</div>';
+  }
+}
+
+reportsRefreshTimer = setInterval(() => {
+  if (selectedPanelView === 'results') loadReports();
+}, 5000);
+loadReports();
+
 const logBox = document.getElementById('log-box');
 
 function classifyLine(line) {
-  if (line.includes('ERROR'))                return 'log-error';
-  if (line.includes('WARNING'))              return 'log-warn';
-  if (line.includes('DAEMON'))               return 'log-daemon';
+  if (line.includes('ERROR')) return 'log-error';
+  if (line.includes('WARNING')) return 'log-warn';
+  if (line.includes('DAEMON')) return 'log-daemon';
   if (line.includes('ACTION') || line.includes('LIKE') || line.includes('FOLLOW')) return 'log-action';
-  if (line.includes('COOKIE'))               return 'log-cookie';
   if (line.includes('INFO') && (
     line.includes('session') || line.includes('profile') || line.includes('NAV')
-  ))                                         return 'log-info-hi';
+  )) return 'log-info-hi';
   return 'log-info';
 }
 
 function appendLog(text, prepend = false) {
+  if (!logBox) return;
   const span = document.createElement('span');
   span.className = 'log-line ' + classifyLine(text);
   span.textContent = text;
-  
+
   if (prepend) {
     logBox.insertBefore(span, logBox.firstChild);
   } else {
     logBox.appendChild(span);
   }
 
-  while (logBox.children.length > 600)
-    logBox.removeChild(logBox.lastChild);  // remove oldest (bottom) not newest
+  while (logBox.children.length > 600) {
+    logBox.removeChild(logBox.lastChild);
+  }
 }
 
-// Pause auto-scroll when user scrolls up
-logBox.addEventListener('scroll', () => {
-  const atBottom = logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight < 40;
-  autoScroll = atBottom;
-});
+if (logBox) {
+  logBox.addEventListener('scroll', () => {
+    autoScroll = logBox.scrollTop < 40;
+  });
+}
 
 function clearLogs() {
-  logBox.innerHTML = '';
+  if (logBox) logBox.innerHTML = '';
 }
 
 let evtSource = null;
-
 let isBackfill = true;
 const backfillLines = [];
 
+function stopLogStream() {
+  if (!evtSource) return;
+  evtSource.close();
+  evtSource = null;
+}
+
 function switchLog() {
-  if (evtSource) evtSource.close();
+  if (selectedPanelView !== 'live-log') return;
+  stopLogStream();
   clearLogs();
   isBackfill = true;
   backfillLines.length = 0;
-  
-  const name = document.getElementById('log-source').value;
+
+  const source = document.getElementById('log-source');
+  const name = source ? source.value : 'warmer';
   evtSource = new EventSource(`/api/logs/stream/${name}`);
-  
+
   evtSource.onmessage = e => {
     if (e.data === '__backfill_end__') {
-      // Render backfill lines in reverse (newest first)
       backfillLines.reverse().forEach(line => appendLog(line, true));
       isBackfill = false;
       return;
@@ -1069,14 +1467,13 @@ function switchLog() {
     if (isBackfill) {
       backfillLines.push(e.data);
     } else {
-      appendLog(e.data, true);  // prepend live lines
+      appendLog(e.data, true);
     }
   };
-  
+
   evtSource.onerror = () => appendLog('[SSE connection lost]', true);
 }
 
-switchLog();
 </script>
 </body>
 </html>

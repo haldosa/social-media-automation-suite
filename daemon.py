@@ -10,12 +10,14 @@ from datetime import datetime, timedelta, date
 from config import (
     ACTIVE_HOURS_RANGE,
     HEARTBEAT_FILE, _HEARTBEAT_INTERVAL_SEC,
-    PROFILE_IDS, _SCRIPT_DIR,
+    PROFILE_IDS, TARGET_SOCIAL_URL, _SCRIPT_DIR,
 )
-from utils import log, _ensure_profile_logger, _active_profile_id
+from utils import _PROFILE_LOGS_DIR, log, _ensure_profile_logger, _active_profile_id
 from state import _load_post_state, _save_post_state
 from session import warm_profile
+from api import get_running_browsers
 from state import _post_state_locked, _ensure_profile_in_state
+from reporting import append_run, encode_json, iso_now, make_run_id
 
 # ================================================================== #
 #  24/7 DAEMON SCHEDULER
@@ -236,7 +238,11 @@ def _heartbeat_writer(heap: list) -> None:
 
 # ── Daemon main function ────────────────────────────────────────────────────
 
-def daemon_main(weights: dict | None = None) -> None:
+def daemon_main(
+    weights: dict | None = None,
+    skip_preflight: bool = False,
+    run_id: str | None = None,
+) -> None:
     """Persistent 24/7 scheduler with per-profile independent scheduling.
 
     Never returns unless SIGINT/SIGTERM is received.  Each profile is
@@ -244,6 +250,9 @@ def daemon_main(weights: dict | None = None) -> None:
     next_run_ts.  All state survives restarts via post_state.json.
     """
     global _daemon_start_ts
+    run_id = run_id or make_run_id("daemon")
+    run_started_at = iso_now()
+    run_status = "stopped"
     _daemon_start_ts = time.time()
     _pid_file = os.path.join(_SCRIPT_DIR, "daemon.pid")
     with open(_pid_file, "w") as f:
@@ -255,6 +264,16 @@ def daemon_main(weights: dict | None = None) -> None:
     log.info("=" * 60)
     log.info("[ DAEMON ]  starting 24/7 scheduler  |  profiles=%d  |  pid=%d",
              len(PROFILE_IDS), os.getpid())
+    if weights:
+        log.info("[ DAEMON ]  action weight overrides: %s", weights)
+    if skip_preflight:
+        log.info("[ DAEMON ]  preflight disabled by launch option")
+
+    print(f"[DEBUG] profile logs dir: {_PROFILE_LOGS_DIR}")
+    log.info("[ DAEMON ]  starting 24/7 scheduler  |  profiles=%d  |  pid=%d",
+         len(PROFILE_IDS), os.getpid())
+    from utils import _profile_log_handlers
+    print(f"[DEBUG] existing profile log handlers at startup: {list(_profile_log_handlers.keys())}")
 
     # ── Initialise per-profile loggers ───────────────────────────────────
     for pid in PROFILE_IDS:
@@ -393,8 +412,19 @@ def daemon_main(weights: dict | None = None) -> None:
         _profile_token = _active_profile_id.set(profile_id)
         _ensure_profile_logger(profile_id)
 
+        # Verify the contextvar is readable from this thread
+        from utils import _active_profile_id as _cv_check, _profile_log_handlers as _ph_check
+        print(f"[CTX DEBUG] after set: get()={_cv_check.get('')[:12] if _cv_check.get('') else 'EMPTY'}")
+        print(f"[CTX DEBUG] handlers: {list(_ph_check.keys())[:2]}")
+
         try:
-            ran_session = warm_profile(profile_id, weights=None)
+            ran_session = warm_profile(
+                profile_id,
+                skip_preflight=skip_preflight,
+                weights=weights,
+                run_id=run_id,
+            )
+
         except Exception as exc:
             log.error("[ DAEMON ]  %s  uncaught exception: %s", profile_id[:12], exc)
             ran_session = False
@@ -428,3 +458,17 @@ def daemon_main(weights: dict | None = None) -> None:
 
     log.info("[ DAEMON ]  shutdown complete — schedule saved")
     log.info("=" * 60)
+    try:
+        append_run({
+            "run_id": run_id,
+            "process_type": "daemon",
+            "started_at": run_started_at,
+            "ended_at": iso_now(),
+            "status": run_status,
+            "profiles_requested": ";".join(PROFILE_IDS),
+            "target_url": TARGET_SOCIAL_URL,
+            "skip_preflight": skip_preflight,
+            "weight_overrides_json": encode_json(weights or {}),
+        })
+    except Exception as exc:
+        log.warning("[REPORT]  daemon run CSV write failed: %s", exc)

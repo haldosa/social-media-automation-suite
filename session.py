@@ -24,6 +24,7 @@ from actions import (
     check_login_status,
 )
 from posting import post_action
+from reporting import append_action, append_session, iso_now, make_run_id, make_session_id
 from state import _load_post_state, _save_post_state,_post_state_locked, _ensure_profile_in_state, _draw_passive_phase_sec
 from api import start_profile, stop_profile
 from browser import connect_selenium
@@ -36,17 +37,17 @@ from preflight import run_preflight
 # chain where P(next_action | current_action) encodes real behavioral
 # autocorrelation patterns:
 #
-#   • After reading → scroll (30%) or like (25%), rarely search (5%)
-#   • After liking  → scroll (45%), read (20%), rarely like again (8%)
-#   • After comment → forced passive pause (55%), scroll down (12%)
-#   • After notify  → profile visit (15%) or scroll (40%)
-#   • After posting → passive scroll (60%), never immediate re-post
+#   â€¢ After reading â†’ scroll (30%) or like (25%), rarely search (5%)
+#   â€¢ After liking  â†’ scroll (45%), read (20%), rarely like again (8%)
+#   â€¢ After comment â†’ forced passive pause (55%), scroll down (12%)
+#   â€¢ After notify  â†’ profile visit (15%) or scroll (40%)
+#   â€¢ After posting â†’ passive scroll (60%), never immediate re-post
 #
 # Context modifiers layer on top of the base transition matrix:
-#   • Session phase: early=passive, mid=active peak, late=wind-down
-#   • Cumulative fatigue: engagement probability decays per action count
-#   • Consecutive suppression: geometric penalty on same-action repeats
-#   • Account maturity: young accounts heavily favour passive actions
+#   â€¢ Session phase: early=passive, mid=active peak, late=wind-down
+#   â€¢ Cumulative fatigue: engagement probability decays per action count
+#   â€¢ Consecutive suppression: geometric penalty on same-action repeats
+#   â€¢ Account maturity: young accounts heavily favour passive actions
 #
 # The transition matrix can evolve per-profile over time ,  a new account's
 # matrix heavily favours passive, while a mature account allows full range.
@@ -152,26 +153,26 @@ def _normalize_probs(probs: list) -> list:
     return [p / total for p in probs]
 
 
-# ── Per-profile pool isolation ────────────────────────────────────────────────
+#  Per-profile pool isolation 
 
 
 
 def _get_profile_transition_matrix(profile_id: str) -> dict:
     """Load or generate a stable per-profile perturbed Markov transition matrix.
 
-    Each profile receives a unique behavioral fingerprint derived by applying a
-    deterministic ±15 % noise vector (seeded from the MD5 of the profile ID)
+    Each profile receives a stable profile-specific variation derived by applying a
+    deterministic Â±15 % noise vector (seeded from the MD5 of the profile ID)
     to every row of _BASE_TRANSITION_MATRIX.  The result is persisted in
     post_state.json so the same profile always exhibits the same statistical
-    pattern across runs — providing stable uniqueness without drift.
+    pattern across runs, providing stable configuration without drift.
 
     Falls back to _BASE_TRANSITION_MATRIX for anonymous / manual sessions.
 
     Design notes
     ------------
-    - ±15 % per-weight perturbation keeps each profile clearly within the
-      realistic human-behaviour envelope while making cross-account Markov
-      fingerprints statistically distinguishable.
+    - Â±15 % per-weight perturbation keeps each profile clearly within the
+      reasonable interaction envelope while making cross-profile Markov
+      settings analytically distinguishable.
     - Seeding from the profile ID (not os.urandom) ensures determinism: the
       matrix is regenerated identically if post_state.json is wiped.
     - All rows are re-normalised after perturbation so they still sum to 1.0.
@@ -203,7 +204,7 @@ def _get_profile_transition_matrix(profile_id: str) -> dict:
 
         perturbed: dict = {}
         for state_name, base_row in _BASE_TRANSITION_MATRIX.items():
-            # Scale each weight by a factor in [0.85, 1.15] — same seed → same factors
+            # Scale each weight by a factor in [0.85, 1.15] â€” same seed â†’ same factors
             noisy_row = [max(0.0, w * rng.uniform(0.85, 1.15)) for w in base_row]
             total = sum(noisy_row) or 1.0
             perturbed[state_name] = [p / total for p in noisy_row]
@@ -217,7 +218,7 @@ def _get_profile_transition_matrix(profile_id: str) -> dict:
         return perturbed
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€
 
 def _markov_sample_next_action(
     current_state: str,
@@ -231,8 +232,8 @@ def _markov_sample_next_action(
 
     Parameters
     ----------
-    current_state         : what the bot just did
-    session_elapsed_frac  : 0.0 → 1.0 how far through the session
+    current_state         : what the session just did
+    session_elapsed_frac  : 0.0 â†’ 1.0 how far through the session
     metrics               : _session_metrics accumulator
     consecutive_same      : how many times current_state repeated in a row
     account_days_old      : for account-maturity adjustment
@@ -271,7 +272,7 @@ def _sample_session_duration_sec() -> float:
     """Sample session length from a smooth log-normal distribution.
 
     Eliminates the old bimodal uniform draw (6-32 / 40-70 min gap) that
-    created a fingerprint-level tell ,  real social-media sessions follow
+    created a repetitive timing pattern ,  real social-media sessions follow
     a right-skewed continuous curve.
     """
     minutes = random.lognormvariate(SESSION_LOGNORMAL_MU, SESSION_LOGNORMAL_SIGMA)
@@ -284,7 +285,7 @@ def _distraction_pause(driver) -> None:
 
     Real users don't maintain unbroken focus for an entire session ,  they
     check another tab, glance at their phone, reply to a message, etc.
-    This produces a visible pause (no scroll, no click) of 8–45 s that
+    This produces a visible pause (no scroll, no click) of 8â€“45 s that
     breaks the otherwise metronomic action cadence.
 
     ~12 % of session ticks trigger a distraction (called from the main loop).
@@ -307,6 +308,75 @@ def _distraction_pause(driver) -> None:
     precise_sleep(pause_sec)
 
 
+def _safe_current_url(driver) -> str:
+    try:
+        return str(driver.current_url)[:240]
+    except Exception:
+        return "unknown"
+
+
+def _metric_delta_note(before: dict, after: dict) -> str:
+    keys = (
+        "actions_dispatched",
+        "likes",
+        "comments",
+        "follows",
+        "posts",
+        "passive",
+        "reads",
+        "profile_visits",
+        "searches",
+    )
+    deltas = []
+    for key in keys:
+        delta = after.get(key, 0) - before.get(key, 0)
+        if delta:
+            deltas.append(f"{key}+{delta}")
+    return "; ".join(deltas)
+
+
+def _write_session_summary(
+    *,
+    run_id: str,
+    session_id: str,
+    profile_id: str,
+    mode: str,
+    started_at: str,
+    session_start_ts: float,
+    planned_duration_sec: float | None,
+    status: str,
+    account_days: int | None = None,
+    warnings_count: int = 0,
+    errors_count: int = 0,
+    end_url: str = "",
+) -> None:
+    metrics = dict(_get_ctx().session_metrics)
+    append_session({
+        "run_id": run_id,
+        "session_id": session_id,
+        "profile_id": profile_id,
+        "mode": mode,
+        "started_at": started_at,
+        "ended_at": iso_now(),
+        "planned_duration_sec": planned_duration_sec,
+        "actual_duration_sec": max(0.0, time.time() - session_start_ts),
+        "status": status,
+        "account_days": account_days,
+        "actions_dispatched": metrics.get("actions_dispatched", 0),
+        "likes": metrics.get("likes", 0),
+        "comments": metrics.get("comments", 0),
+        "follows": metrics.get("follows", 0),
+        "posts": metrics.get("posts", 0),
+        "passive": metrics.get("passive", 0),
+        "reads": metrics.get("reads", 0),
+        "profile_visits": metrics.get("profile_visits", 0),
+        "searches": metrics.get("searches", 0),
+        "warnings_count": warnings_count,
+        "errors_count": errors_count,
+        "end_url": end_url[:240],
+    })
+
+
 def run_social_session(
     driver,
     session_seconds: float,
@@ -320,6 +390,9 @@ def run_social_session(
     w_search: float = 0.06,
     w_post: float = 0.02,
     profile_id: str = "",
+    run_id: str | None = None,
+    session_id: str | None = None,
+    mode: str = "session",
 ) -> None:
     """
     Session loop driven by a first-order Markov chain.
@@ -335,14 +408,14 @@ def run_social_session(
     but no longer directly control dispatch.  They are used to scale
     the base transition matrix when explicitly overridden by the user.
     """
-    # ── Reset all per-session mutable state in this thread's context ──────────
+    #  Reset all per-session mutable state in this thread's context 
     # Replacing the SessionContext object atomically resets cursor_pos,
     # cdp_consecutive_failures, session_followed, session_metrics, and
     # active_typing_dna in one step ,  safe for concurrent profiles running in
     # separate threads because each has its own threading.local slot.
     _session_local.ctx = SessionContext()
     _session_local.ctx.active_typing_dna = _get_typing_dna(profile_id)
-    # ── Assign per-profile isolated content pools ─────────────────────────────
+    #  Assign per-profile isolated content pools â”€
     # Each profile receives its own deterministic shard of COMMENT_POOL and
     # POST_CAPTION_POOL so no two accounts ever share the same surface text.
     _session_local.ctx.profile_comment_pool = _get_profile_pool_shard(COMMENT_POOL, profile_id)
@@ -355,9 +428,9 @@ def run_social_session(
         len(_session_local.ctx.profile_caption_pool), len(POST_CAPTION_POOL),
         len(_session_local.ctx.profile_search_topic_pool), len(SEARCH_TOPIC_POOL),
     )
-    # ─────────────────────────────────────────────────────────────────────────
+    # â”€
 
-    # ── Break cross-profile RNG correlation ───────────────────────────────
+    #  Break cross-profile RNG correlation â”€
     # The global random module uses a single Mersenne Twister.  Without
     # reseeding, sequential profiles produce statistically correlated
     # random sequences (same PRNG state continues).  Reseed with 32
@@ -368,10 +441,16 @@ def run_social_session(
     # Previously a module-level constant shared across all profiles.
     _session_passive_phase_sec = _draw_passive_phase_sec()
     log.debug("[ SESSION ]  passive phase drawn: %.1f min", _session_passive_phase_sec / 60)
+    run_id = run_id or make_run_id("adhoc")
+    session_id = session_id or make_session_id(profile_id)
+    session_started_at = iso_now()
     session_start_ts = time.time()
     deadline    = session_start_ts + session_seconds
     count       = 0
     active_done = False
+    warnings_count = 0
+    errors_count = 0
+    session_status = "completed"
 
     # Resolve account age for maturity modifier
     _account_days = 15   # default: mature
@@ -385,11 +464,11 @@ def run_social_session(
     except Exception:
         pass
 
-    # ── Load or generate the stable per-profile perturbed transition matrix ────
+    #  Load or generate the stable per-profile perturbed transition matrix 
     # Stored in post_state.json; generated once per profile from a seed derived
-    # from the profile ID so the same profile always has the same fingerprint.
+    # from the profile ID so the same profile always has the same configuration.
     _profile_transition_matrix = _get_profile_transition_matrix(profile_id)
-    # ─────────────────────────────────────────────────────────────────────────
+    # â”€
 
     # Current Markov state ,  start with passive (user just opened the feed)
     current_state = "passive"
@@ -429,7 +508,7 @@ def run_social_session(
         _account_days, _user_weights or "none",
     )
 
-    # ── STATE SNAPSHOT: session start ────────────────────────────────────────
+    #  STATE SNAPSHOT: session start 
     try:
         _snap_url = driver.current_url
         _snap_vp  = driver.execute_script("return [window.innerWidth, window.innerHeight]")
@@ -441,36 +520,40 @@ def run_social_session(
         profile_id, session_seconds, _account_days,
         _get_ctx().cursor_pos[0], _get_ctx().cursor_pos[1], _snap_vp[0], _snap_vp[1], _snap_url[:80],
     )
-    # ────────────────────────────────────────────────────────────────────
+    # 
 
     # Action dispatch map ,  maps Markov state names to callables.
-    def _dispatch(action: str) -> None:
+    def _dispatch(action: str):
         nonlocal active_done
         if action == "passive":
             passive_action(driver)
+            return True
         elif action == "active":
             active_action(driver)
             active_done = True
+            return True
         elif action == "notify":
-            check_notifications_action(driver)
+            return check_notifications_action(driver)
         elif action == "profile_view":
-            view_profile_from_feed(driver)
+            result = view_profile_from_feed(driver)
             _get_ctx().session_metrics["profile_visits"] += 1
+            return result
         elif action == "read_post":
-            read_post_action(driver)
+            return read_post_action(driver)
         elif action == "comment":
-            comment_on_post(driver)
+            return comment_on_post(driver)
         elif action == "follow":
-            follow_from_feed(driver)
+            return follow_from_feed(driver)
         elif action == "return_top":
-            return_to_top_action(driver)
+            return return_to_top_action(driver)
         elif action == "search":
-            visit_search_action(driver)
+            result = visit_search_action(driver)
             _get_ctx().session_metrics["searches"] += 1
+            return result
         elif action == "post":
             passive_elapsed = time.time() - session_start_ts
             if passive_elapsed >= _session_passive_phase_sec:
-                post_action(driver, profile_id)
+                return post_action(driver, profile_id)
             else:
                 wait_min = (_session_passive_phase_sec - passive_elapsed) / 60
                 log.info(
@@ -478,8 +561,10 @@ def run_social_session(
                     "-- deferring post to scroll", wait_min,
                 )
                 passive_action(driver)
+                return {"status": "skipped", "note": "passive_phase_not_complete"}
         else:
             passive_action(driver)
+            return True
 
     while time.time() < deadline:
         time_left = deadline - time.time()
@@ -488,13 +573,11 @@ def run_social_session(
         # Fix #31: move the active_done guarantee to the middle 25-75% of the
         # session with a 10% per-tick probability, instead of a deterministic
         # forced like in the final 60 s.  The old last-minute pattern created
-        # a repeatable "like then exit" fingerprint visible across all sessions.
+        # a repeatable "like then exit" pattern visible across sessions.
         if not active_done and 0.25 <= elapsed_frac <= 0.75 and random.random() < 0.10:
             log.info("[ SESSION ]  mid-session active guarantee triggered (elapsed_frac=%.2f)",
                      elapsed_frac)
             selected_action = "active"
-            _dispatch(selected_action)
-            active_done = True
         else:
             # Sample from the Markov chain
             selected_action = _markov_sample_next_action(
@@ -505,20 +588,67 @@ def run_social_session(
                 account_days_old=_account_days,
                 transition_matrix=_profile_transition_matrix,
             )
-            _dispatch(selected_action)
+
+        action_started_at = iso_now()
+        action_t0 = time.perf_counter()
+        url_before = _safe_current_url(driver)
+        metrics_before = dict(_get_ctx().session_metrics)
+        action_status = "success"
+        action_note = ""
+        action_error = None
+        try:
+            dispatch_result = _dispatch(selected_action)
+            if isinstance(dispatch_result, dict):
+                action_status = dispatch_result.get("status", "success")
+                action_note = dispatch_result.get("note", "")
+            elif dispatch_result is False:
+                action_status = "failed"
+                action_note = "returned False"
             if selected_action == "active":
                 active_done = True
+        except Exception as exc:
+            errors_count += 1
+            session_status = "failed"
+            action_status = "error"
+            action_note = f"{type(exc).__name__}: {exc}"[:240]
+            action_error = exc
 
         # Update Markov state
         current_state = selected_action
 
-        # ── DEBUG LOGGING: [SESSION TICK] + consecutive-action tracking ───────
+        #  DEBUG LOGGING: [SESSION TICK] + consecutive-action tracking â”€
         _sess_elapsed = time.time() - session_start_ts
         if _get_ctx().session_metrics["last_action"] == selected_action:
             _get_ctx().session_metrics["consecutive_same"] += 1
         else:
             _get_ctx().session_metrics["consecutive_same"] = 0
         _get_ctx().session_metrics["last_action"] = selected_action
+        metric_note = _metric_delta_note(metrics_before, _get_ctx().session_metrics)
+        if metric_note:
+            action_note = f"{action_note}; {metric_note}" if action_note else metric_note
+        try:
+            append_action({
+                "run_id": run_id,
+                "session_id": session_id,
+                "profile_id": profile_id,
+                "sequence": count + 1,
+                "action": selected_action,
+                "started_at": action_started_at,
+                "ended_at": iso_now(),
+                "duration_sec": time.perf_counter() - action_t0,
+                "status": action_status,
+                "note": action_note[:240],
+                "elapsed_session_sec": _sess_elapsed,
+                "elapsed_frac": elapsed_frac,
+                "consecutive_same": _get_ctx().session_metrics["consecutive_same"],
+                "account_days": _account_days,
+                "url_before": url_before,
+                "url_after": _safe_current_url(driver),
+            })
+        except Exception as report_exc:
+            log.warning("[REPORT]  action CSV write failed: %s", report_exc)
+        if action_error is not None:
+            raise action_error
         log.info(
             "[SESSION TICK]  iteration=%d  markov_state=%s  selected=%s"
             "  session_elapsed=%.0fs  elapsed_frac=%.2f"
@@ -530,16 +660,17 @@ def run_social_session(
             _get_ctx().session_metrics["consecutive_same"], _account_days,
         )
         if _get_ctx().session_metrics["consecutive_same"] >= 2:
+            warnings_count += 1
             _dlog.warning(
                 "[RISK WARN]  consecutive_same=%d  action=%s -- "
                 "Markov suppression should reduce this",
                 _get_ctx().session_metrics["consecutive_same"] + 1, selected_action,
             )
-        # ───────────────────────────────────────────────────────────────────
+        # â”€
 
         count += 1
 
-        # ── Distraction / multitasking injection ─────────────────────────
+        #  Distraction / multitasking injection â”€
         # ~12 % of ticks: pause as if the user switched tabs or checked
         # their phone.  Skipped in the first 2 min (user is still engaged)
         # and the last 1 min (session is winding down).
@@ -549,17 +680,18 @@ def run_social_session(
                 and random.random() < 0.12):
             _distraction_pause(driver)
         else:
-            # Fix #8: log-normal inter-action gap ,  median 1.5 s, σ=0.6 on the
+            # Fix #8: log-normal inter-action gap ,  median 1.5 s, Ïƒ=0.6 on the
             # log scale.  Produces a right-skewed distribution that matches
-            # observed human reaction-time between browsing actions far better
+            # observed operator pacing between browsing actions better
             # than a flat uniform(1,3) which a classifier can trivially identify.
             precise_sleep(max(0.5, min(15.0, random.lognormvariate(math.log(1.5), 0.6))))
 
-    # ── POST-SESSION DIAGNOSTICS ─────────────────────────────────────────────
+    #  POST-SESSION DIAGNOSTICS â”€
     if _get_ctx().session_metrics["passive"] == 0:
+        warnings_count += 1
         _dlog.warning(
             "[RISK WARN]  session ended with 0 passive actions "
-            "-- pure engagement bot pattern"
+            "-- engagement-only session pattern"
         )
     try:
         _end_url = driver.current_url
@@ -580,7 +712,25 @@ def run_social_session(
         _get_ctx().session_metrics["profile_visits"], _get_ctx().session_metrics["searches"],
         _end_url[:80],
     )
-    # ────────────────────────────────────────────────────────────────────
+    # 
+
+    try:
+        _write_session_summary(
+            run_id=run_id,
+            session_id=session_id,
+            profile_id=profile_id,
+            mode=mode,
+            started_at=session_started_at,
+            session_start_ts=session_start_ts,
+            planned_duration_sec=session_seconds,
+            status=session_status,
+            account_days=_account_days,
+            warnings_count=warnings_count,
+            errors_count=errors_count,
+            end_url=_end_url,
+        )
+    except Exception as report_exc:
+        log.warning("[REPORT]  session CSV write failed: %s", report_exc)
 
     log.info("Session complete. Total actions: %d", count)
 
@@ -592,22 +742,23 @@ def run_social_session(
 def warm_profile(
     profile_id: str,
     skip_preflight: bool = False,
-    weights: dict | None = None,   
-    ws_url: str | None = None,       
+    weights: dict | None = None,
+    run_id: str | None = None,
 ) -> bool:
     driver   = None
     launched = False
     ran_session = False
+    session_recorded = False
+    run_id = run_id or make_run_id("session")
+    session_id = make_session_id(profile_id)
+    session_started_at = iso_now()
+    session_start_ts = time.time()
+    session_sec = None
+    _session_local.ctx = SessionContext()
     try:
-        if ws_url:
-            # Browser already launched externally
-            launched = False  # don't call stop_profile in finally
-            log.info("Connecting to pre-launched browser  |  ws=%s", ws_url)
-        else:
-            # Normal mode — launch configured Chrome profile
-            info   = start_profile(profile_id)
-            ws_url = info["webSocketDebuggerUrl"]
-            launched = True
+        info   = start_profile(profile_id)
+        ws_url = info["webSocketDebuggerUrl"]
+        launched = True
 
         driver = connect_selenium(ws_url)
         driver.set_page_load_timeout(30)
@@ -623,17 +774,56 @@ def warm_profile(
         precise_sleep(random.uniform(2, 5))
 
         if not check_login_status(driver):
-            log.error("Profile %s appears logged out — skipping.", profile_id)
+            log.error("Profile %s appears logged out â€” skipping.", profile_id)
+            _write_session_summary(
+                run_id=run_id,
+                session_id=session_id,
+                profile_id=profile_id,
+                mode="session",
+                started_at=session_started_at,
+                session_start_ts=session_start_ts,
+                planned_duration_sec=session_sec,
+                status="logged_out",
+                errors_count=1,
+                end_url=_safe_current_url(driver),
+            )
+            session_recorded = True
             return False
 
         ran_session = True
         session_sec = _sample_session_duration_sec()
         log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
-        run_social_session(driver, session_sec, profile_id=profile_id)
 
+        run_social_session(
+            driver,
+            session_sec,
+            profile_id=profile_id,
+            run_id=run_id,
+            session_id=session_id,
+            mode="session",
+            **(weights or {}),
+        )
+        session_recorded = True
     except (TimeoutException, RuntimeError, WebDriverException,
             CDPConnectionDead) as exc:
         log.error("Error on profile %s: %s", profile_id, exc)
+        if not session_recorded:
+            try:
+                _write_session_summary(
+                    run_id=run_id,
+                    session_id=session_id,
+                    profile_id=profile_id,
+                    mode="session",
+                    started_at=session_started_at,
+                    session_start_ts=session_start_ts,
+                    planned_duration_sec=session_sec,
+                    status="failed",
+                    errors_count=1,
+                    end_url=_safe_current_url(driver) if driver else "",
+                )
+                session_recorded = True
+            except Exception as report_exc:
+                log.warning("[REPORT]  failed-session CSV write failed: %s", report_exc)
         if driver:
             ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = os.path.join(SCREENSHOT_DIR, f"error_{profile_id}_{ts}.png")
@@ -661,16 +851,22 @@ def warm_profile_attached(
     skip_preflight: bool = False,
     close_after: bool = False,
     weights: dict | None = None,
-) -> None:
+    run_id: str | None = None,
+) -> bool:
     """
-    Run a warm-up session on a browser that is *already open*.
+    Run a warm-up session on a browser that is *already open* in NstBrowser.
 
-    No ``start_profile`` / ``stop_profile`` call is made.
+    No ``start_profile`` / ``stop_profile`` API call is made, so the daily
+    open quota is not consumed.
 
     Parameters
     ----------
     debugger_address : str
-        CDP host:port, e.g. ``127.0.0.1:9222``.
+        CDP host:port, e.g. ``127.0.0.1:9222``.  Obtain it from:
+          - NstBrowser UI -> right-click running profile -> Remote Debug /
+            Copy Debug Address
+          - ``GET /api/v2/browsers`` -> ``port`` field  (use ``--attach-profile``
+            to resolve this automatically)
     profile_id : str
         Label for log messages and screenshot filenames only.
     skip_preflight : bool
@@ -682,6 +878,14 @@ def warm_profile_attached(
     driver  = None
     address = debugger_address.replace("ws://", "").split("/")[0]
     ws_url  = f"ws://{address}"
+    ran_session = False
+    session_recorded = False
+    run_id = run_id or make_run_id("attached")
+    session_id = make_session_id(profile_id)
+    session_started_at = iso_now()
+    session_start_ts = time.time()
+    session_sec = None
+    _session_local.ctx = SessionContext()
 
     try:
         driver = connect_selenium(ws_url)
@@ -702,14 +906,54 @@ def warm_profile_attached(
         if not check_login_status(driver):
             log.error("Profile '%s' appears logged out -- skipping session.",
                       profile_id)
-            return
+            _write_session_summary(
+                run_id=run_id,
+                session_id=session_id,
+                profile_id=profile_id,
+                mode="attached",
+                started_at=session_started_at,
+                session_start_ts=session_start_ts,
+                planned_duration_sec=session_sec,
+                status="logged_out",
+                errors_count=1,
+                end_url=_safe_current_url(driver),
+            )
+            session_recorded = True
+            return False
 
         session_sec = _sample_session_duration_sec()
         log.info("Session: %.1f min  |  profile: %s", session_sec / 60, profile_id)
-        run_social_session(driver, session_sec, profile_id=profile_id, **(weights or {}))
+        ran_session = True
+        run_social_session(
+            driver,
+            session_sec,
+            profile_id=profile_id,
+            run_id=run_id,
+            session_id=session_id,
+            mode="attached",
+            **(weights or {}),
+        )
+        session_recorded = True
 
     except (TimeoutException, RuntimeError, WebDriverException) as exc:
         log.error("Error on attached profile '%s': %s", profile_id, exc)
+        if not session_recorded:
+            try:
+                _write_session_summary(
+                    run_id=run_id,
+                    session_id=session_id,
+                    profile_id=profile_id,
+                    mode="attached",
+                    started_at=session_started_at,
+                    session_start_ts=session_start_ts,
+                    planned_duration_sec=session_sec,
+                    status="failed",
+                    errors_count=1,
+                    end_url=_safe_current_url(driver) if driver else "",
+                )
+                session_recorded = True
+            except Exception as report_exc:
+                log.warning("[REPORT]  failed attached-session CSV write failed: %s", report_exc)
         if driver:
             ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = os.path.join(SCREENSHOT_DIR, f"error_{profile_id}_{ts}.png")
@@ -730,3 +974,4 @@ def warm_profile_attached(
                     pass
             else:
                 log.info("Browser left open (pass --close to quit after session).")
+    return ran_session

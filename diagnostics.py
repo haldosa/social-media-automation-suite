@@ -17,6 +17,7 @@ from actions import (
     view_profile_from_feed, follow_from_feed,
     click_home_button,
 )
+from reporting import append_diagnostic, iso_now, make_run_id
 from session import _get_typing_dna, _get_ctx
 from posting import create_post
 from state import _can_post_now, _record_post
@@ -111,8 +112,19 @@ def _browser_is_alive(driver) -> bool:
     except Exception:
         return False
 
-def run_test_actions(driver, profile_id: str = "test",
-                     filter_action: str | None = None) -> None:
+
+def _record_diagnostic_row(row: dict, tlog: logging.Logger) -> None:
+    try:
+        append_diagnostic(row)
+    except Exception as exc:
+        tlog.warning("[REPORT]  diagnostic CSV write failed: %s", exc)
+
+def run_test_actions(
+    driver,
+    profile_id: str = "test",
+    filter_action: str | None = None,
+    run_id: str | None = None,
+) -> None:
     """Execute every action exactly once in isolation with full diagnostics.
 
     Designed for the ``--test-actions`` CLI flag.  Skips normal session loop,
@@ -126,6 +138,7 @@ def run_test_actions(driver, profile_id: str = "test",
     """
     import traceback as _tb
 
+    run_id = run_id or make_run_id("diagnostic")
     tlog = _setup_test_logger()
 
     # Load per-profile typing DNA so human_type() uses realistic per-profile
@@ -255,11 +268,24 @@ def run_test_actions(driver, profile_id: str = "test",
             # Record remaining actions as ERROR
             for j in range(idx, total + 1):
                 remaining_name = actions[j - 1][0] if j <= total else "?"
-                results.append({
+                row = {
                     "index": j, "name": remaining_name,
                     "status": "ERROR", "duration_ms": 0,
                     "note": "BROWSER UNRESPONSIVE ,  aborted",
-                })
+                }
+                results.append(row)
+                _record_diagnostic_row({
+                    "run_id": run_id,
+                    "profile_id": profile_id,
+                    "action": remaining_name,
+                    "started_at": iso_now(),
+                    "ended_at": iso_now(),
+                    "duration_ms": 0,
+                    "status": "ERROR",
+                    "note": row["note"],
+                    "health_ok": False,
+                    "cursor_drift": "",
+                }, tlog)
             break
 
         header = f"[TEST {idx}/{total}] {name}"
@@ -268,10 +294,13 @@ def run_test_actions(driver, profile_id: str = "test",
         tlog.info("%s", header)
         tlog.info("-" * 60)
 
+        diag_started_at = iso_now()
         t0 = time.perf_counter()
         status = "PASS"
         note = ""
         return_value = None
+        cursor_drift = False
+        health_ok = ""
 
         try:
             return_value = fn()
@@ -314,16 +343,32 @@ def run_test_actions(driver, profile_id: str = "test",
         # A simplistic drift detection: if _cursor_pos is at (0,0) after an
         # action that should have moved it, record a warning.
         if _get_ctx().cursor_pos[0] == 0 and _get_ctx().cursor_pos[1] == 0:
+            cursor_drift = True
             cursor_drift_actions.append(name)
             tlog.warning("[CURSOR DRIFT]  cursor at (0,0) after action %s", name)
 
         # ── DOM health check ──────────────────────────────────────────────
         if _browser_is_alive(driver):
             healthy = _dom_health_check(driver, tlog)
+            health_ok = healthy
             if not healthy:
                 tlog.warning("[HEALTH FAIL]  after action %s ,  continuing to next action", name)
         else:
+            health_ok = False
             tlog.error("[HEALTH FAIL]  browser unresponsive after action %s", name)
+
+        _record_diagnostic_row({
+            "run_id": run_id,
+            "profile_id": profile_id,
+            "action": name,
+            "started_at": diag_started_at,
+            "ended_at": iso_now(),
+            "duration_ms": round(elapsed_ms),
+            "status": status,
+            "note": note[:240],
+            "health_ok": health_ok,
+            "cursor_drift": cursor_drift,
+        }, tlog)
 
         # ── Human-like pause between actions (3–8 s) ─────────────────────
         if idx < total:
