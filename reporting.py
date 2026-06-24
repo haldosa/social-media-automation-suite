@@ -7,7 +7,10 @@ from datetime import datetime
 
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPORTS_DIR = os.environ.get("WARMER_REPORTS_DIR", os.path.join(_SCRIPT_DIR, "reports"))
+REPORTS_DIR = os.environ.get(
+    "SESSION_REPORTS_DIR",
+    os.environ.get("WARMER_REPORTS_DIR", os.path.join(_SCRIPT_DIR, "reports")),
+)
 
 REPORT_SCHEMAS = {
     "runs": [

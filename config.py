@@ -2,23 +2,28 @@ import json
 import os
 import tempfile
 from dotenv import load_dotenv
+from content_policy import normalize_brand_voice
 
 load_dotenv()
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-UI_CONFIG_FILE = os.path.join(_SCRIPT_DIR, "warmer_ui_config.json")
+UI_CONFIG_FILE = os.path.join(_SCRIPT_DIR, "operations_ui_config.json")
+_LEGACY_UI_CONFIG_FILE = os.path.join(_SCRIPT_DIR, "warmer_ui_config.json")
 
 
 def _load_ui_config() -> dict:
+    config_path = UI_CONFIG_FILE
+    if not os.path.isfile(config_path) and os.path.isfile(_LEGACY_UI_CONFIG_FILE):
+        config_path = _LEGACY_UI_CONFIG_FILE
     try:
-        with open(UI_CONFIG_FILE, "r", encoding="utf-8") as f:
+        with open(config_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
         return {}
     except json.JSONDecodeError as exc:
-        raise SystemExit(f"Invalid JSON in {UI_CONFIG_FILE}: {exc}") from exc
+        raise SystemExit(f"Invalid JSON in {config_path}: {exc}") from exc
     if not isinstance(data, dict):
-        raise SystemExit(f"{UI_CONFIG_FILE} must contain a JSON object.")
+        raise SystemExit(f"{config_path} must contain a JSON object.")
     return data
 
 
@@ -59,7 +64,7 @@ def _parse_active_hours(value, default=(8, 23)) -> tuple[int, int]:
                 pass
     return default
 
-#  Content pools (comments, captions, search topics) 
+#  Approved content pools and search topics
 # POOLS_JSON_PATH can be:
 #   1. Set via env var POOLS_JSON_PATH (absolute or relative to CWD)
 #   2. Default: pools.json next to this script
@@ -79,13 +84,13 @@ NSTBROWSER_BASE_URL = "http://localhost:8848/api/v2"  # official v2 base endpoin
 NSTBROWSER_API_KEY = _ui_value("nstbrowser_api_key", os.getenv("NSTBROWSER_API_KEY"))
 if not NSTBROWSER_API_KEY:
     raise SystemExit(
-        "NSTBROWSER_API_KEY is not set. Add it in warmer_ui_config.json or .env."
+        "NSTBROWSER_API_KEY is not set. Add it in operations_ui_config.json or .env."
     )
 
 PROFILE_IDS = _parse_profile_ids(_ui_value("profile_ids", os.getenv("PROFILE_IDS")))
 if not PROFILE_IDS:
     raise SystemExit(
-        "PROFILE_IDS is not set. Add profile IDs in warmer_ui_config.json or .env."
+        "PROFILE_IDS is not set. Add profile IDs in operations_ui_config.json or .env."
     )
 
 TARGET_SOCIAL_URL   = _ui_value("target_social_url", os.getenv("TARGET_SOCIAL_URL", "https://www.threads.net"))
@@ -112,7 +117,7 @@ BUFFER_LONG_PROB    = 0.15
 BUFFER_LONG_MIN     = 20    # extended break minimum (minutes)
 BUFFER_LONG_MAX     = 60    # extended break maximum (minutes)
 
-# Time-of-day scheduling ,  the warmer will refuse to run outside these hours
+# Time-of-day scheduling; profile operations do not run outside these hours.
 # (24-hour local time).  Set ACTIVE_HOURS_RANGE = (0, 23) to disable.
 ACTIVE_HOURS_RANGE  = _parse_active_hours(
     _ui_value("active_hours", os.getenv("ACTIVE_HOURS_RANGE")),
@@ -121,6 +126,10 @@ ACTIVE_HOURS_RANGE  = _parse_active_hours(
 # Simulated inactive day ,  skip the entire run with this probability.
 # Models the natural days when a real user simply doesn't open Threads.
 INACTIVE_DAY_PROB   = 0     # replaced by daemon scheduler's per-profile day-off logic
+
+# Optional publishing policy. Text is never embellished or rewritten; these
+# controls only determine whether approved captions and replies may be used.
+BRAND_VOICE = normalize_brand_voice(_ui_value("brand_voice", {}))
 
 #  Content posting  #
 # Set MEDIA_POOL_DIR to a local folder of images to attach to new posts.
@@ -136,7 +145,7 @@ _POST_TEMP_DIR = os.path.join(tempfile.gettempdir(), "nstbrowser_post_scratch")
 
 
 SCREENSHOT_DIR      = os.path.join(_SCRIPT_DIR, "screenshots")
-LOG_FILE            = os.path.join(_SCRIPT_DIR, "nstbrowser_warmer.log")
+LOG_FILE            = os.path.join(_SCRIPT_DIR, "profile_operations.log")
 MOUSE_LOG_FILE      = os.path.join(_SCRIPT_DIR, "mouse_moves.log")  # dedicated cursor movement log
 MOUSE_TRACE         = False             # True = log every Bezier step (verbose)
 DEBUG_CURSOR_OVERLAY= False             # True = inject red dot overlay to visualise cursor movement

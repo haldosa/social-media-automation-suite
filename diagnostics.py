@@ -141,9 +141,7 @@ def run_test_actions(
     run_id = run_id or make_run_id("diagnostic")
     tlog = _setup_test_logger()
 
-    # Load per-profile typing DNA so human_type() uses realistic per-profile
-    # keystroke dynamics (including the typo/correction model) even outside
-    # the normal run_social_session() path.
+    # Load the per-profile pacing configuration used by publishing diagnostics.
     _get_ctx().active_typing_dna = _get_typing_dna(profile_id)
 
     # ── Define the ordered list of actions to test ────────────────────────────
@@ -422,5 +420,5 @@ def run_test_actions(
 
     report = "\n".join(lines)
     tlog.info(report)
-    # Also push to the main log so it persists in nstbrowser_warmer.log
+    # Also push to the main profile-operations log for the audit trail.
     log.info(report)

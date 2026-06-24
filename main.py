@@ -74,8 +74,8 @@ def _build_weight_kwargs(args: argparse.Namespace) -> dict:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="nstbrowser_warmer",
-        description="NstBrowser Threads warm-up automation.",
+        prog="profile_operations",
+        description="Authorized creator and business profile operations.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent(
             """
@@ -83,7 +83,7 @@ def _build_parser() -> argparse.ArgumentParser:
             -----
             Normal (no flags)
               Opens every profile in PROFILE_IDS via the NstBrowser API, runs a
-              full warm-up session for each, then closes them.
+              configured profile-operations session for each, then closes them.
             """
         ),
     )
@@ -214,7 +214,7 @@ def main() -> None:
     run_status = "completed"
 
     log.info("=" * 60)
-    log.info("NstBrowser Warmer (API v2) -- %s", datetime.now().strftime("%Y-%m-%d %H:%M"))
+    log.info("Profile Operations (API v2) -- %s", datetime.now().strftime("%Y-%m-%d %H:%M"))
     log.info("Run ID: %s", run_id)
     if weights:
         log.info("Action weight overrides: %s", weights)

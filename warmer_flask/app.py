@@ -1,5 +1,5 @@
 """
-NstBrowser Warmer — Flask Control Panel
+Profile Operations — Flask Control Panel
 Run with: python app.py
 Access at: http://localhost:5000
 """
@@ -24,18 +24,23 @@ app = Flask(__name__)
 # ── Path to your script directory ─────────────────────────────────────────────
 # Change this to the absolute path of your script folder
 SCRIPT_DIR = os.environ.get(
-    "WARMER_SCRIPT_DIR",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
+    "OPERATIONS_SCRIPT_DIR",
+    os.environ.get(
+        "WARMER_SCRIPT_DIR",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
+    ),
 )
 PYTHON_EXE  = sys.executable
 MAIN_SCRIPT = os.path.join(SCRIPT_DIR, "main.py")
 STATE_FILE  = os.path.join(SCRIPT_DIR, "post_state.json")
 HEARTBEAT_FILE = os.path.join(SCRIPT_DIR, "heartbeat.json")
-UI_CONFIG_FILE = os.path.join(SCRIPT_DIR, "warmer_ui_config.json")
+UI_CONFIG_FILE = os.path.join(SCRIPT_DIR, "operations_ui_config.json")
+LEGACY_UI_CONFIG_FILE = os.path.join(SCRIPT_DIR, "warmer_ui_config.json")
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from reporting import REPORT_SCHEMAS, read_rows, report_path
+from content_policy import DEFAULT_BRAND_VOICE, normalize_brand_voice
 
 ACTION_WEIGHT_FLAGS = {
     "like": "--like",
@@ -56,6 +61,7 @@ DEFAULT_UI_CONFIG = {
     "active_hours": [8, 23],
     "default_no_preflight": False,
     "action_weights": {key: None for key in ACTION_WEIGHT_FLAGS},
+    "brand_voice": DEFAULT_BRAND_VOICE,
 }
 
 import logging
@@ -73,7 +79,7 @@ app.logger.addHandler(flask_handler)
 app.logger.setLevel(logging.INFO)
 
 # Also log process launches/stops
-_app_log = logging.getLogger("warmer.flask")
+_app_log = logging.getLogger("profile_operations.dashboard")
 _app_log.addHandler(flask_handler)
 _app_log.setLevel(logging.INFO)
 
@@ -85,15 +91,15 @@ _proc_start_times: dict[str, float] = {}
 
 # Used by _launch() to route subprocess output
 PROC_LOG_FILES = {
-    "daemon":         os.path.join(SCRIPT_DIR, "logs", "warmer.log"),
-    "session":        os.path.join(SCRIPT_DIR, "logs", "warmer.log"),
-    "test":           os.path.join(SCRIPT_DIR, "logs", "warmer.log"),
+    "daemon":         os.path.join(SCRIPT_DIR, "logs", "profile_operations.log"),
+    "session":        os.path.join(SCRIPT_DIR, "logs", "profile_operations.log"),
+    "test":           os.path.join(SCRIPT_DIR, "logs", "profile_operations.log"),
 }
 
 # Used by /api/logs/stream/<log_name>
 LOG_FILES = {
-    "warmer": os.path.join(SCRIPT_DIR, "logs", "warmer.log"),
-    "flask":  os.path.join(SCRIPT_DIR, "logs", "flask.log"),
+    "operations": os.path.join(SCRIPT_DIR, "logs", "profile_operations.log"),
+    "dashboard":  os.path.join(SCRIPT_DIR, "logs", "flask.log"),
 }
 
 
@@ -117,7 +123,10 @@ def _load_ui_config_raw() -> dict:
             config["active_hours"] = [int(parts[0]), int(parts[1])]
 
     try:
-        with open(UI_CONFIG_FILE, "r", encoding="utf-8") as f:
+        config_path = UI_CONFIG_FILE
+        if not os.path.isfile(config_path) and os.path.isfile(LEGACY_UI_CONFIG_FILE):
+            config_path = LEGACY_UI_CONFIG_FILE
+        with open(config_path, "r", encoding="utf-8") as f:
             saved = json.load(f)
     except FileNotFoundError:
         saved = {}
@@ -126,7 +135,7 @@ def _load_ui_config_raw() -> dict:
 
     if isinstance(saved, dict):
         for key in ("nstbrowser_api_key", "profile_ids", "target_social_url",
-                    "active_hours", "default_no_preflight"):
+                    "active_hours", "default_no_preflight", "brand_voice"):
             if key in saved:
                 config[key] = saved[key]
         weights = saved.get("action_weights")
@@ -155,6 +164,7 @@ def _public_config(config: dict) -> dict:
             key: (config.get("action_weights") or {}).get(key)
             for key in ACTION_WEIGHT_FLAGS
         },
+        "brand_voice": normalize_brand_voice(config.get("brand_voice")),
     }
     api_key = str(config.get("nstbrowser_api_key") or "")
     public["api_key_set"] = bool(api_key)
@@ -212,6 +222,28 @@ def _validate_ui_config(payload: dict, existing: dict) -> tuple[dict | None, str
             return None, f"Weight '{key}' must be between 0.0 and 1.0."
         weights[key] = value
 
+    raw_brand_voice = payload.get("brand_voice", existing.get("brand_voice", {}))
+    if not isinstance(raw_brand_voice, dict):
+        return None, "Brand voice must be an object."
+    try:
+        max_emojis = int(
+            raw_brand_voice.get("max_emojis", DEFAULT_BRAND_VOICE["max_emojis"])
+        )
+        max_hashtags = int(
+            raw_brand_voice.get("max_hashtags", DEFAULT_BRAND_VOICE["max_hashtags"])
+        )
+    except (TypeError, ValueError):
+        return None, "Emoji and hashtag limits must be whole numbers."
+    if not (0 <= max_emojis <= 20 and 0 <= max_hashtags <= 30):
+        return None, "Emoji and hashtag limits are outside the allowed range."
+    brand_voice = normalize_brand_voice({
+        "tone": raw_brand_voice.get("tone"),
+        "max_emojis": max_emojis,
+        "max_hashtags": max_hashtags,
+        "banned_terms": raw_brand_voice.get("banned_terms", []),
+        "allowed_abbreviations": raw_brand_voice.get("allowed_abbreviations", []),
+    })
+
     config = {
         "nstbrowser_api_key": api_key,
         "profile_ids": profile_ids,
@@ -219,6 +251,7 @@ def _validate_ui_config(payload: dict, existing: dict) -> tuple[dict | None, str
         "active_hours": [start_hour, end_hour],
         "default_no_preflight": bool(payload.get("default_no_preflight", False)),
         "action_weights": weights,
+        "brand_voice": brand_voice,
     }
     return config, None
 
@@ -510,8 +543,8 @@ def _group_log_entries(entries: list[dict]) -> list[dict]:
             if "DAEMON" in msg:
                 label = "Daemon"
             elif "TEST" in msg or "test-actions" in msg:
-                label = "Test Actions"
-            elif "NstBrowser Warmer" in msg:
+                label = "Diagnostics"
+            elif "Profile Operations" in msg:
                 label = f"Session {entry['ts'][11:16]}"
 
             current = {
@@ -537,7 +570,7 @@ def _group_log_entries(entries: list[dict]) -> list[dict]:
 def log_groups():
     """Return grouped log entries as JSON for the dropdown UI."""
     try:
-        with open(LOG_FILES["warmer"], "r", encoding="utf-8", errors="replace") as f:
+        with open(LOG_FILES["operations"], "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()[-500:]  # last 500 lines
         entries = _parse_log_lines(lines)
         groups  = _group_log_entries(entries)
@@ -553,7 +586,7 @@ def log_groups():
 
 @app.route("/api/logs/stream")
 @app.route("/api/logs/stream/<log_name>")
-def log_stream(log_name="warmer"):
+def log_stream(log_name="operations"):
     if log_name not in LOG_FILES:
         return "Not found", 404
     path = LOG_FILES[log_name]

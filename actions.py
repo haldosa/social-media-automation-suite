@@ -31,7 +31,8 @@ from mouse import (
     CDPConnectionDead, inject_cursor_overlay, init_cursor_pos,
 )
 from scroll import stochastic_scroll, navigate_to, navigate_history, smooth_scroll_chunk, _close_media_overlay
-from pools import SEARCH_TOPIC_POOL, COMMENT_POOL
+from content_policy import ContentPolicyError, prepare_reply_for_publishing, validate_reply
+from pools import APPROVED_REPLIES, BRAND_VOICE, SEARCH_TOPIC_POOL
 '''
 def _score_post_relevance(post_text: str) -> str:
     """Returns 'primary', 'secondary', 'negative', or 'neutral'."""
@@ -1319,7 +1320,7 @@ def read_post_action(driver) -> bool:
 
 def comment_on_post(driver) -> bool:
     """
-    Leave a short, natural comment on a random visible post in the feed.
+    Publish a pre-approved, business-safe reply to a visible post in the feed.
 
     Flow:
       1. Find visible Reply buttons in the current viewport.
@@ -1327,8 +1328,8 @@ def comment_on_post(driver) -> bool:
       3. Read-pause ,  user finishes reading the post before replying.
       4. Bezier-arc to the Reply button and click.
       5. Wait up to 8 s for the comment text field to appear.
-      6. Bezier-arc to the text field; type a random comment from COMMENT_POOL
-         via human_type() (log-normal keystroke timing).
+      6. Bezier-arc to the text field and type one complete reply from the
+         approved reply pool.
       7. Re-reading pause ,  user proofreads before posting.
       8. Find the Post button closest to the text field (avoids matching the
          global “New post” compose button); bezier-arc and click.
@@ -1342,6 +1343,24 @@ def comment_on_post(driver) -> bool:
             log.info("[ACTION SKIP]  action=comment  reason=not_on_threads  url=%s",
                      current_url[:60])
             return False
+
+        approved_pool = _get_ctx().profile_approved_reply_pool or APPROVED_REPLIES
+        eligible_replies: list[str] = []
+        for index, candidate in enumerate(approved_pool):
+            try:
+                eligible_replies.append(
+                    prepare_reply_for_publishing(candidate, BRAND_VOICE)
+                )
+            except ContentPolicyError as exc:
+                log.warning(
+                    "[REPLY CONTROLS] reply rejected index=%d reason=%s",
+                    index,
+                    exc,
+                )
+        if not eligible_replies:
+            log.warning("[REPLY CONTROLS] no approved business-safe reply available")
+            return False
+        reply = random.choice(eligible_replies)
         # ── DEBUG LOGGING: ACTION START ─────────────────────────────────────────
         _action_t0 = time.perf_counter()
         _get_ctx().session_metrics["actions_dispatched"] += 1
@@ -1382,10 +1401,8 @@ def comment_on_post(driver) -> bool:
         # 5. Bezier-arc to text field, then type
         bezier_move(driver, comment_box)
         precise_sleep(random.uniform(0.3, 0.6))
-        _active_comment_pool = _get_ctx().profile_comment_pool or COMMENT_POOL
-        comment = random.choice(_active_comment_pool)
-        log.info("[ COMMENT ]  typing reply: %r", comment)
-        human_type(comment_box, comment, driver)
+        log.info("[REPLY CONTROLS] approved reply selected chars=%d", len(reply))
+        human_type(comment_box, reply, driver)
 
         # 6. Re-reading pause
         precise_sleep(random.uniform(1.2, 3.0))
@@ -1429,7 +1446,7 @@ def comment_on_post(driver) -> bool:
 
         # 8. Post-click pause ,  watching the reply appear
         precise_sleep(random.uniform(1.5, 3.5))
-        log.info("[ COMMENT ]  comment posted successfully")
+        log.info("[REPLY CONTROLS] approved reply published successfully")
         # ── DEBUG LOGGING: ACTION END (success) ──────────────────────────────────
         _get_ctx().session_metrics["comments"] += 1
         log.info("[ACTION END]  action=comment  result=success  duration=%.1fs",

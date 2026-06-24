@@ -1,17 +1,19 @@
 import json
-from config import _POOLS_PATH, PROFILE_IDS
+from config import _POOLS_PATH, BRAND_VOICE, PROFILE_IDS
 
 with open(_POOLS_PATH, "r", encoding="utf-8") as _f:
     data = json.load(_f)
 
-COMMENT_POOL = data["comments"]
-# Captions for original posts.  Add / remove entries freely.
-POST_CAPTION_POOL = data["post_captions"]
-# Path to the persistent posting-state JSON (per-profile daily counts + age).
+def _approved_pool(primary_key: str, legacy_key: str) -> list[str]:
+    """Load an approved pool while allowing one-time legacy config migration."""
+    pool = data.get(primary_key, data.get(legacy_key))
+    if not isinstance(pool, list):
+        raise SystemExit(f"Content pools file must define a list named '{primary_key}'.")
+    return [item for item in pool if isinstance(item, str)]
 
-POST_CAPTION_SHORTS = data["POST_CAPTION_SHORTS"]
 
-POST_CAPTION_EMOJIS = data["POST_CAPTION_EMOJIS"]
+APPROVED_REPLIES = _approved_pool("approved_replies", "comments")
+APPROVED_CAPTIONS = _approved_pool("approved_captions", "post_captions")
 
 PREFLIGHT_SITES_POOL = data["PREFLIGHT_SITES_POOL"]
 
@@ -26,7 +28,7 @@ def _get_profile_pool_shard(pool: list, profile_id: str) -> list:
     Partitions *pool* across all known PROFILE_IDS (in their declared order)
     so no two profiles routinely draw from the same slice.  This eliminates
     the cross-account content correlation caused by all profiles sampling the
-    exact same comment / caption pool.
+    exact same approved reply or caption pool.
 
     Edge cases
     ----------

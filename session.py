@@ -12,7 +12,7 @@ from config import (
     SCREENSHOT_DIR,
 )
 from utils import log, precise_sleep, _get_ctx, _session_local, SessionContext, _dlog
-from pools import COMMENT_POOL, POST_CAPTION_POOL, SEARCH_TOPIC_POOL, _get_profile_pool_shard
+from pools import APPROVED_CAPTIONS, APPROVED_REPLIES, SEARCH_TOPIC_POOL, _get_profile_pool_shard
 from browser import _get_typing_dna
 from mouse import bezier_move_to_coords, CDPConnectionDead, init_cursor_pos
 from scroll import navigate_to
@@ -416,16 +416,15 @@ def run_social_session(
     _session_local.ctx = SessionContext()
     _session_local.ctx.active_typing_dna = _get_typing_dna(profile_id)
     #  Assign per-profile isolated content pools â”€
-    # Each profile receives its own deterministic shard of COMMENT_POOL and
-    # POST_CAPTION_POOL so no two accounts ever share the same surface text.
-    _session_local.ctx.profile_comment_pool = _get_profile_pool_shard(COMMENT_POOL, profile_id)
-    _session_local.ctx.profile_caption_pool = _get_profile_pool_shard(POST_CAPTION_POOL, profile_id)
+    # Each profile receives deterministic shards of the approved content pools.
+    _session_local.ctx.profile_approved_reply_pool = _get_profile_pool_shard(APPROVED_REPLIES, profile_id)
+    _session_local.ctx.profile_approved_caption_pool = _get_profile_pool_shard(APPROVED_CAPTIONS, profile_id)
     _session_local.ctx.profile_search_topic_pool = _get_profile_pool_shard(SEARCH_TOPIC_POOL, profile_id)
     log.info(
-        "[ POOLS ]  profile=%s  comment_shard=%d/%d  caption_shard=%d/%d  search_shard=%d/%d",
+        "[ CONTENT POLICY ]  profile=%s  approved_replies=%d/%d  approved_captions=%d/%d  search_topics=%d/%d",
         profile_id[:12],
-        len(_session_local.ctx.profile_comment_pool), len(COMMENT_POOL),
-        len(_session_local.ctx.profile_caption_pool), len(POST_CAPTION_POOL),
+        len(_session_local.ctx.profile_approved_reply_pool), len(APPROVED_REPLIES),
+        len(_session_local.ctx.profile_approved_caption_pool), len(APPROVED_CAPTIONS),
         len(_session_local.ctx.profile_search_topic_pool), len(SEARCH_TOPIC_POOL),
     )
     # â”€
@@ -489,7 +488,7 @@ def run_social_session(
     # If user overrides are present, patch the profile's local matrix copy
     # so the Markov chain honours them while preserving transition structure.
     # Note: _profile_transition_matrix is a local dict (copy), not the global
-    # _BASE_TRANSITION_MATRIX, so this mutation is session-scoped only.
+    # _BASE_TRANSITION_MATRIX, so this adjustment is session-scoped only.
     if _user_weights:
         for state_key in list(_profile_transition_matrix.keys()):
             row = list(_profile_transition_matrix[state_key])
@@ -736,7 +735,7 @@ def run_social_session(
 
 
 # ================================================================== #
-#  SINGLE PROFILE WARM-UP ORCHESTRATOR
+#  SINGLE PROFILE OPERATIONS ORCHESTRATOR
 # ================================================================== #
 
 def warm_profile(
@@ -854,7 +853,7 @@ def warm_profile_attached(
     run_id: str | None = None,
 ) -> bool:
     """
-    Run a warm-up session on a browser that is *already open* in NstBrowser.
+    Run a profile-operations session on a browser already open in NstBrowser.
 
     No ``start_profile`` / ``stop_profile`` API call is made, so the daily
     open quota is not consumed.
@@ -871,7 +870,7 @@ def warm_profile_attached(
         Label for log messages and screenshot filenames only.
     skip_preflight : bool
         Skip the Wikipedia pre-flight (use when the profile already has a
-        warm browsing history from an earlier run).
+        established browsing state from an earlier authorized run).
     close_after : bool
         Quit the browser after the session.  Default: leave it open.
     """

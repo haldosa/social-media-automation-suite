@@ -44,7 +44,7 @@ _mlog.propagate = False  # keep mouse events out of the main log
 
 # ── DEBUG LOGGING: audit logger ,  writes into the same log file as `log` ─────
 # All [TIMING], [ELEMENT], [MOUSE ARC], [CLICK], [CURSOR MOVE] etc. go to
-# nstbrowser_warmer.log at DEBUG level.  The console handler is not attached
+# profile_operations.log at DEBUG level. The console handler is not attached
 # so verbose debug lines don't clutter the terminal.
 _dlog = logging.getLogger("audit")
 _dlog.setLevel(logging.DEBUG)
@@ -149,8 +149,8 @@ class SessionContext:
     active_typing_dna: dict   = dataclasses.field(default_factory=dict)
     # Per-profile isolated content pools — populated by run_social_session().
     # Empty list means "not yet assigned"; callers fall back to the global pool.
-    profile_comment_pool: list = dataclasses.field(default_factory=list)
-    profile_caption_pool: list = dataclasses.field(default_factory=list)
+    profile_approved_reply_pool: list = dataclasses.field(default_factory=list)
+    profile_approved_caption_pool: list = dataclasses.field(default_factory=list)
     profile_search_topic_pool: list = dataclasses.field(default_factory=list)
 
 _session_local = threading.local()
@@ -167,7 +167,7 @@ def _get_ctx() -> SessionContext:
 # ── DEBUG LOGGING: timing check helper ───────────────────────────────────────
 def _timing_check(context: str, sampled_s: float,
                   expected_min_s: float, expected_max_s: float) -> float:
-    """Log a timing sample to nstbrowser_warmer.log; emit WARN if outside expected range.
+    """Log a timing sample to profile_operations.log; emit WARN if outside expected range.
 
     Uses a z-score approximation: if sampled_s is more than 2 SD outside the
     expected range (treating the range as ±2 SD from the midpoint), emit WARN.
@@ -196,7 +196,7 @@ def _log_element_interaction(driver, element, action: str) -> None:
     """Query element geometry + visibility via JS; emit [ELEMENT] log line.
 
     All execute_script calls are guarded so a JS error never crashes automation.
-    Routes to nstbrowser_warmer.log (DEBUG) on success; emits [ELEMENT WARN] to the
+    Routes to profile_operations.log (DEBUG) on success; emits [ELEMENT WARN] to the
     main log if element is invisible or off-viewport.
     """
     try:

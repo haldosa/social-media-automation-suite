@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WARMER -- Control Panel</title>
+<title>Profile Operations Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow:wght@300;400;500;600&family=Barlow+Condensed:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
@@ -792,7 +792,7 @@
   <!--  Header  -->
   <header>
     <div class="status-dot" id="conn-dot"></div>
-    <div class="logo">NST<span>WARMER</span></div>
+    <div class="logo">PROFILE <span>OPERATIONS</span></div>
     <div class="header-sep"></div>
     <div class="sys-time">SYS <span id="clock">--:--:--</span></div>
     <div class="header-sep"></div>
@@ -837,7 +837,7 @@
       <div class="proc-card" id="card-test">
         <div class="proc-header">
           <div class="proc-indicator" id="dot-test"></div>
-          <div class="proc-name">Test Action</div>
+          <div class="proc-name">Diagnostics</div>
           <div class="proc-pid" id="pid-test"></div>
         </div>
         <div class="proc-uptime" id="uptime-test" style="display:none"></div>
@@ -886,13 +886,39 @@
           <input type="checkbox" id="config-no-preflight">
           <label for="config-no-preflight">Default --no-preflight</label>
         </div>
+        <div class="section-head">
+          <div class="section-title">Content Policy</div>
+          <div class="section-line"></div>
+        </div>
+        <div class="field">
+          <label>Brand Tone</label>
+          <input type="text" id="brand-tone" placeholder="professional">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Max Emojis</label>
+            <input type="number" id="brand-max-emojis" min="0" max="20" step="1">
+          </div>
+          <div class="field">
+            <label>Max Hashtags</label>
+            <input type="number" id="brand-max-hashtags" min="0" max="30" step="1">
+          </div>
+        </div>
+        <div class="field">
+          <label>Banned Terms</label>
+          <textarea id="brand-banned-terms" placeholder="One term per line"></textarea>
+        </div>
+        <div class="field">
+          <label>Allowed Abbreviations</label>
+          <textarea id="brand-allowed-abbreviations" placeholder="One abbreviation per line"></textarea>
+        </div>
         <div class="hint">Blank weights keep built-in defaults. Numeric weights must be 0.0-1.0.</div>
         <div class="weights-grid" id="weights-grid">
           <div class="field"><label>Like</label><input type="number" id="weight-like" min="0" max="1" step="0.01" placeholder="default"></div>
           <div class="field"><label>Notify</label><input type="number" id="weight-notify" min="0" max="1" step="0.01" placeholder="default"></div>
           <div class="field"><label>Profile</label><input type="number" id="weight-profile" min="0" max="1" step="0.01" placeholder="default"></div>
           <div class="field"><label>Read Post</label><input type="number" id="weight-read_post" min="0" max="1" step="0.01" placeholder="default"></div>
-          <div class="field"><label>Comment</label><input type="number" id="weight-comment" min="0" max="1" step="0.01" placeholder="default"></div>
+          <div class="field"><label>Approved Reply</label><input type="number" id="weight-comment" min="0" max="1" step="0.01" placeholder="default"></div>
           <div class="field"><label>Follow</label><input type="number" id="weight-follow" min="0" max="1" step="0.01" placeholder="default"></div>
           <div class="field"><label>Scroll</label><input type="number" id="weight-scroll" min="0" max="1" step="0.01" placeholder="default"></div>
           <div class="field"><label>Search</label><input type="number" id="weight-search" min="0" max="1" step="0.01" placeholder="default"></div>
@@ -937,7 +963,7 @@
     <!-- Test actions -->
     <div>
       <div class="section-head">
-        <div class="section-title">Test Actions</div>
+        <div class="section-title">Diagnostics</div>
         <div class="section-line"></div>
       </div>
       <div class="panel">
@@ -948,7 +974,7 @@
         <div class="action-grid">
           <div class="action-btn selected" data-action="all"          onclick="selectAction(this)">all</div>
           <div class="action-btn"          data-action="like"         onclick="selectAction(this)">like</div>
-          <div class="action-btn"          data-action="comment"      onclick="selectAction(this)">comment</div>
+          <div class="action-btn"          data-action="comment"      onclick="selectAction(this)">approved reply</div>
           <div class="action-btn"          data-action="follow"       onclick="selectAction(this)">follow</div>
           <div class="action-btn"          data-action="view_profile" onclick="selectAction(this)">profile</div>
           <div class="action-btn"          data-action="search"       onclick="selectAction(this)">search</div>
@@ -957,7 +983,7 @@
           <div class="action-btn"          data-action="notifications" onclick="selectAction(this)">notifs</div>
         </div>
         <div style="margin-top:10px">
-          <button class="btn btn-action btn-full" onclick="testStart()">RUN TEST</button>
+          <button class="btn btn-action btn-full" onclick="testStart()">RUN DIAGNOSTIC</button>
         </div>
       </div>
     </div>
@@ -991,8 +1017,8 @@
   <div class="logs-panel">
     <div class="logs-header">
       <div class="logs-menu" role="tablist" aria-label="Monitor view">
-        <button class="view-tab active" id="tab-results" data-view="results" role="tab" aria-controls="results-view" aria-selected="true" onclick="switchPanelView('results')">Results</button>
-        <button class="view-tab" id="tab-live-log" data-view="live-log" role="tab" aria-controls="live-log-view" aria-selected="false" onclick="switchPanelView('live-log')">Live Log</button>
+        <button class="view-tab active" id="tab-results" data-view="results" role="tab" aria-controls="results-view" aria-selected="true" onclick="switchPanelView('results')">Session Reports</button>
+        <button class="view-tab" id="tab-live-log" data-view="live-log" role="tab" aria-controls="live-log-view" aria-selected="false" onclick="switchPanelView('live-log')">Profile Operations Log</button>
       </div>
     </div>
 
@@ -1027,8 +1053,8 @@
         <div class="toolbar-group">
           <label class="toolbar-label" for="log-source">Source</label>
           <select id="log-source" class="toolbar-select" onchange="switchLog()">
-            <option value="warmer">warmer</option>
-            <option value="flask">flask</option>
+            <option value="operations">profile operations</option>
+            <option value="dashboard">dashboard</option>
           </select>
         </div>
         <div class="logs-toolbar-spacer"></div>
@@ -1120,6 +1146,10 @@ function collectWeights() {
 }
 
 function collectConfigPayload() {
+  const listValues = id => document.getElementById(id).value
+    .split(/[\n,]+/)
+    .map(v => v.trim())
+    .filter(Boolean);
   return {
     nstbrowser_api_key: document.getElementById('config-api-key').value.trim(),
     profile_ids: document.getElementById('config-profile-ids').value
@@ -1132,7 +1162,14 @@ function collectConfigPayload() {
       Number(document.getElementById('config-active-end').value)
     ],
     default_no_preflight: document.getElementById('config-no-preflight').checked,
-    action_weights: collectWeights()
+    action_weights: collectWeights(),
+    brand_voice: {
+      tone: document.getElementById('brand-tone').value.trim(),
+      max_emojis: Number(document.getElementById('brand-max-emojis').value),
+      max_hashtags: Number(document.getElementById('brand-max-hashtags').value),
+      banned_terms: listValues('brand-banned-terms'),
+      allowed_abbreviations: listValues('brand-allowed-abbreviations')
+    }
   };
 }
 
@@ -1159,6 +1196,12 @@ function applyConfigToForm(config) {
   document.getElementById('config-active-end').value = (config.active_hours || [8, 23])[1];
   document.getElementById('config-no-preflight').checked = !!config.default_no_preflight;
   document.getElementById('session-no-preflight').checked = !!config.default_no_preflight;
+  const voice = config.brand_voice || {};
+  document.getElementById('brand-tone').value = voice.tone || 'professional';
+  document.getElementById('brand-max-emojis').value = voice.max_emojis ?? 2;
+  document.getElementById('brand-max-hashtags').value = voice.max_hashtags ?? 5;
+  document.getElementById('brand-banned-terms').value = (voice.banned_terms || []).join('\n');
+  document.getElementById('brand-allowed-abbreviations').value = (voice.allowed_abbreviations || []).join('\n');
   const weights = config.action_weights || {};
   ACTION_WEIGHT_KEYS.forEach(key => {
     const el = document.getElementById(`weight-${key}`);
@@ -1352,6 +1395,9 @@ const REPORT_COLUMNS = {
   actions: ['started_at', 'profile_id', 'sequence', 'action', 'status', 'duration_sec', 'note'],
   diagnostics: ['started_at', 'profile_id', 'action', 'status', 'duration_ms', 'health_ok', 'cursor_drift']
 };
+const REPORT_COLUMN_LABELS = {
+  comments: 'approved replies'
+};
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, ch => ({
@@ -1372,7 +1418,10 @@ function renderReportTable(rows, columns) {
     target.innerHTML = '<div class="report-empty">No CSV rows yet</div>';
     return;
   }
-  const head = columns.map(col => `<th>${escapeHtml(col.replaceAll('_', ' '))}</th>`).join('');
+  const head = columns.map(col => {
+    const label = REPORT_COLUMN_LABELS[col] || col.replaceAll('_', ' ');
+    return `<th>${escapeHtml(label)}</th>`;
+  }).join('');
   const body = rows.map(row => `
     <tr>${columns.map(col => {
       const value = row[col] || '--';
@@ -1455,7 +1504,7 @@ function switchLog() {
   backfillLines.length = 0;
 
   const source = document.getElementById('log-source');
-  const name = source ? source.value : 'warmer';
+  const name = source ? source.value : 'operations';
   evtSource = new EventSource(`/api/logs/stream/${name}`);
 
   evtSource.onmessage = e => {

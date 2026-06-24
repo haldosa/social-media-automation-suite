@@ -1,5 +1,4 @@
 import os
-import re
 import time
 import random
 import ctypes
@@ -29,7 +28,12 @@ from state import (
     _load_post_state, _save_post_state,
     _post_state_locked
 )
-from pools import POST_CAPTION_POOL, POST_CAPTION_EMOJIS, POST_CAPTION_SHORTS
+from content_policy import (
+    ContentPolicyError,
+    prepare_caption_for_publishing,
+    validate_caption,
+)
+from pools import APPROVED_CAPTIONS, BRAND_VOICE
 # ================================================================== #
 #  MEDIA PREPARATION  (per-profile temp copy)
 # ================================================================== #
@@ -131,85 +135,24 @@ def _cleanup_post_scratch(profile_id: str, max_age_sec: float = 3600.0) -> None:
 
 
 # ================================================================== #
-#  CAPTION VARIATION
+#  APPROVED CAPTION SELECTION
 # ================================================================== #
 
-def _mutate_caption(text: str) -> str:
-    """
-    Apply a random subset of natural social-media imperfections to a single
-    caption string.  Mutations are probabilistic and can stack.
-
-    Rules:
-      â€¢ Remove Oxford comma (, and / , or)           ,  60 % of eligible
-      â€¢ Drop leading capital (casual register)        ,  30 %
-      â€¢ Strip terminal period                         ,  40 %  (leaves !? alone)
-      â€¢ Replace terminal period with "â€¦"              ,  15 %
-      â€¢ Replace mid-sentence " I " with " i "         ,   8 % of eligible
-      â€¢ Append an emoji from POST_CAPTION_EMOJIS      ,  35 %
-      â€¢ Append a casual filler word (tbh/ngl/idk â€¦)   ,  12 %
-    """
-    # Oxford comma removal
-    if random.random() < 0.60:
-        text = re.sub(r",\s+(and|or)\s+", lambda m: f" {m.group(1)} ", text)
-
-    # Lowercase first character
-    if text and random.random() < 0.30:
-        text = text[0].lower() + text[1:]
-
-    # Terminal-period mutation
-    if text.endswith("."):
-        r = random.random()
-        if r < 0.40:
-            text = text[:-1]        # bare end
-        elif r < 0.55:
-            text = text[:-1] + "â€¦"  # ellipsis
-
-    # Mid-sentence "I" â†’ "i" (casual / typo)
-    if random.random() < 0.08:
-        text = re.sub(r"(?<=\s)I(?=\s)", "i", text)
-
-    # Trailing emoji
-    if random.random() < 0.35:
-        text = text.rstrip() + " " + random.choice(POST_CAPTION_EMOJIS)
-
-    # Casual filler
-    if random.random() < 0.12:
-        filler = random.choice(["tbh", "ngl", "idk", "lol", "honestly", "fr"])
-        text = text.rstrip(".!?â€¦").rstrip() + f" {filler}"
-
-    return text
-
-
-def _humanize_caption(pool: list) -> str:
-    """
-    Select a caption and apply realistic length + imperfection variation.
-
-    Length tiers (proportional to authentic posting behaviour):
-      5 %  emoji-only      ,  single character from POST_CAPTION_EMOJIS
-     10 %  short fragment  ,  1-3 casual words from POST_CAPTION_SHORTS
-     60 %  single sentence ,  one entry from pool, mutated via _mutate_caption()
-     25 %  double          ,  two mutated pool entries joined with a line-break,
-                             comma, or em-dash (varied per call)
-
-    Ensures no two profiles ever get the same output even from the same pool.
-    """
-    tier = random.random()
-
-    if tier < 0.05:
-        # Emoji-only ,  optionally doubled
-        e = random.choice(POST_CAPTION_EMOJIS)
-        if random.random() < 0.3:
-            e += " " + random.choice(POST_CAPTION_EMOJIS)
-        return e
-
-    if tier < 0.15:
-        # Short fragment
-        base = random.choice(POST_CAPTION_SHORTS)
-        if random.random() < 0.40:
-            base += " " + random.choice(POST_CAPTION_EMOJIS)
-        return base
-
-    return _mutate_caption(random.choice(pool))
+def _select_approved_caption(pool: list[str]) -> str | None:
+    """Choose one complete approved caption after deterministic preparation."""
+    eligible: list[str] = []
+    for index, candidate in enumerate(pool):
+        try:
+            eligible.append(prepare_caption_for_publishing(candidate, BRAND_VOICE))
+        except ContentPolicyError as exc:
+            log.warning(
+                "[CONTENT POLICY] caption rejected index=%d reason=%s",
+                index,
+                exc,
+            )
+    if not eligible:
+        return None
+    return random.choice(eligible)
 
 # ================================================================== #
 #  TEXTBOX IDENTIFICATION
@@ -345,7 +288,7 @@ def _find_compose_textbox(driver, timeout: float = 10.0):
 
 def create_post(driver, profile_id: str) -> bool:
     """
-    Create an original Threads post with a caption from POST_CAPTION_POOL
+    Create an original Threads post with a caption from APPROVED_CAPTIONS
     and optionally an image from MEDIA_POOL_DIR.
 
     Flow:
@@ -365,8 +308,15 @@ def create_post(driver, profile_id: str) -> bool:
                      the hidden <input type="file"> without a click chain.
       Post button  ,  reuses COMMENT_POST_XPATH (same "Post" text node).
     """
-    if not POST_CAPTION_POOL:
-        log.warning("create_post: POST_CAPTION_POOL is empty ,  cannot post")
+    if not APPROVED_CAPTIONS:
+        log.warning("[CONTENT POLICY] approved caption pool is empty; publishing skipped")
+        return False
+
+    caption = _select_approved_caption(
+        _get_ctx().profile_approved_caption_pool or APPROVED_CAPTIONS
+    )
+    if caption is None:
+        log.warning("[CONTENT POLICY] no caption passed approved publishing controls")
         return False
 
     # === Fix #11: locked pre-post transaction ,  gate check + image reservation =
@@ -429,10 +379,9 @@ def create_post(driver, profile_id: str) -> bool:
     _pf_t0 = time.perf_counter()
     # 
 
-    caption = _humanize_caption(_get_ctx().profile_caption_pool or POST_CAPTION_POOL)
     log.info(
-        "[ POST ]  composing  |  caption=%r  |  media=%s",
-        caption,
+        "[ APPROVED PUBLISHING ]  caption accepted  |  chars=%d  |  media=%s",
+        len(caption),
         os.path.basename(image_path) if image_path else "none",
     )
 

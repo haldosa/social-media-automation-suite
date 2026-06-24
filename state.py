@@ -14,7 +14,7 @@ from utils import log
 # ================================================================== #
 #  POSTING ENGINE
 # ================================================================== #
-# Creates original posts from POST_CAPTION_POOL with optional media from
+# Creates original posts from APPROVED_CAPTIONS with optional media from
 # MEDIA_POOL_DIR.  A persistent state file (POST_STATE_FILE) tracks per-
 # profile daily counts and account age to enforce a progressive ramp-up:
 #   Days  1– 5 : 0 posts/day  (account establishing credibility)

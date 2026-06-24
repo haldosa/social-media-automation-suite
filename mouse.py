@@ -2,7 +2,6 @@ import math
 import time
 import random
 from selenium.webdriver.common.actions.pointer_input import PointerInput
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import WebDriverException
 from config import MOUSE_TRACE, DEBUG_CURSOR_OVERLAY
@@ -29,9 +28,6 @@ _SLOW_BIGRAMS = {
     'br', 'cr', 'dr', 'fr', 'gr', 'pr', 'tr', 'bl', 'cl', 'pl',
     'ct', 'ft', 'lt', 'pt', 'ny', 'ly', 'my', 'ry', 'ty', 'gy',
 }
-
-# Typo injection was intentionally removed from the thesis-facing workflow.
-# The suite keeps per-profile pacing but types approved text as written.
 
 #  CDP keystroke dispatch 
 # Replaces Selenium element.send_keys() to avoid StaleElementReferenceException
@@ -119,31 +115,13 @@ def _cdp_type_key(driver, char: str) -> None:
         driver.execute_cdp_cmd("Input.insertText", {"text": char})
 
 
-def _cdp_backspace(driver) -> None:
-    """Press Backspace via CDP Input.dispatchKeyEvent."""
-    driver.execute_cdp_cmd("Input.dispatchKeyEvent", {
-        "type": "keyDown",
-        "key": "Backspace",
-        "code": "Backspace",
-        "windowsVirtualKeyCode": 8,
-        "nativeVirtualKeyCode": 8,
-    })
-    driver.execute_cdp_cmd("Input.dispatchKeyEvent", {
-        "type": "keyUp",
-        "key": "Backspace",
-        "code": "Backspace",
-        "windowsVirtualKeyCode": 8,
-        "nativeVirtualKeyCode": 8,
-    })
-
-
 def human_type(element, text: str, driver=None, typing_dna: dict = None) -> None:
     """
     Type text with a configurable per-profile keystroke timing model.
 
     When typing_dna is None, falls back to the session-level typing profile set
     by run_social_session(), or default mid-range parameters if neither exists.
-    The current thesis-facing configuration disables automatic typo injection.
+    Approved text is typed exactly as supplied.
     """
     # -- DEBUG LOGGING: typing audit ----------------------------------------
     _type_t0 = time.perf_counter()
@@ -178,29 +156,12 @@ def human_type(element, text: str, driver=None, typing_dna: dict = None) -> None
     _bp_hi     = dna.get("bigram_penalty_hi",  2.0)
     _fatigue   = dna.get("fatigue_drift",      0.005)
 
-    typed_sequence = [{"char": c} for c in text]
-
     prev        = ''
     word_len    = 0
     burst_rem   = random.randint(_burst_min, _burst_max)
     chars_typed = 0
 
-    for action in typed_sequence:
-        char = action["char"]
-        is_backspace = action.get("backspace", False)
-
-        if is_backspace:
-            # Backspace timing: faster than normal keystrokes, short
-            # reaction-driven delay.
-            base = random.lognormvariate(math.log(0.05), 0.30)
-            base = max(0.03, min(base, 0.15))
-            if driver is not None:
-                _cdp_backspace(driver)
-            else:
-                element.send_keys(Keys.BACKSPACE)
-            precise_sleep(base)
-            continue
-
+    for char in text:
         # Log-normal base with per-profile parameters + fatigue drift.
         fatigue_mult = 1.0 + _fatigue * (chars_typed / 100.0)
         base = random.lognormvariate(_mu, _sigma) * fatigue_mult
@@ -252,9 +213,8 @@ def human_type(element, text: str, driver=None, typing_dna: dict = None) -> None
         chars_typed += 1
 
     # -- DEBUG LOGGING: type complete ---------------------------------------
-    _n_typos = sum(1 for a in typed_sequence if a.get("backspace"))
-    log.info("[TYPE END]  chars=%d  duration=%.1fs  corrections=%d",
-             len(text), time.perf_counter() - _type_t0, _n_typos)
+    log.info("[TYPE END]  chars=%d  duration=%.1fs",
+             len(text), time.perf_counter() - _type_t0)
     # -----------------------------------------------------------------------
 
 # Followed/visited profile tracking is now in SessionContext.session_followed.
