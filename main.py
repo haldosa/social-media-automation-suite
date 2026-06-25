@@ -298,7 +298,7 @@ def main() -> None:
                     log.info("Profile failed -- skipping inter-profile buffer.")
 
         log.info("=" * 60)
-        log.info("All profiles warmed. Done.")
+        log.info("All profile operations completed.")
     except Exception:
         run_status = "failed"
         raise

@@ -12,7 +12,7 @@ from config import (
     SCREENSHOT_DIR,
 )
 from utils import log, precise_sleep, _get_ctx, _session_local, SessionContext, _dlog
-from pools import APPROVED_CAPTIONS, APPROVED_REPLIES, SEARCH_TOPIC_POOL, _get_profile_pool_shard
+from pools import get_profile_content
 from browser import _get_typing_dna
 from mouse import bezier_move_to_coords, CDPConnectionDead, init_cursor_pos
 from scroll import navigate_to
@@ -416,16 +416,22 @@ def run_social_session(
     _session_local.ctx = SessionContext()
     _session_local.ctx.active_typing_dna = _get_typing_dna(profile_id)
     #  Assign per-profile isolated content pools â”€
-    # Each profile receives deterministic shards of the approved content pools.
-    _session_local.ctx.profile_approved_reply_pool = _get_profile_pool_shard(APPROVED_REPLIES, profile_id)
-    _session_local.ctx.profile_approved_caption_pool = _get_profile_pool_shard(APPROVED_CAPTIONS, profile_id)
-    _session_local.ctx.profile_search_topic_pool = _get_profile_pool_shard(SEARCH_TOPIC_POOL, profile_id)
+    # Use exact profile configuration; no automatic sharding is applied.
+    _profile_content = get_profile_content(profile_id)
+    _session_local.ctx.profile_content_loaded = True
+    _session_local.ctx.profile_content_id = profile_id
+    _session_local.ctx.profile_approved_reply_pool = _profile_content["approved_replies"]
+    _session_local.ctx.profile_approved_caption_pool = _profile_content["approved_captions"]
+    _session_local.ctx.profile_approved_media_pool = _profile_content["approved_media"]
+    _session_local.ctx.profile_search_topic_pool = _profile_content["search_topics"]
     log.info(
-        "[ CONTENT POLICY ]  profile=%s  approved_replies=%d/%d  approved_captions=%d/%d  search_topics=%d/%d",
+        "[ CONTENT POLICY ]  profile=%s  source=%s  approved_replies=%d  approved_captions=%d  approved_media=%d  search_topics=%d",
         profile_id[:12],
-        len(_session_local.ctx.profile_approved_reply_pool), len(APPROVED_REPLIES),
-        len(_session_local.ctx.profile_approved_caption_pool), len(APPROVED_CAPTIONS),
-        len(_session_local.ctx.profile_search_topic_pool), len(SEARCH_TOPIC_POOL),
+        _profile_content["source"],
+        len(_session_local.ctx.profile_approved_reply_pool),
+        len(_session_local.ctx.profile_approved_caption_pool),
+        len(_session_local.ctx.profile_approved_media_pool),
+        len(_session_local.ctx.profile_search_topic_pool),
     )
     # â”€
 

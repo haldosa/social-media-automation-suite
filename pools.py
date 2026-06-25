@@ -1,60 +1,34 @@
 import json
-from config import _POOLS_PATH, BRAND_VOICE, PROFILE_IDS
 
-with open(_POOLS_PATH, "r", encoding="utf-8") as _f:
-    data = json.load(_f)
-
-def _approved_pool(primary_key: str, legacy_key: str) -> list[str]:
-    """Load an approved pool while allowing one-time legacy config migration."""
-    pool = data.get(primary_key, data.get(legacy_key))
-    if not isinstance(pool, list):
-        raise SystemExit(f"Content pools file must define a list named '{primary_key}'.")
-    return [item for item in pool if isinstance(item, str)]
+from config import _POOLS_PATH, BRAND_VOICE
+from profile_content import (
+    ContentConfigurationError,
+    get_profile_content as _resolve_profile_content,
+    validate_profile_content,
+)
 
 
-APPROVED_REPLIES = _approved_pool("approved_replies", "comments")
-APPROVED_CAPTIONS = _approved_pool("approved_captions", "post_captions")
+try:
+    with open(_POOLS_PATH, "r", encoding="utf-8") as _f:
+        data = json.load(_f)
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"Invalid JSON in content pools file: {exc}") from exc
+
+try:
+    validate_profile_content(data)
+except ContentConfigurationError as exc:
+    raise SystemExit(f"Invalid content pools configuration: {exc}") from exc
+
+
+def get_profile_content(profile_id: str) -> dict:
+    """Return the exact approved content configured for ``profile_id``."""
+    return _resolve_profile_content(data, profile_id)
+
+
+_DEFAULT_CONTENT = get_profile_content("")
+APPROVED_REPLIES = _DEFAULT_CONTENT["approved_replies"]
+APPROVED_CAPTIONS = _DEFAULT_CONTENT["approved_captions"]
+APPROVED_MEDIA = _DEFAULT_CONTENT["approved_media"]
+SEARCH_TOPIC_POOL = _DEFAULT_CONTENT["search_topics"]
 
 PREFLIGHT_SITES_POOL = data["PREFLIGHT_SITES_POOL"]
-
-# Search query pool ,  generic topics typed into the Threads search bar.
-# 70 % of search visits type one of these to model real query behaviour.
-SEARCH_TOPIC_POOL = data["search_topics"]
-#NICHE_KEYWORDS = data["NICHE_KEYWORDS"]
-
-def _get_profile_pool_shard(pool: list, profile_id: str) -> list:
-    """Return the deterministic subset of *pool* assigned to *profile_id*.
-
-    Partitions *pool* across all known PROFILE_IDS (in their declared order)
-    so no two profiles routinely draw from the same slice.  This eliminates
-    the cross-account content correlation caused by all profiles sampling the
-    exact same approved reply or caption pool.
-
-    Edge cases
-    ----------
-    - Unknown profile_id (attached mode, "manual", etc.) â†’ full pool returned.
-    - Pool smaller than the number of profiles â†’ round-robin single-item shards.
-    - PROFILE_IDS has only one entry â†’ full pool is returned (nothing to split).
-    """
-    if not pool or not profile_id or profile_id in ("manual", ""):
-        return pool
-
-    try:
-        idx = PROFILE_IDS.index(profile_id)
-    except ValueError:
-        return pool  # profile not in PROFILE_IDS list â†’ use full pool
-
-    n = len(PROFILE_IDS)
-    if n <= 1:
-        return pool
-
-    if len(pool) < n:
-        # Pool too small to give every profile a unique item â€” assign by index
-        return [pool[idx % len(pool)]]
-
-    shard_size = len(pool) // n
-    start = idx * shard_size
-    # Last shard absorbs any remainder so every item is assigned somewhere
-    end = start + shard_size if idx < n - 1 else len(pool)
-    return pool[start:end]
-

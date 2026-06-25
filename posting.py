@@ -33,7 +33,8 @@ from content_policy import (
     prepare_caption_for_publishing,
     validate_caption,
 )
-from pools import APPROVED_CAPTIONS, BRAND_VOICE
+from pools import BRAND_VOICE, get_profile_content
+from profile_content import media_history_key, resolve_approved_media
 # ================================================================== #
 #  MEDIA PREPARATION  (per-profile temp copy)
 # ================================================================== #
@@ -153,6 +154,52 @@ def _select_approved_caption(pool: list[str]) -> str | None:
     if not eligible:
         return None
     return random.choice(eligible)
+
+
+def _profile_content_for_post(profile_id: str) -> dict:
+    """Use the session-assigned profile content or resolve it directly."""
+    ctx = _get_ctx()
+    if ctx.profile_content_loaded and ctx.profile_content_id == profile_id:
+        return {
+            "approved_captions": ctx.profile_approved_caption_pool,
+            "approved_media": ctx.profile_approved_media_pool,
+        }
+    content = get_profile_content(profile_id)
+    return {
+        "approved_captions": content["approved_captions"],
+        "approved_media": content["approved_media"],
+    }
+
+
+def _reserve_profile_media(state: dict, profile_id: str, media_paths: list[str]) -> str | None:
+    """Reserve one approved media file for this profile without cross-profile mixing."""
+    if not media_paths:
+        return None
+    entry = state.setdefault(profile_id, {})
+    path_by_key = {
+        media_history_key(MEDIA_POOL_DIR, path): path
+        for path in media_paths
+    }
+    used_media = [
+        key for key in entry.get("used_media", [])
+        if isinstance(key, str) and key in path_by_key
+    ]
+    fresh_keys = [key for key in path_by_key if key not in used_media]
+    if not fresh_keys:
+        log.info("[ APPROVED PUBLISHING ]  profile media fully cycled; resetting media history")
+        fresh_keys = list(path_by_key.keys())
+        used_media = []
+
+    selected_key = random.choice(fresh_keys)
+    if selected_key in used_media:
+        used_media.remove(selected_key)
+    used_media.append(selected_key)
+
+    max_history = max(0, len(path_by_key) - 1)
+    while len(used_media) > max_history:
+        used_media.pop(0)
+    entry["used_media"] = used_media
+    return path_by_key[selected_key]
 
 # ================================================================== #
 #  TEXTBOX IDENTIFICATION
@@ -288,12 +335,12 @@ def _find_compose_textbox(driver, timeout: float = 10.0):
 
 def create_post(driver, profile_id: str) -> bool:
     """
-    Create an original Threads post with a caption from APPROVED_CAPTIONS
-    and optionally an image from MEDIA_POOL_DIR.
+    Create an original Threads post with the profile's approved caption pool
+    and optional profile-approved media entries.
 
     Flow:
       1.  Guard ,  _can_post_now() checks quota + 2-hour cooldown.
-      2.  Pick a random caption and (if MEDIA_POOL_DIR is set) a random image.
+      2.  Pick one approved caption and one profile-approved media file if configured.
       3.  Find the compose / New post button in the nav sidebar.
       4.  Bezier-arc to the button and click to open the compose modal.
       5.  Attach image via the hidden <input type="file"> if a path was picked.
@@ -308,16 +355,24 @@ def create_post(driver, profile_id: str) -> bool:
                      the hidden <input type="file"> without a click chain.
       Post button  ,  reuses COMMENT_POST_XPATH (same "Post" text node).
     """
-    if not APPROVED_CAPTIONS:
+    profile_content = _profile_content_for_post(profile_id)
+    caption_pool = profile_content["approved_captions"]
+    if not caption_pool:
         log.warning("[CONTENT POLICY] approved caption pool is empty; publishing skipped")
         return False
 
-    caption = _select_approved_caption(
-        _get_ctx().profile_approved_caption_pool or APPROVED_CAPTIONS
-    )
+    caption = _select_approved_caption(caption_pool)
     if caption is None:
         log.warning("[CONTENT POLICY] no caption passed approved publishing controls")
         return False
+
+    approved_media, media_errors = resolve_approved_media(
+        MEDIA_POOL_DIR,
+        profile_content["approved_media"],
+        POST_MEDIA_EXTENSIONS,
+    )
+    for media_error in media_errors:
+        log.warning("[APPROVED PUBLISHING] media rejected: %s", media_error)
 
     # === Fix #11: locked pre-post transaction ,  gate check + image reservation =
     # The lock is held only for the short read-modify-write cycle on state.
@@ -330,41 +385,7 @@ def create_post(driver, profile_id: str) -> bool:
         if not _can_post_now(profile_id, state):
             return False
 
-        # Pick media ,  cross-profile deduplication: a single locked read-write
-        # ensures two parallel profiles cannot reserve the same source file.
-        if MEDIA_POOL_DIR and not os.path.isdir(MEDIA_POOL_DIR):
-            log.warning(
-                "[ POST ]  MEDIA_POOL_DIR not found ,  posting text-only  "
-                "(configured path: %s)", MEDIA_POOL_DIR
-            )
-        if MEDIA_POOL_DIR and os.path.isdir(MEDIA_POOL_DIR):
-            all_images = [
-                os.path.abspath(os.path.join(MEDIA_POOL_DIR, f))
-                for f in os.listdir(MEDIA_POOL_DIR)
-                if os.path.splitext(f)[1].lower() in POST_MEDIA_EXTENSIONS
-            ]
-            if all_images:
-                used_list = state.get("_used_images", [])
-                pool_basenames = {os.path.basename(p) for p in all_images}
-                used_list = [x for x in used_list if x in pool_basenames]
-
-                fresh = [p for p in all_images if os.path.basename(p) not in used_list]
-                if not fresh:
-                    log.info("[ POST ]  image pool fully cycled ,  resetting cross-profile dedup list")
-                    fresh = all_images
-
-                _src_for_prepare = random.choice(fresh)
-                basename = os.path.basename(_src_for_prepare)
-
-                if basename in used_list:
-                    used_list.remove(basename)
-                used_list.append(basename)
-
-                max_history = max(0, len(all_images) - 1)
-                while len(used_list) > max_history:
-                    used_list.pop(0)
-
-                state["_used_images"] = used_list
+        _src_for_prepare = _reserve_profile_media(state, profile_id, approved_media)
         _save_post_state(state)  # one atomic write covers gate + image reservation
     # ===========================================================================
 

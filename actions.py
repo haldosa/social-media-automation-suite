@@ -1024,7 +1024,15 @@ def visit_search_action(driver) -> None:
         if random.random() < 0.70:
             # ── Type a query and scroll results ──────────────────────────────
             try:
-                _active_search_pool = _get_ctx().profile_search_topic_pool or SEARCH_TOPIC_POOL
+                ctx = _get_ctx()
+                _active_search_pool = (
+                    ctx.profile_search_topic_pool
+                    if ctx.profile_content_loaded else SEARCH_TOPIC_POOL
+                )
+                if not _active_search_pool:
+                    log.info("[ SEARCH ]  skipped query; no approved search topics configured")
+                    _safe_return_to_feed(driver, "search")
+                    return
                 query = random.choice(_active_search_pool)
                 bezier_move(driver, search_input)
                 precise_sleep(random.uniform(0.3, 0.8))
@@ -1344,7 +1352,11 @@ def comment_on_post(driver) -> bool:
                      current_url[:60])
             return False
 
-        approved_pool = _get_ctx().profile_approved_reply_pool or APPROVED_REPLIES
+        ctx = _get_ctx()
+        approved_pool = (
+            ctx.profile_approved_reply_pool
+            if ctx.profile_content_loaded else APPROVED_REPLIES
+        )
         eligible_replies: list[str] = []
         for index, candidate in enumerate(approved_pool):
             try:

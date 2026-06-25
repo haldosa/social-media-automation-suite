@@ -24,7 +24,7 @@ The suite does not generate captions or replies. It selects one complete entry f
 ├── main.py                 # CLI entry point
 ├── config.py               # Runtime and brand-voice configuration
 ├── content_policy.py       # Caption/reply preparation and validation
-├── pools.py                # Approved content-pool loading and profile sharding
+├── pools.py                # Approved content-pool loading and profile lookup
 ├── posting.py              # Approved publishing flow
 ├── actions.py              # Profile operations and reply controls
 ├── session.py              # Session dispatcher
@@ -63,32 +63,74 @@ POOLS_JSON_PATH=./pools.json
 OPERATIONS_SCRIPT_DIR=.
 ```
 
-### Approved content pools
+### Approved content pools and media
 
 Create `pools.json` next to the main scripts:
 
 ```json
 {
-  "approved_replies": [
-    "Thank you for sharing this perspective.",
-    "This is a useful point for teams planning their next release."
-  ],
-  "approved_captions": [
-    "Our latest product update is now available to customers.",
-    "A clear process gives creative teams more time for meaningful work."
-  ],
+  "defaults": {
+    "approved_replies": [
+      "Thank you for sharing this perspective."
+    ],
+    "approved_captions": [
+      "A clear process gives creative teams more time for meaningful work."
+    ],
+    "approved_media": [],
+    "search_topics": [
+      "creator business operations",
+      "content strategy"
+    ]
+  },
+  "profiles": {
+    "profile-id-1": {
+      "approved_replies": [
+        "This is a useful point for teams planning their next release."
+      ],
+      "approved_captions": [
+        "Our latest product update is now available to customers."
+      ],
+      "approved_media": [
+        "profile-id-1/product-update.jpg",
+        "profile-id-1/launch-note.png"
+      ],
+      "search_topics": [
+        "creator operations"
+      ]
+    },
+    "profile-id-2": {
+      "approved_replies": [],
+      "approved_captions": [
+        "A new customer story is available today."
+      ],
+      "approved_media": [
+        "profile-id-2/customer-story.webp"
+      ]
+    }
+  },
   "PREFLIGHT_SITES_POOL": [
     "https://www.wikipedia.org",
     "https://www.wikinews.org"
-  ],
-  "search_topics": [
-    "creator business operations",
-    "content strategy"
   ]
 }
 ```
 
-Each item must be a complete, independently approved message. Do not place fragments in these pools; the publishing path never combines entries.
+Each caption or reply must be a complete, independently approved message. Do not place fragments in these pools; the publishing path never combines entries.
+
+Profile entries are exact overrides. If a profile defines an empty list, that content type is intentionally disabled for that profile. If a key is omitted from a profile entry, the value falls back to `defaults`, then to the legacy top-level keys if present.
+
+Approved media paths are always relative to `MEDIA_POOL_DIR`, which defaults to the local `media/` folder:
+
+```text
+media/
+├── profile-id-1/
+│   ├── product-update.jpg
+│   └── launch-note.png
+└── profile-id-2/
+    └── customer-story.webp
+```
+
+Supported media extensions are `.jpg`, `.jpeg`, `.png`, and `.webp`. Paths that are absolute, leave the media folder, have unsupported extensions, or do not exist are rejected before publishing. Used media is tracked per profile as `used_media` in `post_state.json`.
 
 Legacy `comments` and `post_captions` keys are read only to support local configuration migration. New configurations should use `approved_replies` and `approved_captions`.
 

@@ -6,7 +6,7 @@ import posting
 from datetime import date, datetime, timedelta
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.by import By
-from config import TARGET_SOCIAL_URL
+from config import PROFILE_IDS, TARGET_SOCIAL_URL
 from utils import log, precise_sleep
 from mouse import init_cursor_pos, debug_cursor_state
 from scroll import stochastic_scroll, navigate_to
@@ -20,6 +20,7 @@ from actions import (
 from reporting import append_diagnostic, iso_now, make_run_id
 from session import _get_typing_dna, _get_ctx
 from posting import create_post
+from pools import get_profile_content
 from state import _can_post_now, _record_post
 
 # ================================================================== #
@@ -121,7 +122,7 @@ def _record_diagnostic_row(row: dict, tlog: logging.Logger) -> None:
 
 def run_test_actions(
     driver,
-    profile_id: str = "test",
+    profile_id: str | None = None,
     filter_action: str | None = None,
     run_id: str | None = None,
 ) -> None:
@@ -140,9 +141,20 @@ def run_test_actions(
 
     run_id = run_id or make_run_id("diagnostic")
     tlog = _setup_test_logger()
+    if not profile_id or profile_id == "test":
+        profile_id = PROFILE_IDS[0] if PROFILE_IDS else "test"
+        tlog.info("Using configured profile for diagnostics: %s", profile_id)
 
     # Load the per-profile pacing configuration used by publishing diagnostics.
-    _get_ctx().active_typing_dna = _get_typing_dna(profile_id)
+    ctx = _get_ctx()
+    ctx.active_typing_dna = _get_typing_dna(profile_id)
+    profile_content = get_profile_content(profile_id)
+    ctx.profile_content_loaded = True
+    ctx.profile_content_id = profile_id
+    ctx.profile_approved_reply_pool = profile_content["approved_replies"]
+    ctx.profile_approved_caption_pool = profile_content["approved_captions"]
+    ctx.profile_approved_media_pool = profile_content["approved_media"]
+    ctx.profile_search_topic_pool = profile_content["search_topics"]
 
     # ── Define the ordered list of actions to test ────────────────────────────
     # Each entry: (action_name, callable_that_returns_something)

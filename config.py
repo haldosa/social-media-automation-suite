@@ -132,8 +132,8 @@ INACTIVE_DAY_PROB   = 0     # replaced by daemon scheduler's per-profile day-off
 BRAND_VOICE = normalize_brand_voice(_ui_value("brand_voice", {}))
 
 #  Content posting  #
-# Set MEDIA_POOL_DIR to a local folder of images to attach to new posts.
-# Leave as None to post text-only captions.
+# Root folder for profile-approved media paths declared in pools.json.
+# Profiles with no approved_media entries post text-only captions.
 # Relative paths are resolved against the directory that contains this script
 # so the suite works regardless of the working directory it is launched from.
 MEDIA_POOL_DIR        = os.path.join(_SCRIPT_DIR, "media")   # e.g. "media_pool"

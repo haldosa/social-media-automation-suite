@@ -147,10 +147,12 @@ class SessionContext:
         default_factory=lambda: dict(_SESSION_METRICS_DEFAULTS)
     )
     active_typing_dna: dict   = dataclasses.field(default_factory=dict)
-    # Per-profile isolated content pools — populated by run_social_session().
-    # Empty list means "not yet assigned"; callers fall back to the global pool.
+    # Per-profile approved content, populated by run_social_session() or diagnostics.
+    profile_content_loaded: bool = False
+    profile_content_id: str = ""
     profile_approved_reply_pool: list = dataclasses.field(default_factory=list)
     profile_approved_caption_pool: list = dataclasses.field(default_factory=list)
+    profile_approved_media_pool: list = dataclasses.field(default_factory=list)
     profile_search_topic_pool: list = dataclasses.field(default_factory=list)
 
 _session_local = threading.local()
