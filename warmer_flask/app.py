@@ -54,6 +54,19 @@ ACTION_WEIGHT_FLAGS = {
     "post": "--post",
 }
 
+PUBLISHING_CONFIG_DEFAULTS = {
+    "daily_media_posts_min": 1,
+    "daily_media_posts_max": 1,
+    "daily_text_posts_min": 3,
+    "daily_text_posts_max": 5,
+    "daemon_day_off_prob": 0.0,
+    "daemon_enforce_daily_publishing_targets": True,
+    "post_min_interval_minutes": 90,
+    "post_max_interval_minutes": 180,
+    "daemon_publishing_session_gap_min_minutes": 90,
+    "daemon_publishing_session_gap_max_minutes": 180,
+}
+
 DEFAULT_UI_CONFIG = {
     "nstbrowser_api_key": "",
     "profile_ids": [],
@@ -62,6 +75,7 @@ DEFAULT_UI_CONFIG = {
     "default_no_preflight": False,
     "action_weights": {key: None for key in ACTION_WEIGHT_FLAGS},
     "brand_voice": DEFAULT_BRAND_VOICE,
+    **PUBLISHING_CONFIG_DEFAULTS,
 }
 
 import logging
@@ -138,6 +152,9 @@ def _load_ui_config_raw() -> dict:
                     "active_hours", "default_no_preflight", "brand_voice"):
             if key in saved:
                 config[key] = saved[key]
+        for key in PUBLISHING_CONFIG_DEFAULTS:
+            if key in saved:
+                config[key] = saved[key]
         weights = saved.get("action_weights")
         if isinstance(weights, dict):
             for key in ACTION_WEIGHT_FLAGS:
@@ -166,6 +183,8 @@ def _public_config(config: dict) -> dict:
         },
         "brand_voice": normalize_brand_voice(config.get("brand_voice")),
     }
+    for key in PUBLISHING_CONFIG_DEFAULTS:
+        public[key] = config.get(key, PUBLISHING_CONFIG_DEFAULTS[key])
     api_key = str(config.get("nstbrowser_api_key") or "")
     public["api_key_set"] = bool(api_key)
     public["api_key_masked"] = _mask_secret(api_key)
@@ -244,6 +263,36 @@ def _validate_ui_config(payload: dict, existing: dict) -> tuple[dict | None, str
         "allowed_abbreviations": raw_brand_voice.get("allowed_abbreviations", []),
     })
 
+    publishing_config = {}
+    for key, default in PUBLISHING_CONFIG_DEFAULTS.items():
+        raw = payload.get(key, existing.get(key, default))
+        if isinstance(default, bool):
+            publishing_config[key] = bool(raw)
+            continue
+        try:
+            value = float(raw) if isinstance(default, float) else int(raw)
+        except (TypeError, ValueError):
+            return None, f"Publishing setting '{key}' must be a number."
+        if value < 0:
+            return None, f"Publishing setting '{key}' must be zero or greater."
+        publishing_config[key] = value
+
+    if publishing_config["daily_media_posts_max"] < publishing_config["daily_media_posts_min"]:
+        return None, "Daily media post max must be greater than or equal to min."
+    if publishing_config["daily_text_posts_max"] < publishing_config["daily_text_posts_min"]:
+        return None, "Daily text post max must be greater than or equal to min."
+    if publishing_config["post_max_interval_minutes"] < publishing_config["post_min_interval_minutes"]:
+        return None, "Post max interval must be greater than or equal to min interval."
+    if (
+        publishing_config["daemon_publishing_session_gap_max_minutes"]
+        < publishing_config["daemon_publishing_session_gap_min_minutes"]
+    ):
+        return None, "Publishing session max gap must be greater than or equal to min gap."
+    publishing_config["daemon_day_off_prob"] = max(
+        0.0,
+        min(1.0, float(publishing_config["daemon_day_off_prob"])),
+    )
+
     config = {
         "nstbrowser_api_key": api_key,
         "profile_ids": profile_ids,
@@ -252,6 +301,7 @@ def _validate_ui_config(payload: dict, existing: dict) -> tuple[dict | None, str
         "default_no_preflight": bool(payload.get("default_no_preflight", False)),
         "action_weights": weights,
         "brand_voice": brand_voice,
+        **publishing_config,
     }
     return config, None
 

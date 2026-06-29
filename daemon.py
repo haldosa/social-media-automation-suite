@@ -11,13 +11,26 @@ from config import (
     ACTIVE_HOURS_RANGE,
     HEARTBEAT_FILE, _HEARTBEAT_INTERVAL_SEC,
     PROFILE_IDS, TARGET_SOCIAL_URL, _SCRIPT_DIR,
+    DAEMON_DAY_OFF_PROB,
+    DAEMON_ENFORCE_DAILY_PUBLISHING_TARGETS,
+    DAEMON_PUBLISHING_SESSION_GAP_MIN_MINUTES,
+    DAEMON_PUBLISHING_SESSION_GAP_MAX_MINUTES,
+    MEDIA_POOL_DIR,
+    POST_MEDIA_EXTENSIONS,
 )
 from utils import _PROFILE_LOGS_DIR, log, _ensure_profile_logger, _active_profile_id
 from state import _load_post_state, _save_post_state
 from session import warm_profile
 from api import get_running_browsers
-from state import _post_state_locked, _ensure_profile_in_state
+from state import (
+    _post_state_locked,
+    _ensure_profile_in_state,
+    get_daily_publishing_status,
+    get_next_due_post_kind,
+)
 from reporting import append_run, encode_json, iso_now, make_run_id
+from pools import get_profile_content
+from profile_content import resolve_approved_media
 
 # ================================================================== #
 #  24/7 DAEMON SCHEDULER
@@ -36,6 +49,23 @@ from reporting import append_run, encode_json, iso_now, make_run_id
 
 _daemon_shutdown = threading.Event()             # set by signal handler
 _daemon_start_ts: float = 0.0                    # set once in daemon_main()
+
+
+def _profile_has_approved_media(profile_id: str) -> bool:
+    """Return True when the profile has at least one resolvable approved media file."""
+    try:
+        content = get_profile_content(profile_id)
+        approved, errors = resolve_approved_media(
+            MEDIA_POOL_DIR,
+            content["approved_media"],
+            POST_MEDIA_EXTENSIONS,
+        )
+        for error in errors:
+            log.warning("[APPROVED PUBLISHING] media rejected for %s: %s", profile_id[:12], error)
+        return bool(approved)
+    except Exception as exc:
+        log.warning("[APPROVED PUBLISHING] media availability check failed for %s: %s", profile_id[:12], exc)
+        return False
 
 
 # ── Signal handling ──────────────────────────────────────────────────────────
@@ -59,6 +89,9 @@ def _is_day_off(profile_id: str, state: dict, today_iso: str) -> bool:
     survives process restarts within the same calendar day.
     """
     entry = state.get(profile_id, {})
+    if DAEMON_DAY_OFF_PROB <= 0:
+        entry.pop("day_off_date", None)
+        return False
     stored = entry.get("day_off_date", "")
     if stored == today_iso:
         return True
@@ -67,7 +100,7 @@ def _is_day_off(profile_id: str, state: dict, today_iso: str) -> bool:
     # Draw the decision using a profile-seeded RNG so a restart within
     # the same day doesn't re-roll.
     seed_str = f"{profile_id}:{today_iso}:day_off"
-    is_off = random.Random(seed_str).random() < 0.0
+    is_off = random.Random(seed_str).random() < DAEMON_DAY_OFF_PROB
     if is_off:
         state.setdefault(profile_id, {})["day_off_date"] = today_iso
     else:
@@ -85,8 +118,17 @@ def _get_daily_session_target(profile_id: str, state: dict, today_iso: str) -> i
     """
     entry = state.get(profile_id, {})
     targets: dict = entry.get("daily_session_target", {})
+    publishing_target = 0
+    if DAEMON_ENFORCE_DAILY_PUBLISHING_TARGETS:
+        publishing_target = get_daily_publishing_status(
+            profile_id,
+            state,
+            today_iso,
+        )["target_total"]
     if today_iso in targets:
-        return targets[today_iso]
+        target = max(int(targets[today_iso]), publishing_target)
+        targets[today_iso] = target
+        return target
 
     seed_str = f"{profile_id}:{today_iso}:session_target"
     rng = random.Random(seed_str)
@@ -98,6 +140,7 @@ def _get_daily_session_target(profile_id: str, state: dict, today_iso: str) -> i
     else:
         target = 1
 
+    target = max(target, publishing_target)
     targets[today_iso] = target
     state.setdefault(profile_id, {})["daily_session_target"] = targets
     return target
@@ -122,6 +165,13 @@ def _sample_inter_session_gap_sec() -> float:
     hours = random.lognormvariate(math.log(5.0), 0.5)
     hours = max(2.0, min(hours, 10.0))
     return hours * 3600.0
+
+
+def _sample_publishing_session_gap_sec() -> float:
+    """Configured gap between same-day sessions while publishing targets remain."""
+    lo = DAEMON_PUBLISHING_SESSION_GAP_MIN_MINUTES * 60.0
+    hi = max(lo, DAEMON_PUBLISHING_SESSION_GAP_MAX_MINUTES * 60.0)
+    return random.uniform(lo, hi)
 
 
 def _sample_next_day_gap_sec() -> float:
@@ -167,8 +217,20 @@ def _schedule_next_run(profile_id: str, after_ts: float, state: dict) -> float:
     today_iso = date.today().isoformat()
     target = _get_daily_session_target(profile_id, state, today_iso)
     done   = _get_daily_session_count(profile_id, state, today_iso)
+    remaining_posts = 0
+    if DAEMON_ENFORCE_DAILY_PUBLISHING_TARGETS:
+        remaining_posts = get_daily_publishing_status(
+            profile_id,
+            state,
+            today_iso,
+        )["remaining_total"]
 
-    if done < target:
+    if remaining_posts > 0:
+        next_ts = max(
+            after_ts + _sample_publishing_session_gap_sec(),
+            state.setdefault(profile_id, {}).get("next_post_ts", 0.0),
+        )
+    elif done < target:
         # More sessions remaining today
         next_ts = after_ts + _sample_inter_session_gap_sec()
     else:
@@ -189,7 +251,12 @@ def _prune_old_daily_keys(state: dict) -> None:
         if pid.startswith("_"):
             continue
         entry = state.get(pid, {})
-        for key in ("daily_session_counts", "daily_session_target"):
+        for key in (
+            "daily_session_counts",
+            "daily_session_target",
+            "daily_post_counts",
+            "daily_post_targets",
+        ):
             bucket = entry.get(key)
             if isinstance(bucket, dict):
                 stale = [d for d in bucket if d < cutoff]
@@ -370,9 +437,39 @@ def daemon_main(
 
             target = _get_daily_session_target(profile_id, state, today_iso)
             done   = _get_daily_session_count(profile_id, state, today_iso)
+            required_post_kind = None
+            required_post_count_before = 0
+            if DAEMON_ENFORCE_DAILY_PUBLISHING_TARGETS:
+                media_available = _profile_has_approved_media(profile_id)
+                publishing_status = get_daily_publishing_status(
+                    profile_id,
+                    state,
+                    today_iso,
+                )
+                required_post_kind = get_next_due_post_kind(
+                    profile_id,
+                    state,
+                    media_available=media_available,
+                    today=today_iso,
+                )
+                if required_post_kind:
+                    required_post_count_before = publishing_status["counts"].get(
+                        required_post_kind,
+                        0,
+                    )
+                log.info(
+                    "[APPROVED PUBLISHING] %s daily_plan text=%d/%d media=%d/%d remaining=%d required=%s",
+                    profile_id[:12],
+                    publishing_status["counts"].get("text", 0),
+                    publishing_status["targets"].get("text", 0),
+                    publishing_status["counts"].get("media", 0),
+                    publishing_status["targets"].get("media", 0),
+                    publishing_status["remaining_total"],
+                    required_post_kind or "none",
+                )
             _save_post_state(state)
 
-        if done >= target:
+        if done >= target and not required_post_kind:
             # All sessions for today already complete — schedule for tomorrow
             log.info(
                 "[ DAEMON ]  %s  daily target reached (%d/%d) — scheduling tomorrow",
@@ -423,6 +520,7 @@ def daemon_main(
                 skip_preflight=skip_preflight,
                 weights=weights,
                 run_id=run_id,
+                required_post_kind=required_post_kind,
             )
 
         except Exception as exc:
@@ -436,7 +534,24 @@ def daemon_main(
         with _post_state_locked():
             state = _load_post_state()
             _ensure_profile_in_state(profile_id, state)
-            if ran_session:
+            completed_required_post = True
+            if required_post_kind:
+                publishing_status_after = get_daily_publishing_status(
+                    profile_id,
+                    state,
+                    today_iso,
+                )
+                completed_required_post = (
+                    publishing_status_after["counts"].get(required_post_kind, 0)
+                    > required_post_count_before
+                )
+                if not completed_required_post:
+                    log.warning(
+                        "[APPROVED PUBLISHING] %s required %s post not completed; session target not advanced",
+                        profile_id[:12],
+                        required_post_kind,
+                    )
+            if ran_session and completed_required_post:
                 _increment_daily_session_count(profile_id, state, today_iso)
             next_ts = _schedule_next_run(profile_id, session_end, state)
             _save_post_state(state)

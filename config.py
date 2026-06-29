@@ -64,6 +64,40 @@ def _parse_active_hours(value, default=(8, 23)) -> tuple[int, int]:
                 pass
     return default
 
+
+def _parse_int(value, default: int, minimum: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, parsed)
+
+
+def _parse_float(value, default: float, minimum: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, parsed)
+
+
+def _parse_probability(value, default: float) -> float:
+    return max(0.0, min(1.0, _parse_float(value, default, minimum=0.0)))
+
+
+def _parse_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    if value in (None, ""):
+        return default
+    return bool(value)
+
 #  Approved content pools and search topics
 # POOLS_JSON_PATH can be:
 #   1. Set via env var POOLS_JSON_PATH (absolute or relative to CWD)
@@ -130,6 +164,75 @@ INACTIVE_DAY_PROB   = 0     # replaced by daemon scheduler's per-profile day-off
 # Optional publishing policy. Text is never embellished or rewritten; these
 # controls only determine whether approved captions and replies may be used.
 BRAND_VOICE = normalize_brand_voice(_ui_value("brand_voice", {}))
+
+# Daily approved-publishing targets per profile.
+# The daemon draws one daily target inside these ranges and stores it in
+# post_state.json so the plan survives restarts and remains auditable.
+DAILY_MEDIA_POSTS_MIN = _parse_int(
+    _ui_value("daily_media_posts_min", os.getenv("DAILY_MEDIA_POSTS_MIN")),
+    1,
+)
+DAILY_MEDIA_POSTS_MAX = _parse_int(
+    _ui_value("daily_media_posts_max", os.getenv("DAILY_MEDIA_POSTS_MAX")),
+    1,
+)
+if DAILY_MEDIA_POSTS_MAX < DAILY_MEDIA_POSTS_MIN:
+    DAILY_MEDIA_POSTS_MAX = DAILY_MEDIA_POSTS_MIN
+
+DAILY_TEXT_POSTS_MIN = _parse_int(
+    _ui_value("daily_text_posts_min", os.getenv("DAILY_TEXT_POSTS_MIN")),
+    3,
+)
+DAILY_TEXT_POSTS_MAX = _parse_int(
+    _ui_value("daily_text_posts_max", os.getenv("DAILY_TEXT_POSTS_MAX")),
+    5,
+)
+if DAILY_TEXT_POSTS_MAX < DAILY_TEXT_POSTS_MIN:
+    DAILY_TEXT_POSTS_MAX = DAILY_TEXT_POSTS_MIN
+
+# Daemon publishing planner. Keep day-off probability at 0.0 for "no sleep days".
+DAEMON_DAY_OFF_PROB = _parse_probability(
+    _ui_value("daemon_day_off_prob", os.getenv("DAEMON_DAY_OFF_PROB")),
+    0.0,
+)
+DAEMON_ENFORCE_DAILY_PUBLISHING_TARGETS = _parse_bool(
+    _ui_value("daemon_enforce_daily_publishing_targets", True),
+    True,
+)
+
+# Minimum/maximum gap between posts and between same-day daemon publishing
+# sessions. These are policy guardrails, not content randomization.
+POST_MIN_INTERVAL_MINUTES = _parse_float(
+    _ui_value("post_min_interval_minutes", os.getenv("POST_MIN_INTERVAL_MINUTES")),
+    90.0,
+    minimum=1.0,
+)
+POST_MAX_INTERVAL_MINUTES = _parse_float(
+    _ui_value("post_max_interval_minutes", os.getenv("POST_MAX_INTERVAL_MINUTES")),
+    180.0,
+    minimum=POST_MIN_INTERVAL_MINUTES,
+)
+if POST_MAX_INTERVAL_MINUTES < POST_MIN_INTERVAL_MINUTES:
+    POST_MAX_INTERVAL_MINUTES = POST_MIN_INTERVAL_MINUTES
+
+DAEMON_PUBLISHING_SESSION_GAP_MIN_MINUTES = _parse_float(
+    _ui_value(
+        "daemon_publishing_session_gap_min_minutes",
+        os.getenv("DAEMON_PUBLISHING_SESSION_GAP_MIN_MINUTES"),
+    ),
+    90.0,
+    minimum=1.0,
+)
+DAEMON_PUBLISHING_SESSION_GAP_MAX_MINUTES = _parse_float(
+    _ui_value(
+        "daemon_publishing_session_gap_max_minutes",
+        os.getenv("DAEMON_PUBLISHING_SESSION_GAP_MAX_MINUTES"),
+    ),
+    180.0,
+    minimum=DAEMON_PUBLISHING_SESSION_GAP_MIN_MINUTES,
+)
+if DAEMON_PUBLISHING_SESSION_GAP_MAX_MINUTES < DAEMON_PUBLISHING_SESSION_GAP_MIN_MINUTES:
+    DAEMON_PUBLISHING_SESSION_GAP_MAX_MINUTES = DAEMON_PUBLISHING_SESSION_GAP_MIN_MINUTES
 
 #  Content posting  #
 # Root folder for profile-approved media paths declared in pools.json.

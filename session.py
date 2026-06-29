@@ -393,6 +393,7 @@ def run_social_session(
     run_id: str | None = None,
     session_id: str | None = None,
     mode: str = "session",
+    required_post_kind: str | None = None,
 ) -> None:
     """
     Session loop driven by a first-order Markov chain.
@@ -456,6 +457,7 @@ def run_social_session(
     warnings_count = 0
     errors_count = 0
     session_status = "completed"
+    required_post_done = False
 
     # Resolve account age for maturity modifier
     _account_days = 15   # default: mature
@@ -528,7 +530,7 @@ def run_social_session(
     # 
 
     # Action dispatch map ,  maps Markov state names to callables.
-    def _dispatch(action: str):
+    def _dispatch(action: str, forced_post_kind: str | None = None):
         nonlocal active_done
         if action == "passive":
             passive_action(driver)
@@ -557,8 +559,8 @@ def run_social_session(
             return result
         elif action == "post":
             passive_elapsed = time.time() - session_start_ts
-            if passive_elapsed >= _session_passive_phase_sec:
-                return post_action(driver, profile_id)
+            if forced_post_kind or passive_elapsed >= _session_passive_phase_sec:
+                return post_action(driver, profile_id, post_kind=forced_post_kind or "auto")
             else:
                 wait_min = (_session_passive_phase_sec - passive_elapsed) / 60
                 log.info(
@@ -571,15 +573,29 @@ def run_social_session(
             passive_action(driver)
             return True
 
+    required_post_after_sec = min(_session_passive_phase_sec, max(60.0, session_seconds * 0.25))
+
     while time.time() < deadline:
         time_left = deadline - time.time()
         elapsed_frac = min(1.0, (time.time() - session_start_ts) / max(1, session_seconds))
+        forced_post_kind = None
 
         # Fix #31: move the active_done guarantee to the middle 25-75% of the
         # session with a 10% per-tick probability, instead of a deterministic
         # forced like in the final 60 s.  The old last-minute pattern created
         # a repeatable "like then exit" pattern visible across sessions.
-        if not active_done and 0.25 <= elapsed_frac <= 0.75 and random.random() < 0.10:
+        if (
+            required_post_kind
+            and not required_post_done
+            and (time.time() - session_start_ts) >= required_post_after_sec
+        ):
+            forced_post_kind = required_post_kind
+            selected_action = "post"
+            log.info(
+                "[APPROVED PUBLISHING] required daily %s post due; dispatching post action",
+                forced_post_kind,
+            )
+        elif not active_done and 0.25 <= elapsed_frac <= 0.75 and random.random() < 0.10:
             log.info("[ SESSION ]  mid-session active guarantee triggered (elapsed_frac=%.2f)",
                      elapsed_frac)
             selected_action = "active"
@@ -602,7 +618,7 @@ def run_social_session(
         action_note = ""
         action_error = None
         try:
-            dispatch_result = _dispatch(selected_action)
+            dispatch_result = _dispatch(selected_action, forced_post_kind=forced_post_kind)
             if isinstance(dispatch_result, dict):
                 action_status = dispatch_result.get("status", "success")
                 action_note = dispatch_result.get("note", "")
@@ -611,6 +627,12 @@ def run_social_session(
                 action_note = "returned False"
             if selected_action == "active":
                 active_done = True
+            if forced_post_kind and dispatch_result is True:
+                required_post_done = True
+                action_note = (
+                    f"{action_note}; required_{forced_post_kind}_post_completed"
+                    if action_note else f"required_{forced_post_kind}_post_completed"
+                )
         except Exception as exc:
             errors_count += 1
             session_status = "failed"
@@ -691,6 +713,13 @@ def run_social_session(
             # than a flat uniform(1,3) which a classifier can trivially identify.
             precise_sleep(max(0.5, min(15.0, random.lognormvariate(math.log(1.5), 0.6))))
 
+    if required_post_kind and not required_post_done:
+        warnings_count += 1
+        log.warning(
+            "[APPROVED PUBLISHING] required daily %s post was not completed in this session",
+            required_post_kind,
+        )
+
     #  POST-SESSION DIAGNOSTICS â”€
     if _get_ctx().session_metrics["passive"] == 0:
         warnings_count += 1
@@ -749,6 +778,7 @@ def warm_profile(
     skip_preflight: bool = False,
     weights: dict | None = None,
     run_id: str | None = None,
+    required_post_kind: str | None = None,
 ) -> bool:
     driver   = None
     launched = False
@@ -806,6 +836,7 @@ def warm_profile(
             run_id=run_id,
             session_id=session_id,
             mode="session",
+            required_post_kind=required_post_kind,
             **(weights or {}),
         )
         session_recorded = True

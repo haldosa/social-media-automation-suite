@@ -214,11 +214,11 @@ def run_test_actions(
         fake_first_seen = (date.today() - timedelta(days=8)).isoformat()
 
         # Patch _can_post_now to always return True
-        def _always_allow(profile_id, state):
+        def _always_allow(profile_id, state, *args, **kwargs):
             return True
 
         # Patch _record_post to do nothing
-        def _noop_record(pid, state):
+        def _noop_record(pid, state, *args, **kwargs):
             tlog.info("[TEST]  _record_post SKIPPED — test post not recorded")
 
         with unittest.mock.patch.object(posting, '_can_post_now', _always_allow), \

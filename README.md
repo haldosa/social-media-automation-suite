@@ -154,6 +154,27 @@ The `tone` value documents the intended editorial standard. The remaining values
 
 `prepare_caption_for_publishing()` performs deterministic Unicode and whitespace cleanup. `validate_caption()` and `validate_reply()` return a boolean; detailed policy functions are available for audit messages. Preparation does not add emojis, hashtags, slang, personalization, or new copy.
 
+### Daemon publishing targets
+
+Daily approved-publishing targets can be set in `operations_ui_config.json`:
+
+```json
+{
+  "daily_media_posts_min": 1,
+  "daily_media_posts_max": 1,
+  "daily_text_posts_min": 3,
+  "daily_text_posts_max": 5,
+  "daemon_day_off_prob": 0.0,
+  "daemon_enforce_daily_publishing_targets": true,
+  "post_min_interval_minutes": 90,
+  "post_max_interval_minutes": 180,
+  "daemon_publishing_session_gap_min_minutes": 90,
+  "daemon_publishing_session_gap_max_minutes": 180
+}
+```
+
+The daemon stores one daily plan per profile in `post_state.json`, with separate `media` and `text` targets/counts. With the values above, each profile is planned for exactly one media post and three to five text-only posts per day. Setting `daemon_day_off_prob` to `0.0` disables scheduler day-off behavior.
+
 ## Usage
 
 Run all configured profiles:

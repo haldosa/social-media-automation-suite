@@ -26,7 +26,12 @@ from scroll import navigate_to
 from state import (
     _can_post_now, _record_post,
     _load_post_state, _save_post_state,
-    _post_state_locked
+    _post_state_locked,
+    get_next_due_post_kind,
+    POST_KIND_AUTO,
+    POST_KIND_MEDIA,
+    POST_KIND_TEXT,
+    _normalize_post_kind,
 )
 from content_policy import (
     ContentPolicyError,
@@ -333,14 +338,14 @@ def _find_compose_textbox(driver, timeout: float = 10.0):
     return None
 
 
-def create_post(driver, profile_id: str) -> bool:
+def create_post(driver, profile_id: str, post_kind: str = POST_KIND_AUTO) -> bool:
     """
     Create an original Threads post with the profile's approved caption pool
     and optional profile-approved media entries.
 
     Flow:
       1.  Guard ,  _can_post_now() checks quota + 2-hour cooldown.
-      2.  Pick one approved caption and one profile-approved media file if configured.
+      2.  Pick one approved caption and, for media posts, one profile-approved media file.
       3.  Find the compose / New post button in the nav sidebar.
       4.  Bezier-arc to the button and click to open the compose modal.
       5.  Attach image via the hidden <input type="file"> if a path was picked.
@@ -355,6 +360,7 @@ def create_post(driver, profile_id: str) -> bool:
                      the hidden <input type="file"> without a click chain.
       Post button  ,  reuses COMMENT_POST_XPATH (same "Post" text node).
     """
+    requested_post_kind = _normalize_post_kind(post_kind)
     profile_content = _profile_content_for_post(profile_id)
     caption_pool = profile_content["approved_captions"]
     if not caption_pool:
@@ -380,12 +386,28 @@ def create_post(driver, profile_id: str) -> bool:
     # profiles are not blocked for the duration of the UI interaction.
     image_path = None
     _src_for_prepare = None
+    effective_post_kind = requested_post_kind
     with _post_state_locked():
         state = _load_post_state()
-        if not _can_post_now(profile_id, state):
+        if effective_post_kind == POST_KIND_AUTO:
+            effective_post_kind = (
+                get_next_due_post_kind(
+                    profile_id,
+                    state,
+                    media_available=bool(approved_media),
+                )
+                or POST_KIND_TEXT
+            )
+
+        if effective_post_kind == POST_KIND_MEDIA and not approved_media:
+            log.warning("[APPROVED PUBLISHING] media post requested but approved media pool is empty")
             return False
 
-        _src_for_prepare = _reserve_profile_media(state, profile_id, approved_media)
+        if not _can_post_now(profile_id, state, effective_post_kind):
+            return False
+
+        if effective_post_kind == POST_KIND_MEDIA:
+            _src_for_prepare = _reserve_profile_media(state, profile_id, approved_media)
         _save_post_state(state)  # one atomic write covers gate + image reservation
     # ===========================================================================
 
@@ -401,7 +423,8 @@ def create_post(driver, profile_id: str) -> bool:
     # 
 
     log.info(
-        "[ APPROVED PUBLISHING ]  caption accepted  |  chars=%d  |  media=%s",
+        "[ APPROVED PUBLISHING ]  caption accepted  |  kind=%s  |  chars=%d  |  media=%s",
+        effective_post_kind,
         len(caption),
         os.path.basename(image_path) if image_path else "none",
     )
@@ -742,7 +765,7 @@ def create_post(driver, profile_id: str) -> bool:
         # concurrent profile's daily-count writes are not overwritten.
         with _post_state_locked():
             _rp_state = _load_post_state()
-            _record_post(profile_id, _rp_state)
+            _record_post(profile_id, _rp_state, effective_post_kind)
         _cleanup_post_scratch(profile_id)
         log.info("[ POST ]  new post published successfully")
         return True
@@ -759,19 +782,19 @@ def create_post(driver, profile_id: str) -> bool:
         return False
 
 
-def post_action(driver, profile_id: str) -> None:
+def post_action(driver, profile_id: str, post_kind: str = POST_KIND_AUTO) -> None:
     """Session-loop dispatch wrapper for create_post."""
     #  DEBUG LOGGING: ACTION START 
     _action_t0 = time.perf_counter()
     _get_ctx().session_metrics["actions_dispatched"] += 1
-    log.info("[ACTION START]  action=post")
+    log.info("[ACTION START]  action=post  kind=%s", post_kind)
     # 
-    result = create_post(driver, profile_id)
+    result = create_post(driver, profile_id, post_kind=post_kind)
     #  DEBUG LOGGING: ACTION END 
     if result:
         _get_ctx().session_metrics["posts"] += 1
-    log.info("[ACTION END]  action=post  result=%s  duration=%.1fs",
-             "success" if result else "failure", time.perf_counter() - _action_t0)
+    log.info("[ACTION END]  action=post  kind=%s  result=%s  duration=%.1fs",
+             post_kind, "success" if result else "failure", time.perf_counter() - _action_t0)
     return result
     # 
 

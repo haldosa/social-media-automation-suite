@@ -238,6 +238,30 @@ def _find_reply_buttons(driver) -> list:
     """
     results = []
     try:
+        raw = driver.execute_script("""
+            return Array.from(document.querySelectorAll('svg[aria-label="Reply"]'))
+                .map(function(svg) { return svg.closest('div[role="button"]'); })
+                .filter(function(btn, idx, arr) {
+                    if (!btn || arr.indexOf(btn) !== idx) return false;
+                    var r = btn.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0 &&
+                           r.bottom >= 0 && r.top <= window.innerHeight;
+                });
+        """)
+        if raw:
+            for el in raw:
+                try:
+                    if el.is_displayed():
+                        results.append(el)
+                except Exception:
+                    continue
+        if results:
+            log.info("[REPLY CONTROLS] %d reply button(s) found via svg[aria-label=Reply]", len(results))
+            return results
+    except WebDriverException as exc:
+        log.debug("[REPLY CONTROLS] direct reply-button scan error: %s", exc)
+
+    try:
         raw = driver.execute_script(
             _JS_MULTI_SIGNAL_REPLY, ELEMENT_CONFIDENCE_THRESHOLD
         )

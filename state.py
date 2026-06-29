@@ -8,6 +8,12 @@ import random
 from datetime import datetime, date
 from config import (
     POST_STATE_FILE,
+    DAILY_MEDIA_POSTS_MIN,
+    DAILY_MEDIA_POSTS_MAX,
+    DAILY_TEXT_POSTS_MIN,
+    DAILY_TEXT_POSTS_MAX,
+    POST_MIN_INTERVAL_MINUTES,
+    POST_MAX_INTERVAL_MINUTES,
 )
 from utils import log
 
@@ -138,7 +144,143 @@ def _ensure_profile_in_state(profile_id: str, state: dict) -> None:
             "next_post_ts":  0.0,   # Poisson-sampled; 0 = no restriction yet
         }
         _save_post_state(state)
-        log.info("[ POST ]  registered account start date: %s  (day 1 of ramp-up)", today)
+        log.info("[ POST ]  registered profile publishing state: %s", today)
+
+
+POST_KIND_TEXT = "text"
+POST_KIND_MEDIA = "media"
+POST_KIND_AUTO = "auto"
+POST_KINDS = (POST_KIND_MEDIA, POST_KIND_TEXT)
+
+
+def _normalize_post_kind(post_kind: str | None) -> str:
+    kind = str(post_kind or POST_KIND_TEXT).strip().lower()
+    if kind in {"image", "photo", "media"}:
+        return POST_KIND_MEDIA
+    if kind in {"caption", "text", "text_only", "text-only"}:
+        return POST_KIND_TEXT
+    if kind == POST_KIND_AUTO:
+        return POST_KIND_AUTO
+    return POST_KIND_TEXT
+
+
+def _draw_daily_target(
+    profile_id: str,
+    today: str,
+    post_kind: str,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if maximum <= minimum:
+        return max(0, minimum)
+    rng = random.Random(f"{profile_id}:{today}:daily_{post_kind}_post_target")
+    return rng.randint(max(0, minimum), max(0, maximum))
+
+
+def _get_daily_post_targets(profile_id: str, state: dict, today: str | None = None) -> dict:
+    """Return persisted daily publishing targets for one profile/date."""
+    today = today or date.today().isoformat()
+    entry = state.setdefault(profile_id, {})
+    targets_by_day = entry.setdefault("daily_post_targets", {})
+    target = targets_by_day.get(today)
+    if not isinstance(target, dict):
+        target = {}
+
+    if POST_KIND_MEDIA not in target:
+        target[POST_KIND_MEDIA] = _draw_daily_target(
+            profile_id,
+            today,
+            POST_KIND_MEDIA,
+            DAILY_MEDIA_POSTS_MIN,
+            DAILY_MEDIA_POSTS_MAX,
+        )
+    if POST_KIND_TEXT not in target:
+        target[POST_KIND_TEXT] = _draw_daily_target(
+            profile_id,
+            today,
+            POST_KIND_TEXT,
+            DAILY_TEXT_POSTS_MIN,
+            DAILY_TEXT_POSTS_MAX,
+        )
+
+    for key in POST_KINDS:
+        try:
+            target[key] = max(0, int(target.get(key, 0)))
+        except (TypeError, ValueError):
+            target[key] = 0
+
+    targets_by_day[today] = target
+    return {
+        POST_KIND_MEDIA: target[POST_KIND_MEDIA],
+        POST_KIND_TEXT: target[POST_KIND_TEXT],
+    }
+
+
+def _get_daily_post_counts(profile_id: str, state: dict, today: str | None = None) -> dict:
+    """Return mutable per-kind daily publishing counts for one profile/date."""
+    today = today or date.today().isoformat()
+    entry = state.setdefault(profile_id, {})
+    counts_by_day = entry.setdefault("daily_post_counts", {})
+    counts = counts_by_day.get(today)
+    if not isinstance(counts, dict):
+        counts = {}
+    for key in POST_KINDS:
+        try:
+            counts[key] = max(0, int(counts.get(key, 0)))
+        except (TypeError, ValueError):
+            counts[key] = 0
+    counts_by_day[today] = counts
+    return counts
+
+
+def _post_daily_quota(days_old: int) -> int:
+    """Configured maximum total posts per day; days_old kept for log compatibility."""
+    return max(0, DAILY_MEDIA_POSTS_MAX) + max(0, DAILY_TEXT_POSTS_MAX)
+
+
+def get_daily_publishing_status(
+    profile_id: str,
+    state: dict,
+    today: str | None = None,
+) -> dict:
+    """Return targets, counts, and remaining posts for audit logs and daemon planning."""
+    today = today or date.today().isoformat()
+    _ensure_profile_in_state(profile_id, state)
+    targets = _get_daily_post_targets(profile_id, state, today)
+    counts = dict(_get_daily_post_counts(profile_id, state, today))
+    remaining = {
+        kind: max(0, targets[kind] - counts.get(kind, 0))
+        for kind in POST_KINDS
+    }
+    return {
+        "today": today,
+        "targets": targets,
+        "counts": counts,
+        "remaining": remaining,
+        "remaining_total": sum(remaining.values()),
+        "target_total": sum(targets.values()),
+        "count_total": sum(counts.get(kind, 0) for kind in POST_KINDS),
+    }
+
+
+def get_next_due_post_kind(
+    profile_id: str,
+    state: dict,
+    *,
+    media_available: bool = True,
+    today: str | None = None,
+) -> str | None:
+    """Return the next required post kind for today's publishing plan."""
+    status = get_daily_publishing_status(profile_id, state, today)
+    if media_available and status["remaining"][POST_KIND_MEDIA] > 0:
+        return POST_KIND_MEDIA
+    if status["remaining"][POST_KIND_TEXT] > 0:
+        return POST_KIND_TEXT
+    if status["remaining"][POST_KIND_MEDIA] > 0:
+        log.warning(
+            "[APPROVED PUBLISHING] media target remains but no approved media is available"
+        )
+    return None
 
 
 def _next_post_delay_sec(days_old: int) -> float:
@@ -320,5 +462,168 @@ def _record_post(profile_id: str, state: dict) -> None:
     log.info(
         "[ POST ]  state updated  |  profile=%s  today=%d  first_seen=%s",
         profile_id, daily[today], state[profile_id]["first_seen"],
+    )
+
+
+# ================================================================== #
+#  CONFIGURED DAILY PUBLISHING PLAN OVERRIDES
+# ================================================================== #
+
+def _next_post_delay_sec(days_old: int) -> float:
+    """Sample the next configured inter-post gap; days_old kept for compatibility."""
+    min_sec = POST_MIN_INTERVAL_MINUTES * 60.0
+    max_sec = max(min_sec, POST_MAX_INTERVAL_MINUTES * 60.0)
+    return random.uniform(min_sec, max_sec)
+
+
+def _sample_post_min_gap_sec() -> float:
+    """Configured minimum elapsed time between posts for one profile."""
+    return POST_MIN_INTERVAL_MINUTES * 60.0
+
+
+def _can_post_now(profile_id: str, state: dict, post_kind: str = POST_KIND_AUTO) -> bool:
+    """Return True if this profile is allowed to publish the requested post kind."""
+    if not profile_id or profile_id in ("manual", ""):
+        log.debug("_can_post_now: no meaningful profile_id ,  post suppressed")
+        return False
+
+    _ensure_profile_in_state(profile_id, state)
+    today = date.today().isoformat()
+    entry = state[profile_id]
+    requested_kind = _normalize_post_kind(post_kind)
+    if requested_kind == POST_KIND_AUTO:
+        requested_kind = get_next_due_post_kind(profile_id, state, media_available=True) or POST_KIND_TEXT
+
+    status = get_daily_publishing_status(profile_id, state, today)
+    targets = status["targets"]
+    counts = status["counts"]
+    now = time.time()
+    days_old = (date.fromisoformat(today) - date.fromisoformat(entry["first_seen"])).days
+    today_total = status["count_total"]
+    target_total = status["target_total"]
+
+    next_ts = entry.get("next_post_ts", 0.0)
+    if now < next_ts:
+        wait_min = (next_ts - now) / 60.0
+        log.info(
+            "[POST GATE] profile=%s kind=%s days_old=%d target=%d count=%d"
+            " total=%d/%d last_post_ago=%.1fh next_post_in=%.1fh result=blocked_cooldown",
+            profile_id,
+            requested_kind,
+            days_old,
+            targets.get(requested_kind, 0),
+            counts.get(requested_kind, 0),
+            today_total,
+            target_total,
+            (now - entry.get("last_post_ts", now)) / 3600.0,
+            wait_min / 60.0,
+        )
+        log.info("[ POST ] skipping , next post allowed in %.0f min", wait_min)
+        return False
+
+    elapsed = now - entry.get("last_post_ts", 0.0)
+    min_gap = _sample_post_min_gap_sec()
+    if elapsed < min_gap:
+        log.info(
+            "[POST GATE] profile=%s kind=%s days_old=%d target=%d count=%d"
+            " total=%d/%d last_post_ago=%.1fh next_post_in=%.1fh result=blocked_min_gap",
+            profile_id,
+            requested_kind,
+            days_old,
+            targets.get(requested_kind, 0),
+            counts.get(requested_kind, 0),
+            today_total,
+            target_total,
+            elapsed / 3600.0,
+            max(0, (entry.get("next_post_ts", 0.0) - now)) / 3600.0,
+        )
+        log.info(
+            "[ POST ] skipping , %.0f min since last post (minimum %.0f min)",
+            elapsed / 60.0,
+            min_gap / 60.0,
+        )
+        return False
+
+    if targets.get(requested_kind, 0) <= 0:
+        log.info(
+            "[POST GATE] profile=%s kind=%s target=0 count=%d result=blocked_no_target",
+            profile_id,
+            requested_kind,
+            counts.get(requested_kind, 0),
+        )
+        return False
+
+    if counts.get(requested_kind, 0) >= targets.get(requested_kind, 0):
+        log.info(
+            "[POST GATE] profile=%s kind=%s days_old=%d target=%d count=%d"
+            " total=%d/%d last_post_ago=%.1fh next_post_in=%.1fh result=blocked_quota",
+            profile_id,
+            requested_kind,
+            days_old,
+            targets.get(requested_kind, 0),
+            counts.get(requested_kind, 0),
+            today_total,
+            target_total,
+            (now - entry.get("last_post_ts", now)) / 3600.0,
+            max(0, (entry.get("next_post_ts", 0.0) - now)) / 3600.0,
+        )
+        log.info(
+            "[ POST ] skipping , %s daily quota reached (%d/%d)",
+            requested_kind,
+            counts.get(requested_kind, 0),
+            targets.get(requested_kind, 0),
+        )
+        return False
+
+    log.info(
+        "[POST GATE] profile=%s kind=%s days_old=%d target=%d count=%d"
+        " total=%d/%d last_post_ago=%.1fh next_post_in=%.1fh result=allowed",
+        profile_id,
+        requested_kind,
+        days_old,
+        targets.get(requested_kind, 0),
+        counts.get(requested_kind, 0),
+        today_total,
+        target_total,
+        (now - entry.get("last_post_ts", now)) / 3600.0,
+        max(0, (entry.get("next_post_ts", 0.0) - now)) / 3600.0,
+    )
+    return True
+
+
+def _record_post(profile_id: str, state: dict, post_kind: str = POST_KIND_TEXT) -> None:
+    """Increment per-kind daily count and update the configured next-post gate."""
+    today = date.today().isoformat()
+    kind = _normalize_post_kind(post_kind)
+    if kind == POST_KIND_AUTO:
+        kind = POST_KIND_TEXT
+    _ensure_profile_in_state(profile_id, state)
+    now = time.time()
+    state[profile_id]["last_post_ts"] = now
+
+    days_old = (
+        date.fromisoformat(today) - date.fromisoformat(state[profile_id]["first_seen"])
+    ).days
+    gap_sec = _next_post_delay_sec(days_old)
+    state[profile_id]["next_post_ts"] = now + gap_sec
+    log.info("[ POST ] next post allowed in %.1f h", gap_sec / 3600.0)
+
+    counts = _get_daily_post_counts(profile_id, state, today)
+    counts[kind] = counts.get(kind, 0) + 1
+    legacy_daily = state[profile_id].setdefault("daily_counts", {})
+    legacy_daily[today] = sum(counts.get(item, 0) for item in POST_KINDS)
+    status = get_daily_publishing_status(profile_id, state, today)
+
+    _save_post_state(state)
+    log.info(
+        "[ POST ] state updated | profile=%s kind=%s %s=%d/%d total=%d/%d first_seen=%s",
+        profile_id,
+        kind,
+        kind,
+        status["counts"].get(kind, 0),
+        status["targets"].get(kind, 0),
+        status["count_total"],
+        status["target_total"],
+        state[profile_id]["first_seen"],
     )
 
