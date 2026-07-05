@@ -19,7 +19,7 @@ from config import (
 from dom_selectors import (
     FEED_PROFILE_LINK, FOLLOW_BTN_XPATH,
     REPLY_BTN_CSS, COMMENT_BOX_CSS,
-    COMMENT_POST_XPATH, SEARCH_INPUT_CSS,
+    SEARCH_INPUT_CSS,
     _KNOWN_UNLIKE_LABELS, 
     _JS_MULTI_SIGNAL_LIKE, _JS_MULTI_SIGNAL_REPLY,
 )
@@ -298,6 +298,92 @@ def _find_reply_buttons(driver) -> list:
     if results:
         log.info("[FALLBACK]  %d reply button(s) found via CSS", len(results))
     return results
+
+
+def _find_reply_submit_button(driver, comment_box):
+    """Find the active reply submit button near the active reply textbox."""
+    try:
+        return driver.execute_script("""
+            var box = arguments[0];
+            if (!box) return null;
+
+            function visible(el) {
+                if (!el) return false;
+                var r = el.getBoundingClientRect();
+                var s = window.getComputedStyle(el);
+                return r.width > 0 &&
+                       r.height > 0 &&
+                       r.bottom >= 0 &&
+                       r.top <= window.innerHeight &&
+                       s.display !== 'none' &&
+                       s.visibility !== 'hidden' &&
+                       parseFloat(s.opacity || '1') > 0;
+            }
+
+            function isReplySubmit(btn) {
+                if (!visible(btn)) return false;
+
+                var disabled =
+                    btn.getAttribute('aria-disabled') === 'true' ||
+                    btn.getAttribute('disabled') !== null;
+
+                if (disabled) return;
+
+                var text = ((btn.innerText || btn.textContent || '')).trim().toLowerCase();
+                var aria = (btn.getAttribute('aria-label') || '').trim().toLowerCase();
+
+                var hasReplySvg = !!btn.querySelector('svg[aria-label="Reply"]');
+                var hasReplyTitle = Array.from(btn.querySelectorAll('title'))
+                    .some(t => (t.textContent || '').trim().toLowerCase() === 'reply');
+
+                return text === 'reply' || aria === 'reply' || hasReplySvg || hasReplyTitle;
+            }
+
+            var boxRect = box.getBoundingClientRect();
+
+            var root = box;
+            for (var depth = 0; depth < 30 && root; depth++) {
+                var buttons = Array.from(
+                    root.querySelectorAll('div[role="button"], button, [role="button"]')
+                ).filter(isReplySubmit);
+
+                if (buttons.length) {
+                    buttons.sort(function(a, b) {
+                        function score(btn) {
+                            var r = btn.getBoundingClientRect();
+                            var midY = r.top + r.height / 2;
+                            var midX = r.left + r.width / 2;
+
+                            var boxMidY = boxRect.top + boxRect.height / 2;
+                            var boxMidX = boxRect.left + boxRect.width / 2;
+
+                            var score =
+                                Math.abs(midY - boxMidY) +
+                                Math.abs(midX - boxMidX) * 0.2;
+
+                            // Reply submit is usually to the right/below the textbox.
+                            if (midX >= boxRect.left) score -= 80;
+                            if (midY >= boxRect.top - 80 && midY <= boxRect.bottom + 220) {
+                                score -= 120;
+                            }
+
+                            return score;
+                        }
+
+                        return score(a) - score(b);
+                    });
+
+                    return buttons[0];
+                }
+
+                root = root.parentElement;
+            }
+
+            return null;
+        """, comment_box)
+    except WebDriverException as exc:
+        log.debug("[REPLY CONTROLS] submit scan failed: %s", exc)
+        return None
 
 
 def scroll_element_into_loose_view(driver, element) -> None:
@@ -1426,7 +1512,7 @@ def comment_on_post(driver) -> bool:
         # 4. Wait for the comment box to appear
         try:
             comment_box = WebDriverWait(driver, 8).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, COMMENT_BOX_CSS))
+                EC.visibility_of_element_located((By.CSS_SELECTOR, COMMENT_BOX_CSS))
             )
         except TimeoutException:
             log.debug("comment_on_post: comment box did not appear after Reply click")
@@ -1440,38 +1526,25 @@ def comment_on_post(driver) -> bool:
         log.info("[REPLY CONTROLS] approved reply selected chars=%d", len(reply))
         human_type(comment_box, reply, driver)
 
+        comment_box = driver.execute_script("""
+            var active = document.activeElement;
+            if (
+                active &&
+                active.matches &&
+                active.matches('[contenteditable="true"][role="textbox"]')
+            ) {
+                return active;
+            }
+            return arguments[0];
+        """, comment_box)
+
         # 6. Re-reading pause
         precise_sleep(random.uniform(1.2, 3.0))
 
-        # 7. Find the Post button.
-        #    Multiple matches can exist (one per visible reply form).
-        #    We pick the one whose vertical midpoint is closest to the comment
-        #    box ,  this reliably targets the active reply form’s submit button
-        #    without misidentifying the global compose button.
-        try:
-            box_mid = driver.execute_script(
-                "var r=arguments[0].getBoundingClientRect();"
-                "return r.top + r.height / 2;",
-                comment_box,
-            )
-            post_btns = driver.find_elements(By.XPATH, COMMENT_POST_XPATH)
-            post_btns = [b for b in post_btns if b.is_displayed()]
-            if not post_btns:
-                raise NoSuchElementException("Post button not found")
-            # Sort by distance from the comment box midpoint
-            def _dist(b):
-                try:
-                    r = driver.execute_script(
-                        "var r=arguments[0].getBoundingClientRect();"
-                        "return r.top + r.height / 2;",
-                        b,
-                    )
-                    return abs(r - box_mid)
-                except Exception:
-                    return 9999
-            post_btn = min(post_btns, key=_dist)
-        except (NoSuchElementException, WebDriverException):
-            log.debug("comment_on_post: Post button not found ,  aborting")
+        # 7. Find the icon-only Reply submit button near the active textbox.
+        post_btn = _find_reply_submit_button(driver, comment_box)
+        if not post_btn:
+            log.warning("[REPLY CONTROLS] reply submit button not found")
             return False
 
         #scroll_element_into_loose_view(driver, post_btn)
